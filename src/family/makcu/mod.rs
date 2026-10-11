@@ -7,8 +7,8 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::backend::{
-    Backend, Command, InputKind, InputKinds, LOCKED, LockSlot, Sink, UNLOCKED, Usage,
-    WRITE_DEADLINE,
+    Backend, Command, InputKind, InputKinds, LOCKED, LockSlot, Sink, StreamFailure, UNLOCKED,
+    Usage, WRITE_DEADLINE,
 };
 use crate::capability::{
     Action, Axis, Button, Capabilities, Capability, Family, Firmware, Info, Quirk, Snapshot,
@@ -351,6 +351,30 @@ pub(crate) fn snapshot(build: u32, kinds: u8, id: Option<StableId>) -> Snapshot 
     Snapshot::new(info, capabilities)
 }
 
+/// the two input streams a MAKCU has
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Stream {
+    Mouse,
+    Keyboard,
+}
+
+impl Stream {
+    pub(crate) fn kind(self) -> InputKind {
+        match self {
+            Self::Mouse => InputKind::Buttons,
+            Self::Keyboard => InputKind::Keys,
+        }
+    }
+
+    fn of(kind: InputKind) -> Option<Self> {
+        match kind {
+            InputKind::Buttons => Some(Self::Mouse),
+            InputKind::Keys => Some(Self::Keyboard),
+            InputKind::Motion | InputKind::Media => None,
+        }
+    }
+}
+
 /// one input stream, what the core asked for and whether the box said it's on
 #[derive(Clone, Copy, Default)]
 pub(crate) struct StreamState {
@@ -359,18 +383,18 @@ pub(crate) struct StreamState {
 }
 
 impl Expect {
-    pub(crate) fn stream(&mut self, kind: InputKind) -> &mut StreamState {
+    pub(crate) fn stream(&mut self, kind: Stream) -> &mut StreamState {
         match kind {
-            InputKind::Buttons => &mut self.mouse,
-            InputKind::Keys => &mut self.keys,
+            Stream::Mouse => &mut self.mouse,
+            Stream::Keyboard => &mut self.keys,
         }
     }
 }
 
-pub(crate) fn kind_byte(kind: InputKind) -> u8 {
+pub(crate) fn kind_byte(kind: Stream) -> u8 {
     match kind {
-        InputKind::Buttons => frames::MOUSE,
-        InputKind::Keys => frames::KEYBOARD,
+        Stream::Mouse => frames::MOUSE,
+        Stream::Keyboard => frames::KEYBOARD,
     }
 }
 
@@ -510,7 +534,7 @@ impl MakcuBackend {
         })
     }
 
-    fn stream(&self, kind: InputKind, on: bool) -> Result<()> {
+    fn stream(&self, kind: Stream, on: bool) -> Result<()> {
         let _switching = lock(&self.shared.streams);
         *lock(&self.shared.expect).stream(kind) = StreamState {
             wanted: on,
@@ -518,12 +542,12 @@ impl MakcuBackend {
         };
         let byte = kind_byte(kind);
         let action = match kind {
-            InputKind::Buttons => Action::ButtonEvents,
-            InputKind::Keys => Action::KeyEvents,
+            Stream::Mouse => Action::ButtonEvents,
+            Stream::Keyboard => Action::KeyEvents,
         };
         let name = match kind {
-            InputKind::Buttons => "button",
-            InputKind::Keys => "key",
+            Stream::Mouse => "button",
+            Stream::Keyboard => "key",
         };
         // a refusal doesn't say which kind it was for, so this is what names it
         self.shared.last.set_stream(byte);
@@ -636,12 +660,13 @@ impl Backend for MakcuBackend {
     /// passed, and a kind that already started gets its SET and its confirming GET, so the call takes at most two
     /// requests per kind. an ON that's left over stays wanted and the poller asks again. an OFF that's left over
     /// also keeps the stream wanted, so the next call or shutdown still switches it off
-    fn set_streams(&self, kinds: InputKinds) -> Result<()> {
+    fn set_streams(&self, kinds: InputKinds) -> std::result::Result<(), StreamFailure> {
         let until = Instant::now() + WRITE_DEADLINE;
-        let mut first = Ok(());
+        let mut failed = InputKinds::default();
+        let mut first = None;
         for (kind, on) in [
-            (InputKind::Buttons, kinds.buttons),
-            (InputKind::Keys, kinds.keys),
+            (Stream::Mouse, kinds.buttons),
+            (Stream::Keyboard, kinds.keys),
         ] {
             let current = *lock(&self.shared.expect).stream(kind);
             if current.wanted == on && (current.confirmed || !on) {
@@ -658,20 +683,32 @@ impl Backend for MakcuBackend {
             }
             match self.stream(kind, on) {
                 Ok(()) => {}
-                Err(Error::Disconnected) => return Err(Error::Disconnected),
+                Err(Error::Disconnected) => {
+                    return Err(StreamFailure {
+                        failed: kinds,
+                        error: Error::Disconnected,
+                    });
+                }
                 // the box may have nothing left to stream keys from, and off is all we wanted anyway
-                Err(_) if kind == InputKind::Keys && !on => {}
+                Err(_) if kind == Stream::Keyboard && !on => {}
                 Err(error) => {
-                    if first.is_ok() {
-                        first = Err(error);
-                    }
+                    let one = kind.kind().kinds();
+                    failed.buttons |= one.buttons;
+                    failed.keys |= one.keys;
+                    first.get_or_insert(error);
                 }
             }
         }
-        first
+        match first {
+            None => Ok(()),
+            Some(error) => Err(StreamFailure { failed, error }),
+        }
     }
 
     fn restart_stream(&self, kind: InputKind) -> Result<()> {
+        let Some(kind) = Stream::of(kind) else {
+            return Ok(());
+        };
         if lock(&self.shared.expect).stream(kind).wanted {
             self.stream(kind, true)
         } else {
@@ -742,7 +779,7 @@ impl Backend for MakcuBackend {
         }
         let wanted = {
             let mut expect = lock(&self.shared.expect);
-            [InputKind::Buttons, InputKind::Keys].map(|kind| (kind, expect.stream(kind).wanted))
+            [Stream::Mouse, Stream::Keyboard].map(|kind| (kind, expect.stream(kind).wanted))
         };
         for (kind, wanted) in wanted {
             if wanted {

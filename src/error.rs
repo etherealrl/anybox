@@ -11,6 +11,9 @@ pub enum Error {
     #[non_exhaustive]
     NotFound { tried: Vec<String> },
 
+    #[error("this device was closed, open the box again if you need it")]
+    Closed,
+
     #[error(
         "{port} is already open in another program or another Device in this one, close it there first"
     )]
@@ -22,6 +25,13 @@ pub enum Error {
     )]
     #[non_exhaustive]
     PermissionDenied { port: String },
+
+    #[error("{}, so plug in a box that can, or ask Connect::can for less", incapable_text(.boxes))]
+    #[non_exhaustive]
+    NoBoxCan {
+        /// each box that answered, with what it couldn't do
+        boxes: Vec<(crate::connect::Found, Vec<Action>)>,
+    },
 
     #[error("the box on {port} isn't a {expected}{}, pick the right family or leave it out and let anybox find it. if you just plugged it in, give it a couple seconds to start first", found_text(.found))]
     #[non_exhaustive]
@@ -93,6 +103,22 @@ pub enum Error {
 
     #[error(transparent)]
     Io(#[from] std::io::Error),
+}
+
+fn incapable_text(boxes: &[(crate::connect::Found, Vec<Action>)]) -> String {
+    let each: Vec<String> = boxes
+        .iter()
+        .map(|(found, missing)| {
+            let missing: Vec<String> = missing.iter().map(ToString::to_string).collect();
+            format!(
+                "the {} on {} can't {}",
+                found.info.family,
+                found.port,
+                missing.join(" or ")
+            )
+        })
+        .collect();
+    each.join(", ")
 }
 
 fn tried_text(tried: &[String]) -> String {

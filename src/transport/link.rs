@@ -8,6 +8,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use super::codec::{Codec, Frame, Incoming, Key};
+use super::os::Read;
 use super::probe::Probe;
 use super::{Candidate, Port, System, UsbId};
 use crate::backend::{Sink, WRITE_DEADLINE};
@@ -326,8 +327,10 @@ fn read_loop(
             match current.read(&mut chunk) {
                 Ok(0) => true,
                 Ok(n) => {
+                    // taken before anything else, it's the closest anybox gets to when the bytes came in
+                    let read = Read::now();
+                    let arrived = read.at;
                     buffer.extend_from_slice(&chunk[..n]);
-                    let arrived = Instant::now();
                     while let Some(frame) = codec.split(&mut buffer) {
                         match codec.classify(&frame) {
                             Incoming::Reply(key) => {
@@ -342,7 +345,7 @@ fn read_loop(
                             }
                             Incoming::StreamLost(kind) => shared.sink.stream_lost(kind),
                             Incoming::Input { input, box_time } => {
-                                shared.sink.input(input, arrived, box_time);
+                                shared.sink.input(input, arrived, box_time, Some(read));
                             }
                             Incoming::Noise => {}
                         }

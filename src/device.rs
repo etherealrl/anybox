@@ -12,7 +12,9 @@ use crate::backend::{
 use crate::capability::{Action, Axis, Button, Direction, Execution, Quirk, Snapshot};
 use crate::click::{Click, ClickTiming, Holds, Timing};
 use crate::error::{Error, Result};
-use crate::event::{DropSource, Event, Events, Listeners, QUEUE_CAPACITY, Queue, Stamp};
+use crate::event::{
+    DropSource, Event, EventKinds, Events, Listeners, QUEUE_CAPACITY, Queue, Stamp,
+};
 use crate::key::{Key, MediaKey};
 
 /// how long drop waits for the backend and the link thread before it gives up on them
@@ -23,7 +25,8 @@ const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(1);
 pub struct Device {
     core: Arc<Core>,
     link: Mutex<Option<(JoinHandle<()>, Receiver<()>)>>,
-    closed: bool,
+    /// held for the whole shutdown, so a second `close` waits for the first one to finish
+    closed: Mutex<bool>,
 }
 
 struct Core {
@@ -35,6 +38,9 @@ struct Core {
     holds: Mutex<Holds>,
     opened: Instant,
     signals: Sender<Signal>,
+    port: String,
+    /// when each stream action was last refused, see `publish`
+    refused: Mutex<HashMap<Action, Instant>>,
 }
 
 /// what was sent to the box, kept under one lock with the sending so the record never disagrees with the box
@@ -56,8 +62,24 @@ struct Output {
 }
 
 struct Receivers {
-    queues: Vec<Weak<Queue>>,
-    alive: usize,
+    next_id: u64,
+    entries: Vec<Entry>,
+}
+
+/// one receiver and the kinds of input it asked for
+struct Entry {
+    id: u64,
+    kinds: EventKinds,
+    queue: Weak<Queue>,
+}
+
+impl Receivers {
+    /// every kind some receiver wants, which is what the box streams
+    fn union(&self) -> EventKinds {
+        self.entries
+            .iter()
+            .fold(EventKinds::NONE, |all, entry| all | entry.kinds)
+    }
 }
 
 pub(crate) struct Start {
@@ -67,12 +89,13 @@ pub(crate) struct Start {
     pub(crate) incoming: Receiver<Signal>,
     pub(crate) click_timing: ClickTiming,
     pub(crate) holds: Holds,
+    pub(crate) port: String,
 }
 
 impl Device {
     pub(crate) fn start(start: Start) -> Result<Self> {
         let core = Arc::new(Core {
-            snapshot: RwLock::new(prepare(start.snapshot, start.click_timing)),
+            snapshot: RwLock::new(prepare(start.snapshot, start.click_timing, &start.port)),
             backend: start.backend,
             output: Mutex::new(Output {
                 held: HashSet::new(),
@@ -83,19 +106,21 @@ impl Device {
                 session: 0,
             }),
             receivers: Mutex::new(Receivers {
-                queues: Vec::new(),
-                alive: 0,
+                next_id: 0,
+                entries: Vec::new(),
             }),
             click_timing: start.click_timing,
             holds: Mutex::new(start.holds),
             opened: Instant::now(),
             signals: start.signals,
+            port: start.port.clone(),
+            refused: Mutex::new(HashMap::new()),
         });
         let link = spawn_link(Arc::downgrade(&core), start.incoming)?;
         Ok(Self {
             core,
             link: Mutex::new(Some(link)),
-            closed: false,
+            closed: Mutex::new(false),
         })
     }
 
@@ -232,6 +257,8 @@ impl Device {
             .run(Action::Pan, Timing::Any, Command::Pan(notches))
     }
 
+    /// throws away the moves the box took but hasn't sent yet. while the link is down it fails with `Disconnected`,
+    /// and on a Medius with riding on, the moves it holds back are then only bounded by its riding window
     pub fn discard_pending_moves(&self) -> Result<()> {
         self.core.run(
             Action::DiscardPendingMoves,
@@ -240,26 +267,47 @@ impl Device {
         )
     }
 
-    /// a new receiver for input events and connection events. the box only streams input while at least one is
-    /// alive. just know that every receiver sees every key typed on the keyboard behind the box, passwords included
+    /// a new receiver for all the input the box can stream, plus the connection events. the box only streams while
+    /// at least one receiver is alive. just know that a receiver of keys sees every key typed on the keyboard behind
+    /// the box, passwords included
     pub fn events(&self) -> Events {
+        self.receiver(EventKinds::ALL, false)
+    }
+
+    /// a receiver for only these kinds of input, plus the connection events. the box streams what any receiver
+    /// wants, so a receiver for buttons alone doesn't make it send motion. a kind this box can't stream gets one
+    /// `Rejected` for it right away. on Medius each kind is its own subscription, so the order between two kinds
+    /// is only as good as their box time
+    pub fn events_of(&self, kinds: EventKinds) -> Events {
+        // `ALL` means everything this box has, so it never gets refusals for what it doesn't
+        self.receiver(kinds, !kinds.contains(EventKinds::ALL))
+    }
+
+    fn receiver(&self, kinds: EventKinds, report_unsupported: bool) -> Events {
         let listeners: Weak<dyn Listeners> = Arc::downgrade(&self.core) as Weak<Core>;
-        Events::new(self.core.add_receiver(), listeners)
+        let (queue, id) = self.core.add_receiver(kinds, report_unsupported);
+        Events::new(queue, listeners, id)
     }
 
     /// the medius crate's own device for this box, for everything only Medius does (clips, rendering, raw catch
     /// etc), and none on other boxes. it's also where you get the polling rate (`query_rate()`) and the identity the
     /// box shows the PC (`device_info()`)
     ///
+    /// to tell a mouse from a keyboard, check the capabilities and not the crate's `DeviceKind`, which calls a mouse
+    /// with a full key bitmap a keyboard
+    ///
     /// a clone you keep holds the port open after this device is gone. anybox doesn't know about anything you press
     /// or lock through it, and its `reset()` lets go of and unlocks everything, including what you did through this
     /// device. `events()` comes back by itself after a `Dropped`, though a button held through the reset can show a
     /// second press with no release in between. anybox's stream takes up to four of the box's 32 catch entries, so
     /// if your own subscriptions fill the table the receiver gets a `Rejected` instead. once you've freed some,
-    /// drop every receiver and make a new one so it asks again. a reboot into a download target keeps the box down
+    /// any receiver coming or going asks again. a reboot into a download target keeps the box down
     /// until you replug it
     #[cfg(feature = "medius")]
     pub fn medius(&self) -> Option<medius::Device> {
+        if lock(&self.core.output).closing {
+            return None;
+        }
         self.core
             .backend
             .as_any()
@@ -267,16 +315,21 @@ impl Device {
             .and_then(crate::family::medius::MediusBackend::device)
     }
 
-    /// what drop does, but you get to see whether letting go of what you held worked
-    pub fn close(mut self) -> Result<()> {
+    /// what drop does, but you get to see whether letting go of what you held and unlocking worked, and you choose
+    /// the thread that waits for it (up to about 2 seconds when the box doesn't answer). it works on a shared
+    /// device too. after it every command fails with `Error::Closed` and the receivers end, `events()` gives one
+    /// that's already ended, `snapshot()` still works and `medius()` gives none. a second `close` waits for the
+    /// first one and then says `Closed`. that's not the `Closed` an ended receiver returns
+    pub fn close(&self) -> Result<()> {
+        let mut closed = lock(&self.closed);
+        if *closed {
+            return Err(Error::Closed);
+        }
+        *closed = true;
         self.shutdown()
     }
 
-    fn shutdown(&mut self) -> Result<()> {
-        if self.closed {
-            return Ok(());
-        }
-        self.closed = true;
+    fn shutdown(&self) -> Result<()> {
         let released = self.core.release_everything();
         self.core.backend.shutdown(SHUTDOWN_DEADLINE);
         let _ = self.core.signals.send(Signal::Stop);
@@ -293,7 +346,11 @@ impl Device {
 
 impl Drop for Device {
     fn drop(&mut self) {
-        let _ = self.shutdown();
+        let mut closed = lock(&self.closed);
+        if !*closed {
+            *closed = true;
+            let _ = self.shutdown();
+        }
     }
 }
 
@@ -305,8 +362,13 @@ impl fmt::Debug for Device {
     }
 }
 
-fn prepare(snapshot: Snapshot, click_timing: ClickTiming) -> Arc<Snapshot> {
-    let Snapshot { info, capabilities } = snapshot;
+fn prepare(snapshot: Snapshot, click_timing: ClickTiming, port: &str) -> Arc<Snapshot> {
+    let Snapshot {
+        mut info,
+        capabilities,
+    } = snapshot;
+    // a backend's snapshot doesn't know the path, the core does and keeps it on every new snapshot
+    info.port = port.to_owned();
     Arc::new(Snapshot::new(
         info,
         capabilities.with_host_taps(click_timing),
@@ -580,7 +642,10 @@ impl Core {
 
     fn open_output(&self) -> Result<(MutexGuard<'_, Output>, Arc<Snapshot>)> {
         let output = lock(&self.output);
-        if output.closing || !output.link_up {
+        if output.closing {
+            return Err(Error::Closed);
+        }
+        if !output.link_up {
             return Err(Error::Disconnected);
         }
         let snapshot = self.snapshot();
@@ -721,35 +786,114 @@ impl Core {
         released
     }
 
-    fn add_receiver(&self) -> Arc<Queue> {
+    fn add_receiver(&self, kinds: EventKinds, report_unsupported: bool) -> (Arc<Queue>, u64) {
         let output = lock(&self.output);
-        let mut receivers = lock(&self.receivers);
         let queue = Arc::new(Queue::new(QUEUE_CAPACITY));
-        receivers.queues.push(Arc::downgrade(&queue));
-        receivers.alive += 1;
-        if receivers.alive == 1 && output.link_up && !output.closing {
-            // a box that refuses now gets asked again after the next reconnect
-            let _ = self.backend.set_streams(stream_kinds(&self.snapshot()));
+        let id = {
+            let mut receivers = lock(&self.receivers);
+            let id = receivers.next_id;
+            receivers.next_id += 1;
+            if output.closing {
+                queue.close();
+                return (queue, id);
+            }
+            receivers.entries.push(Entry {
+                id,
+                kinds,
+                queue: Arc::downgrade(&queue),
+            });
+            id
+        };
+        let snapshot = self.snapshot();
+        if report_unsupported {
+            let streamable = EventKinds::from_input(stream_kinds(&snapshot));
+            for (_, action) in (kinds & !streamable).each() {
+                queue.push(Event::Rejected { action, count: 1 });
+            }
         }
-        queue
+        let refused = self.apply_streams(&output, &snapshot);
+        drop(output);
+        self.publish_all(refused);
+        (queue, id)
     }
 
+    /// to each receiver that wants this kind of event. connection events and drops from the box go to everyone
     fn publish(&self, event: Event) {
-        let mut receivers = lock(&self.receivers);
-        receivers.queues.retain(|queue| match queue.upgrade() {
-            Some(queue) => {
-                queue.push(event.clone());
-                true
+        // a MAKCU reports one refused stream switch twice, the refusal itself and the switch that then failed, in
+        // either order, so a second one within a second is the same refusal. ponytail: a real second refusal that
+        // close is merged too, which only costs one count
+        if let Event::Rejected { action, .. } = &event
+            && EventKinds::of_action(*action).is_some()
+        {
+            let now = Instant::now();
+            let mut refused = lock(&self.refused);
+            if refused
+                .get(action)
+                .is_some_and(|at| now.duration_since(*at) < Duration::from_secs(1))
+            {
+                return;
             }
-            None => false,
-        });
+            refused.insert(*action, now);
+        }
+        let kind = EventKinds::of(&event);
+        let mut receivers = lock(&self.receivers);
+        receivers
+            .entries
+            .retain(|entry| match entry.queue.upgrade() {
+                Some(queue) => {
+                    if kind.is_none_or(|kind| !(entry.kinds & kind).is_empty()) {
+                        queue.push(event.clone());
+                    }
+                    true
+                }
+                None => false,
+            });
+    }
+
+    fn publish_all(&self, events: Vec<Event>) {
+        for event in events {
+            self.publish(event);
+        }
+    }
+
+    /// only to the receivers that want one of these kinds
+    fn publish_to(&self, kinds: EventKinds, event: Event) {
+        let receivers = lock(&self.receivers);
+        for entry in &receivers.entries {
+            if !(entry.kinds & kinds).is_empty()
+                && let Some(queue) = entry.queue.upgrade()
+            {
+                queue.push(event.clone());
+            }
+        }
     }
 
     fn close_receivers(&self) {
-        for queue in lock(&self.receivers).queues.drain(..) {
-            if let Some(queue) = queue.upgrade() {
+        for entry in lock(&self.receivers).entries.drain(..) {
+            if let Some(queue) = entry.queue.upgrade() {
                 queue.close();
             }
+        }
+    }
+
+    /// streams what the receivers want and the box can, the empty set too, so nothing streams that nobody wants.
+    /// called with the output lock held, which is what orders it against reconnects and the other receivers. it
+    /// returns the refusals to publish once the output lock is let go, `Disconnected` isn't one because the
+    /// reconnect asks again
+    fn apply_streams(&self, output: &Output, snapshot: &Snapshot) -> Vec<Event> {
+        if output.closing || !output.link_up {
+            return Vec::new();
+        }
+        let union = lock(&self.receivers).union();
+        let wanted = union & EventKinds::from_input(stream_kinds(snapshot));
+        match self.backend.set_streams(wanted.to_input()) {
+            Err(failure) if !matches!(failure.error, Error::Disconnected) => {
+                (EventKinds::from_input(failure.failed) & wanted)
+                    .each()
+                    .map(|(_, action)| Event::Rejected { action, count: 1 })
+                    .collect()
+            }
+            _ => Vec::new(),
         }
     }
 
@@ -773,13 +917,6 @@ impl Core {
             }
         }
         all_released
-    }
-
-    fn restart_streams(&self, snapshot: &Snapshot) {
-        if lock(&self.receivers).alive > 0 {
-            // a box that refuses now gets asked again after the next reconnect
-            let _ = self.backend.set_streams(stream_kinds(snapshot));
-        }
     }
 
     fn release_everything(&self) -> Result<()> {
@@ -822,12 +959,15 @@ impl Core {
                 input,
                 arrived,
                 box_time,
+                read,
             } => {
-                let at = Stamp {
-                    arrived,
-                    since_open: arrived.saturating_duration_since(self.opened),
-                    box_time,
-                };
+                let mut at = Stamp::new(arrived, arrived.saturating_duration_since(self.opened));
+                at.box_time = box_time;
+                if let Some(read) = read {
+                    at.received = read.at;
+                    at.received_since_open = read.at.saturating_duration_since(self.opened);
+                    at.received_qpc = read.qpc;
+                }
                 self.publish(match input {
                     Input::Button { button, pressed } => Event::Button {
                         button,
@@ -845,21 +985,40 @@ impl Core {
                     Input::Media { key, pressed } => Event::Media { key, pressed, at },
                 });
             }
-            Signal::Dropped(count, source) => self.publish(Event::Dropped { count, source }),
+            Signal::Dropped(count, source, kind) => match kind {
+                Some(kind) => self.publish_to(
+                    EventKinds::from_input(kind.kinds()),
+                    Event::Dropped { count, source },
+                ),
+                None => self.publish(Event::Dropped { count, source }),
+            },
             Signal::StreamLost(kind) => {
                 let output = lock(&self.output);
                 if output.closing {
                     return;
                 }
-                // the box doesn't say how many it lost, so this means at least one
-                self.publish(Event::Dropped {
-                    count: 1,
-                    source: DropSource::Device,
-                });
-                // only restart it while someone still listens, checked under the same locks a dropped receiver takes,
+                let lost = EventKinds::from_input(kind.kinds());
+                // the box doesn't say how many it lost, so this means at least one, and only to the receivers of
+                // that kind
+                self.publish_to(
+                    lost,
+                    Event::Dropped {
+                        count: 1,
+                        source: DropSource::Device,
+                    },
+                );
+                // only restart it while someone still wants it, checked under the same lock a dropped receiver takes,
                 // so a stream nobody wants stays off. and only the lost one, because the others are still running
-                if output.link_up && lock(&self.receivers).alive > 0 {
-                    let _ = self.backend.restart_stream(kind);
+                if output.link_up && lock(&self.receivers).union().contains(lost) {
+                    let restarted = self.backend.restart_stream(kind);
+                    drop(output);
+                    if let Err(error) = restarted
+                        && !matches!(error, Error::Disconnected)
+                    {
+                        for (_, action) in lost.each() {
+                            self.publish(Event::Rejected { action, count: 1 });
+                        }
+                    }
                 }
             }
             Signal::Refused(action) => self.publish(Event::Rejected { action, count: 1 }),
@@ -879,7 +1038,7 @@ impl Core {
                     return;
                 }
                 output.session += 1;
-                let snapshot = prepare(*snapshot, self.click_timing);
+                let snapshot = prepare(*snapshot, self.click_timing, &self.port);
                 *self
                     .snapshot
                     .write()
@@ -896,10 +1055,11 @@ impl Core {
                     return;
                 }
                 self.relock(&output, &snapshot);
-                self.restart_streams(&snapshot);
                 output.link_up = true;
+                let refused = self.apply_streams(&output, &snapshot);
                 drop(output);
                 self.publish(Event::Reconnected);
+                self.publish_all(refused);
             }
             Signal::Changed(snapshot) => {
                 let output = lock(&self.output);
@@ -910,7 +1070,7 @@ impl Core {
                     .snapshot
                     .write()
                     .unwrap_or_else(PoisonError::into_inner) =
-                    prepare(*snapshot, self.click_timing);
+                    prepare(*snapshot, self.click_timing, &self.port);
                 drop(output);
             }
             Signal::SessionReset => {
@@ -922,11 +1082,10 @@ impl Core {
                 let snapshot = self.snapshot();
                 self.release_held(&mut output, &snapshot);
                 self.relock(&output, &snapshot);
-                if output.link_up {
-                    self.restart_streams(&snapshot);
-                }
+                let refused = self.apply_streams(&output, &snapshot);
                 drop(output);
                 self.publish(Event::SessionReset);
+                self.publish_all(refused);
             }
             #[cfg(test)]
             Signal::Barrier(done) => {
@@ -938,13 +1097,12 @@ impl Core {
 }
 
 impl Listeners for Core {
-    fn receiver_dropped(&self) {
+    fn receiver_dropped(&self, id: u64) {
         let output = lock(&self.output);
-        let mut receivers = lock(&self.receivers);
-        receivers.alive = receivers.alive.saturating_sub(1);
-        if receivers.alive == 0 && output.link_up && !output.closing {
-            let _ = self.backend.set_streams(InputKinds::default());
-        }
+        lock(&self.receivers).entries.retain(|entry| entry.id != id);
+        let refused = self.apply_streams(&output, &self.snapshot());
+        drop(output);
+        self.publish_all(refused);
     }
 }
 

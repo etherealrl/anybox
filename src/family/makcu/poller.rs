@@ -3,9 +3,10 @@ use std::sync::atomic::Ordering;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use super::Stream;
 use super::frames::{self, frame, parts};
 use super::{Expect, Shared, kind_byte, lock, snapshot};
-use crate::backend::{InputKind, Sink};
+use crate::backend::Sink;
 use crate::capability::{Action, Button, Firmware, Snapshot};
 use crate::event::DropSource;
 use crate::transport::link::Link;
@@ -74,7 +75,7 @@ impl Poller {
 
     /// whether the box says this stream is on, or none when it didn't answer. it runs under the switch lock
     /// because INPUT_STREAM replies don't say the kind, so a request for another kind could take its reply
-    fn stream_on(&self, kind: InputKind) -> Option<bool> {
+    fn stream_on(&self, kind: Stream) -> Option<bool> {
         let _switching = lock(&self.shared.streams);
         self.get(frames::INPUT_STREAM, &[kind_byte(kind)])
             .map(|reply| reply.first() == Some(&1))
@@ -83,8 +84,8 @@ impl Poller {
     pub(crate) fn tick(&mut self) {
         let (generation, wanted) = {
             let mut expect = lock(&self.shared.expect);
-            let wanted = [InputKind::Buttons, InputKind::Keys]
-                .map(|kind| (kind, expect.stream(kind).wanted));
+            let wanted =
+                [Stream::Mouse, Stream::Keyboard].map(|kind| (kind, expect.stream(kind).wanted));
             (expect.generation, wanted)
         };
         // a kind that didn't answer just gets skipped this tick, the retries and the route check still run
@@ -121,7 +122,7 @@ impl Poller {
                 (false, Some(true)) => stream.confirmed = true,
                 // only the mouse stream going off means the box lost its state. pulling a keyboard out may switch
                 // its own stream off, and that must NEVER let go of the app's mouse buttons
-                (true, Some(false)) if kind == InputKind::Buttons => lost = true,
+                (true, Some(false)) if kind == Stream::Mouse => lost = true,
                 (true, Some(false)) => {
                     stream.confirmed = false;
                     keys_lost = true;
@@ -153,7 +154,7 @@ impl Poller {
                 self.sink.dropped(1, DropSource::Device);
             }
             for kind in retry {
-                if kind == InputKind::Keys
+                if kind == Stream::Keyboard
                     && !self
                         .shared
                         .snapshot()

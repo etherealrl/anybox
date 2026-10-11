@@ -63,6 +63,7 @@ fn device(mock: &MockBox) -> (Device, Poller) {
         incoming,
         click_timing: ClickTiming::Fixed(Duration::from_millis(5)),
         holds: Holds::seeded(1),
+        port: "test".into(),
     })
     .unwrap();
     (device, poller)
@@ -483,7 +484,7 @@ fn lost_events_are_counted_per_subscription() {
     let host_losses = |signals: &Receiver<Signal>| -> u64 {
         let mut lost = 0;
         while let Ok(signal) = signals.recv_timeout(Duration::from_millis(300)) {
-            if let Signal::Dropped(count, crate::event::DropSource::Host) = signal {
+            if let Signal::Dropped(count, crate::event::DropSource::Host, Some(_)) = signal {
                 lost += count;
             }
         }
@@ -505,8 +506,7 @@ fn lost_events_are_counted_per_subscription() {
                 .is_ok()
         });
         // holding the stream lock makes the pump wait, so the crate's 256 event queue fills up and drops the rest
-        let paused = backend
-            .shared()
+        let paused = backend.shared().slots[1]
             .stream
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
@@ -598,31 +598,55 @@ fn an_app_press_right_after_reconnected_goes_through() {
     presser.join().unwrap().unwrap();
 }
 
+fn catch_frames(mock: &MockBox) -> usize {
+    mock.recorded_frames()
+        .into_iter()
+        .filter(|frame| frame.ty == FrameType::Catch)
+        .count()
+}
+
 #[test]
-fn a_new_subscription_ends_the_old_one_first() {
+fn the_same_kinds_again_leave_the_subscriptions_alone() {
     let mock = mouse(5, true);
     let (backend, _snapshot, _poller, _signals) = backend(&mock);
     let motion = crate::backend::InputKinds {
-        buttons: false,
         motion: true,
         ..crate::backend::InputKinds::default()
     };
     backend.set_streams(motion).unwrap();
     mock.clear_recorded();
     backend.set_streams(motion).unwrap();
-    // the CATCH payload is class, id lo, id hi, dir, state (1 subscribe, 0 drop) and snaplen, like in the
-    // medius crate's source
-    let states: Vec<u8> = mock
+    assert_eq!(catch_frames(&mock), 0);
+}
+
+#[test]
+fn adding_a_kind_leaves_the_other_kinds_subscription_alone() {
+    let mock = mouse(5, true);
+    let (backend, _snapshot, _poller, _signals) = backend(&mock);
+    let buttons = crate::backend::InputKinds {
+        buttons: true,
+        ..crate::backend::InputKinds::default()
+    };
+    backend.set_streams(buttons).unwrap();
+    mock.clear_recorded();
+    backend
+        .set_streams(crate::backend::InputKinds {
+            motion: true,
+            ..buttons
+        })
+        .unwrap();
+    // only the axes class gets subscribed, nothing is dropped
+    let classes: Vec<(u8, u8)> = mock
         .recorded_frames()
         .into_iter()
         .filter(|frame| frame.ty == FrameType::Catch)
-        .map(|frame| frame.payload[4])
+        .map(|frame| (frame.payload[0], frame.payload[4]))
         .collect();
-    let first_drop = states.iter().position(|&state| state == 0);
-    let last_subscribe = states.iter().rposition(|&state| state == 1);
     assert!(
-        matches!((first_drop, last_subscribe), (Some(drop), Some(subscribe)) if drop < subscribe),
-        "{states:?}"
+        classes
+            .iter()
+            .all(|&(class, state)| class == 3 && state == 1),
+        "{classes:?}"
     );
 }
 
@@ -1357,8 +1381,10 @@ fn physical_keys_arrive_as_key_events_with_box_time() {
     mock.push_usages(2, 200, Class::Key, Direction::PRESS, &[shift, a]);
     mock.push_usages(3, 300, Class::Key, Direction::RELEASE, &[]);
     mock.push_usages(4, 400, Class::Media, Direction::PRESS, &[mute]);
+    // keys and media keys are separate subscriptions, so only the order within each kind is fixed
     let mut seen = Vec::new();
-    while seen.len() < 5 {
+    let mut media = Vec::new();
+    while seen.len() < 4 || media.is_empty() {
         match events.recv_timeout(Duration::from_secs(2)) {
             Ok(Event::Key {
                 key, pressed, at, ..
@@ -1366,11 +1392,12 @@ fn physical_keys_arrive_as_key_events_with_box_time() {
                 assert!(at.box_time.is_some());
                 seen.push(format!("{key} {pressed}"));
             }
-            Ok(Event::Media { key, pressed, .. }) => seen.push(format!("{key} {pressed}")),
+            Ok(Event::Media { key, pressed, .. }) => media.push(format!("{key} {pressed}")),
             Ok(_) => {}
             Err(error) => panic!("{error} after {seen:?}"),
         }
     }
+    seen.extend(media);
     assert_eq!(seen[..2], ["key 0xE1 true", "key 0x04 true"]);
     // both releases go in one snapshot and the crate sends them in its own order
     let mut released = seen[2..4].to_vec();
@@ -1875,4 +1902,186 @@ fn releases_after_one_that_ran_out_of_time_still_reach_the_crate() {
     drop(held);
     until(|| injects(&mock).len() == 3);
     assert_eq!(injects(&mock), vec![(0, 0), (1, 0), (2, 0)]);
+}
+
+#[test]
+fn a_new_kind_next_to_a_held_button_never_shows_a_second_press() {
+    let mock = mouse(5, true);
+    let (device, _poller) = device(&mock);
+    let buttons = device.events_of(crate::event::EventKinds::BUTTONS);
+    until(|| caught_classes(&mock).contains(&0));
+    let left = Usage::new(Class::Button, 0);
+    mock.push_usages(1, 10, Class::Button, Direction::PRESS, &[left]);
+    assert!(matches!(
+        buttons.recv_timeout(Duration::from_secs(2)),
+        Ok(Event::Button { pressed: true, .. })
+    ));
+    let _motion = device.events_of(crate::event::EventKinds::MOTION);
+    until(|| caught_classes(&mock).contains(&3));
+    // the box reports the same held set again, then the release
+    mock.push_usages(2, 20, Class::Button, Direction::PRESS, &[left]);
+    mock.push_usages(3, 30, Class::Button, Direction::RELEASE, &[]);
+    assert!(matches!(
+        buttons.recv_timeout(Duration::from_secs(2)),
+        Ok(Event::Button { pressed: false, .. })
+    ));
+}
+
+#[test]
+fn received_is_when_anybox_got_the_event_and_not_the_mapped_box_time() {
+    let mock = mouse(5, true);
+    let (device, _poller) = device(&mock);
+    let events = device.events_of(crate::event::EventKinds::BUTTONS);
+    until(|| caught_classes(&mock).contains(&0));
+    let before = Instant::now();
+    mock.push_usages(
+        1,
+        10,
+        Class::Button,
+        Direction::PRESS,
+        &[Usage::new(Class::Button, 0)],
+    );
+    let Ok(Event::Button { at, .. }) = events.recv_timeout(Duration::from_secs(2)) else {
+        panic!("no button")
+    };
+    assert!(at.received >= before);
+    assert_eq!(at.received_qpc.is_some(), cfg!(windows));
+}
+
+// the public mock, used the way an app would
+
+#[cfg(feature = "mock")]
+mod public_mock {
+    use std::time::Duration;
+
+    use medius::{Class, Direction, Usage};
+
+    use super::mouse;
+    use crate::capability::Button;
+    use crate::click::ClickTiming;
+    use crate::device::Device;
+    use crate::event::{DropSource, Event, EventKinds};
+
+    #[test]
+    fn a_mock_device_gives_what_the_mock_pushes_and_takes_what_the_app_sends() {
+        let mock = mouse(5, true);
+        let device =
+            Device::mock_medius(mock.clone(), ClickTiming::Fixed(Duration::from_millis(5)))
+                .unwrap();
+        assert_eq!(device.snapshot().info.port, "mock box");
+        let events = device.events_of(EventKinds::BUTTONS);
+        super::until(|| super::caught_classes(&mock).contains(&0));
+        mock.push_usages(
+            1,
+            10,
+            Class::Button,
+            Direction::PRESS,
+            &[Usage::new(Class::Button, 0)],
+        );
+        assert!(matches!(
+            events.recv_timeout(Duration::from_secs(2)),
+            Ok(Event::Button {
+                button: Button::Left,
+                pressed: true,
+                ..
+            })
+        ));
+        device.press(Button::Right).unwrap();
+        assert!(super::injects(&mock).contains(&(1, 1)));
+    }
+
+    #[test]
+    fn the_manual_poller_brings_a_session_reset_and_box_drops_on_its_ticks() {
+        let mock = mouse(5, true);
+        let (device, mut poller) =
+            Device::mock_medius_manual(mock.clone(), ClickTiming::Fixed(Duration::from_millis(5)))
+                .unwrap();
+        let events = device.events();
+        mock.detach(true);
+        poller.tick();
+        assert!(matches!(
+            events.recv_timeout(Duration::from_secs(2)),
+            Ok(Event::SessionReset)
+        ));
+        let mut state = device.medius().unwrap().query_catch().unwrap();
+        state.dropped += 5;
+        let _ = mock.clone().with_catch_state(state);
+        for _ in 0..4 {
+            poller.tick();
+        }
+        let mut dropped = None;
+        while let Ok(event) = events.recv_timeout(Duration::from_millis(500)) {
+            if let Event::Dropped { count, source } = event {
+                dropped = Some((count, source));
+                break;
+            }
+        }
+        assert_eq!(dropped, Some((5, DropSource::Device)));
+    }
+}
+
+#[test]
+fn a_restart_keeps_a_subscription_that_still_works() {
+    let mock = mouse(5, true);
+    let (backend, _snapshot, _poller, _signals) = backend(&mock);
+    let motion = crate::backend::InputKinds {
+        motion: true,
+        ..crate::backend::InputKinds::default()
+    };
+    backend.set_streams(motion).unwrap();
+    mock.clear_recorded();
+    // a stale restart, say after a new receiver already brought the kind back, mustn't swap a live one
+    backend
+        .restart_stream(crate::backend::InputKind::Motion)
+        .unwrap();
+    assert_eq!(catch_frames(&mock), 0);
+}
+
+#[test]
+fn one_kinds_overflow_only_reaches_the_receivers_of_that_kind() {
+    let mock = mouse(5, true);
+    let (device, _poller) = device(&mock);
+    let buttons = device.events_of(crate::event::EventKinds::BUTTONS);
+    let motion = device.events_of(crate::event::EventKinds::MOTION);
+    until(|| caught_classes(&mock).contains(&3));
+    {
+        // holding the motion slot makes its pump wait, so the crate's 256 event queue overflows
+        let _paused = device_backend(&device).unwrap().shared().slots[1]
+            .stream
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        for seq in 0..300u32 {
+            mock.push_motion((seq % 250) as u8, seq, 1, 0, 0, 0);
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    let mut motion_lost = false;
+    while let Ok(event) = motion.recv_timeout(Duration::from_millis(500)) {
+        if matches!(event, Event::Dropped { .. }) {
+            motion_lost = true;
+            break;
+        }
+    }
+    assert!(motion_lost);
+    while let Ok(event) = buttons.try_recv() {
+        assert!(!matches!(event, Event::Dropped { .. }), "{event:?}");
+    }
+}
+
+#[test]
+fn only_the_kind_that_didnt_fit_in_the_catch_table_is_rejected() {
+    let mock = mouse(5, true);
+    let (device, _poller) = device(&mock);
+    // the app leaves room for one more entry, buttons get it and motion doesn't
+    let filters = (0..31).map(|id| medius::CatchFilter::watch(Usage::new(Class::Button, id)));
+    let _app = device.medius().unwrap().input_events(filters).unwrap();
+    let events =
+        device.events_of(crate::event::EventKinds::BUTTONS | crate::event::EventKinds::MOTION);
+    let mut rejected = Vec::new();
+    while let Ok(event) = events.recv_timeout(Duration::from_millis(500)) {
+        if let Event::Rejected { action, .. } = event {
+            rejected.push(action);
+        }
+    }
+    assert_eq!(rejected, vec![Action::MotionEvents]);
 }

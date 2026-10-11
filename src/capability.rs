@@ -232,7 +232,7 @@ impl Capability {
 }
 
 /// what this box, on this firmware, with this mouse behind it, can do
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Capabilities {
     actions: HashMap<Action, Capability>,
     buttons: Vec<Button>,
@@ -349,6 +349,8 @@ impl fmt::Display for StableId {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Info {
+    /// the port the device was opened on, so you can show it or open the same box again with `Connect::port`
+    pub port: String,
     pub family: Family,
     pub model: Option<String>,
     pub firmware: Option<Firmware>,
@@ -358,6 +360,7 @@ pub struct Info {
 impl Info {
     pub(crate) fn new(family: Family) -> Self {
         Self {
+            port: String::new(),
             family,
             model: None,
             firmware: None,

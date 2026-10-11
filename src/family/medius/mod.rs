@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 use medius::{CatchFilter, ClockDomain, InputEvent, InputStream, Timeline};
 
 use crate::backend::{
-    Backend, Command, Input, InputKind, InputKinds, LockSlot, Sign, Sink, UNLOCKED, Usage,
-    WRITE_DEADLINE,
+    Backend, Command, Input, InputKind, InputKinds, LockSlot, Sign, Sink, StreamFailure, UNLOCKED,
+    Usage, WRITE_DEADLINE,
 };
 use crate::capability::{
     Action, Axis, Button, Capabilities, Capability, Family, Firmware, Info, Quirk, Snapshot,
@@ -19,10 +19,13 @@ use crate::capability::{
 use crate::error::{Error, Result};
 use crate::event::{BoxTime, Clock, DropSource};
 use crate::key::{Key, MediaKey};
+use crate::transport::os::Read;
 use crate::transport::probe::Probe;
 use crate::transport::{Candidate, Port, open_error};
 
 pub(crate) mod frame;
+#[cfg(feature = "mock")]
+pub(crate) mod mock;
 mod poller;
 
 pub(crate) use poller::Poller;
@@ -291,6 +294,8 @@ fn untimed(action: Action) -> Error {
 enum Job {
     Send(Command),
     Streams(InputKinds),
+    /// the crate ended one kind's subscription, so it gets a new one
+    Restart(InputKind),
     Release(Usage),
 }
 
@@ -311,7 +316,46 @@ impl Job {
 struct Order {
     job: Job,
     given_up: Arc<AtomicBool>,
-    done: Sender<Result<()>>,
+    done: Sender<Outcome>,
+}
+
+/// what a job did. only a stream job can have failed kinds, every other job fails as a whole
+type Outcome = std::result::Result<(), StreamFailure>;
+
+/// one subscription per kind, so switching one on or off never touches another kind's held state or its buffer
+const KINDS: [InputKind; 4] = [
+    InputKind::Buttons,
+    InputKind::Motion,
+    InputKind::Keys,
+    InputKind::Media,
+];
+
+fn wants(kinds: InputKinds, kind: InputKind) -> bool {
+    match kind {
+        InputKind::Buttons => kinds.buttons,
+        InputKind::Motion => kinds.motion,
+        InputKind::Keys => kinds.keys,
+        InputKind::Media => kinds.media,
+    }
+}
+
+fn filter(kind: InputKind) -> CatchFilter {
+    match kind {
+        InputKind::Buttons => CatchFilter::watch_class(medius::Class::Button),
+        InputKind::Motion => CatchFilter::watch_axes(),
+        InputKind::Keys => CatchFilter::watch_class(medius::Class::Key),
+        InputKind::Media => CatchFilter::watch_class(medius::Class::Media),
+    }
+}
+
+/// one kind's subscription and its pump's view of it
+#[derive(Default)]
+struct Slot {
+    /// the subscription and how many of its losses were already reported, they're always replaced together
+    stream: Mutex<Option<(InputStream, u64)>>,
+    /// set while the worker swaps the subscription. the pump grabs the stream lock again right after each wait
+    /// and std's mutex isn't fair, so without this the swap could starve past its deadline
+    swapping: AtomicBool,
 }
 
 /// everything the worker, the poller and the pump share
@@ -320,13 +364,8 @@ pub(crate) struct Shared {
     up: AtomicBool,
     stop: AtomicBool,
     sink: Sink,
-    /// the subscription and how many of its losses were already reported, they're always replaced together
-    stream: Mutex<Option<(InputStream, u64)>>,
-    /// the kinds the core asked for last, since one subscription carries all of them
-    wanted: Mutex<InputKinds>,
-    /// set while the worker swaps the subscription. the pump grabs the stream lock again right after each wait
-    /// and std's mutex isn't fair, so without this the swap could starve past its deadline
-    swapping: AtomicBool,
+    /// in the order of `KINDS`
+    slots: [Slot; 4],
     /// what the box can do right now. the worker checks it again, because a reconnect can change it after the
     /// core already said yes
     snapshot: RwLock<Snapshot>,
@@ -430,7 +469,8 @@ impl Shared {
             }
             Job::Send(Command::Release(_) | Command::KeyRelease(_) | Command::MediaRelease(_))
             | Job::Release(_)
-            | Job::Streams(_) => return Ok(()),
+            | Job::Streams(_)
+            | Job::Restart(_) => return Ok(()),
         };
         let snapshot = self.snapshot.read().unwrap_or_else(PoisonError::into_inner);
         let capabilities = &snapshot.capabilities;
@@ -447,10 +487,19 @@ impl Shared {
         }
     }
 
-    fn run(&self, job: &Job) -> Result<()> {
-        self.check(job)?;
+    fn run(&self, job: &Job) -> Outcome {
+        let kinds = match *job {
+            Job::Streams(kinds) => kinds,
+            Job::Restart(kind) => kind.kinds(),
+            _ => InputKinds::default(),
+        };
+        let whole = |error| StreamFailure {
+            failed: kinds,
+            error,
+        };
+        self.check(job).map_err(whole)?;
         let Some(device) = self.device() else {
-            return Err(Error::Disconnected);
+            return Err(whole(Error::Disconnected));
         };
         let sent = match *job {
             Job::Send(Command::Move(dx, dy)) => device.move_rel(dx, dy),
@@ -465,9 +514,9 @@ impl Shared {
             Job::Send(Command::Wheel(notches)) => device.wheel(notches),
             Job::Send(Command::Pan(notches)) => device.pan(notches),
             Job::Send(Command::DiscardPendingMoves) => device.discard_motion(),
-            Job::Send(Command::Click { .. }) => return Err(untimed(Action::Click)),
-            Job::Send(Command::KeyTap { .. }) => return Err(untimed(Action::KeyTap)),
-            Job::Send(Command::MediaTap { .. }) => return Err(untimed(Action::MediaTap)),
+            Job::Send(Command::Click { .. }) => return Err(whole(untimed(Action::Click))),
+            Job::Send(Command::KeyTap { .. }) => return Err(whole(untimed(Action::KeyTap))),
+            Job::Send(Command::MediaTap { .. }) => return Err(whole(untimed(Action::MediaTap))),
             Job::Send(Command::Lock { slot, keep }) => {
                 let both = medius::Direction::Both;
                 match slot {
@@ -483,60 +532,72 @@ impl Shared {
                     ),
                 }
             }
-            Job::Streams(kinds) => {
-                *lock(&self.wanted) = kinds;
-                self.swapping.store(true, Ordering::Release);
-                let mut stream = lock(&self.stream);
-                self.swapping.store(false, Ordering::Release);
-                // the old stream goes first, otherwise two subscriptions would double every event
-                *stream = None;
-                let mut filters = Vec::new();
-                if kinds.buttons {
-                    filters.push(CatchFilter::watch_class(medius::Class::Button));
-                }
-                if kinds.motion {
-                    filters.push(CatchFilter::watch_axes());
-                }
-                if kinds.keys {
-                    filters.push(CatchFilter::watch_class(medius::Class::Key));
-                }
-                if kinds.media {
-                    filters.push(CatchFilter::watch_class(medius::Class::Media));
-                }
-                if filters.is_empty() {
-                    return Ok(());
-                }
-                let subscribed = device.input_events(filters);
-                if let Err(medius::Error::CatchTableFull { .. }) = subscribed {
-                    // the app's own catch subscriptions through medius() can fill the table, so each receiver
-                    // hears that its kind was refused
-                    for (wanted, action) in [
-                        (kinds.buttons, Action::ButtonEvents),
-                        (kinds.motion, Action::MotionEvents),
-                        (kinds.keys, Action::KeyEvents),
-                        (kinds.media, Action::MediaEvents),
-                    ] {
-                        if wanted {
-                            self.sink.refused(action);
-                        }
-                    }
-                }
-                subscribed.map(|subscribed| {
-                    *stream = Some((subscribed, 0));
-                })
-            }
+            Job::Streams(kinds) => return self.switch(&device, kinds, false),
+            Job::Restart(kind) => return self.switch(&device, kind.kinds(), true),
         };
-        sent.map_err(|error| {
-            if matches!(
-                error,
-                medius::Error::Io(_) | medius::Error::BadProtoVer { .. }
-            ) {
-                self.go_down();
-                Error::Disconnected
-            } else {
-                Error::Io(std::io::Error::other(error))
+        sent.map_err(|error| whole(self.map_error(error)))
+    }
+
+    fn map_error(&self, error: medius::Error) -> Error {
+        if matches!(
+            error,
+            medius::Error::Io(_) | medius::Error::BadProtoVer { .. }
+        ) {
+            self.go_down();
+            Error::Disconnected
+        } else {
+            Error::Io(std::io::Error::other(error))
+        }
+    }
+
+    /// each kind on or off to match `kinds`, and a kind that's already right keeps its subscription. with `only`
+    /// the other kinds are left alone, for bringing back the one the crate ended (the pump already cleared its slot,
+    /// and a live one is kept so a new subscription never shows a held button again). one kind failing doesn't stop
+    /// the others
+    fn switch(&self, device: &medius::Device, kinds: InputKinds, only: bool) -> Outcome {
+        let mut failed = InputKinds::default();
+        let mut first = None;
+        for (index, kind) in KINDS.into_iter().enumerate() {
+            let slot = &self.slots[index];
+            let on = wants(kinds, kind);
+            if only && !on {
+                continue;
             }
-        })
+            // even a look at the slot goes through the flag, the pump holds the lock while it waits for events
+            slot.swapping.store(true, Ordering::Release);
+            let mut stream = lock(&slot.stream);
+            slot.swapping.store(false, Ordering::Release);
+            if on == stream.is_some() {
+                continue;
+            }
+            // the old one goes first, otherwise two subscriptions would double every event
+            *stream = None;
+            if !on {
+                continue;
+            }
+            match device.input_events([filter(kind)]) {
+                Ok(subscribed) => *stream = Some((subscribed, 0)),
+                Err(error) => {
+                    let one = kind.kinds();
+                    failed.buttons |= one.buttons;
+                    failed.motion |= one.motion;
+                    failed.keys |= one.keys;
+                    failed.media |= one.media;
+                    let error = self.map_error(error);
+                    if matches!(error, Error::Disconnected) {
+                        return Err(StreamFailure {
+                            failed: kinds,
+                            error,
+                        });
+                    }
+                    first.get_or_insert(error);
+                }
+            }
+        }
+        match first {
+            None => Ok(()),
+            Some(error) => Err(StreamFailure { failed, error }),
+        }
     }
 }
 
@@ -558,9 +619,7 @@ pub(crate) fn build(
         up: AtomicBool::new(true),
         stop: AtomicBool::new(false),
         sink,
-        stream: Mutex::new(None),
-        wanted: Mutex::new(InputKinds::default()),
-        swapping: AtomicBool::new(false),
+        slots: Default::default(),
         snapshot: RwLock::new(snapshot.clone()),
         threads: Mutex::new(Vec::new()),
         timeline: Mutex::new(Timeline::new()),
@@ -574,13 +633,16 @@ pub(crate) fn build(
             .name("anybox-medius-worker".into())
             .spawn(move || work(&shared, &inbox))?
     };
-    let pumper = {
-        let shared = shared.clone();
-        thread::Builder::new()
-            .name("anybox-medius-pump".into())
-            .spawn(move || pump(&shared))?
-    };
-    lock(&shared.threads).extend([worker, pumper]);
+    lock(&shared.threads).push(worker);
+    for index in 0..KINDS.len() {
+        let pumper = {
+            let shared = shared.clone();
+            thread::Builder::new()
+                .name("anybox-medius-pump".into())
+                .spawn(move || pump(&shared, index))?
+        };
+        lock(&shared.threads).push(pumper);
+    }
     let poller = Poller::new(shared.clone(), baseline, clone);
     Ok((
         MediusBackend {
@@ -603,25 +665,28 @@ fn work(shared: &Shared, inbox: &Receiver<Order>) {
     }
 }
 
-fn pump(shared: &Shared) {
+fn pump(shared: &Shared, index: usize) {
+    let slot = &shared.slots[index];
     while !shared.stop.load(Ordering::Acquire) {
-        if shared.swapping.load(Ordering::Acquire) {
+        if slot.swapping.load(Ordering::Acquire) {
             thread::sleep(Duration::from_millis(1));
             continue;
         }
-        let mut stream = lock(&shared.stream);
+        let mut stream = lock(&slot.stream);
         let Some((current, reported)) = stream.as_mut() else {
             drop(stream);
             thread::sleep(PUMP_SLICE);
             continue;
         };
         let event = current.recv_timeout(PUMP_SLICE);
+        // before the timeline, which smooths the box clock and isn't when anybox got the event
+        let received = Read::now();
         // a crate reconnect keeps the subscriptions, only the crate's reset() or factory_reset() through medius()
         // ends them
         if event.is_none() && !current.is_connected() {
             *stream = None;
             drop(stream);
-            shared.sink.stream_lost(InputKind::Buttons);
+            shared.sink.stream_lost(KINDS[index]);
             continue;
         }
         let lost = current.dropped();
@@ -629,15 +694,15 @@ fn pump(shared: &Shared) {
         *reported = lost;
         drop(stream);
         if newly_lost > 0 {
-            shared.dropped(newly_lost, DropSource::Host);
+            shared.sink.lost(newly_lost, KINDS[index]);
         }
         if let Some(event) = event {
-            deliver(shared, &event);
+            deliver(shared, &event, received);
         }
     }
 }
 
-fn deliver(shared: &Shared, event: &InputEvent) {
+fn deliver(shared: &Shared, event: &InputEvent, received: Read) {
     let input = match event.input {
         medius::Input::Press(usage) | medius::Input::Release(usage)
             if usage.class == medius::Class::Button =>
@@ -682,7 +747,7 @@ fn deliver(shared: &Shared, event: &InputEvent) {
         ClockDomain::HostChip => Clock::MediusHostChip,
         ClockDomain::DeviceChip => Clock::MediusDeviceChip,
     };
-    let arrived = lock(&shared.timeline).observe(event).host;
+    let arrived = lock(&shared.timeline).observe_at(event, received.at).host;
     shared.sink.input(
         input,
         arrived,
@@ -690,6 +755,7 @@ fn deliver(shared: &Shared, event: &InputEvent) {
             micros: event.ts_us,
             clock,
         }),
+        Some(received),
     );
 }
 
@@ -712,8 +778,21 @@ impl MediusBackend {
     }
 
     fn order(&self, job: Job) -> Result<()> {
+        self.order_streams(job).map_err(|failure| failure.error)
+    }
+
+    fn order_streams(&self, job: Job) -> Outcome {
+        let kinds = match job {
+            Job::Streams(kinds) => kinds,
+            Job::Restart(kind) => kind.kinds(),
+            _ => InputKinds::default(),
+        };
+        let gone = || StreamFailure {
+            failed: kinds,
+            error: Error::Disconnected,
+        };
         if !self.shared.is_up() && !job.is_release() {
-            return Err(Error::Disconnected);
+            return Err(gone());
         }
         let (done, answer) = mpsc::channel();
         let given_up = Arc::new(AtomicBool::new(false));
@@ -724,7 +803,7 @@ impl MediusBackend {
         };
         match lock(&self.orders).as_ref() {
             Some(orders) if orders.send(order).is_ok() => {}
-            _ => return Err(Error::Disconnected),
+            _ => return Err(gone()),
         }
         match answer.recv_timeout(WRITE_DEADLINE) {
             Ok(result) => result,
@@ -733,7 +812,7 @@ impl MediusBackend {
                 // still stuck after the deadline means the crate is reconnecting, so we go down and the poller
                 // brings it back
                 self.shared.go_down();
-                Err(Error::Disconnected)
+                Err(gone())
             }
         }
     }
@@ -749,14 +828,12 @@ impl Backend for MediusBackend {
         self.order(Job::Send(command))
     }
 
-    fn set_streams(&self, kinds: InputKinds) -> Result<()> {
-        self.order(Job::Streams(kinds))
+    fn set_streams(&self, kinds: InputKinds) -> Outcome {
+        self.order_streams(Job::Streams(kinds))
     }
 
-    /// one subscription carries every kind, so losing any of them restarts all of them
-    fn restart_stream(&self, _kind: InputKind) -> Result<()> {
-        let kinds = *lock(&self.shared.wanted);
-        self.order(Job::Streams(kinds))
+    fn restart_stream(&self, kind: InputKind) -> Result<()> {
+        self.order(Job::Restart(kind))
     }
 
     /// a soft release for each one and never the crate's reset, because that would clear the locks and transforms
@@ -810,7 +887,9 @@ impl Backend for MediusBackend {
                 for handle in threads {
                     let _ = handle.join();
                 }
-                lock(&shared.stream).take();
+                for slot in &shared.slots {
+                    lock(&slot.stream).take();
+                }
                 shared
                     .device
                     .write()

@@ -4,7 +4,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Duration;
 
 use crate::backend::{Backend, Signal, Sink};
-use crate::capability::{Family, Info, Snapshot, StableId};
+use crate::capability::{Action, Capabilities, Family, Info, Snapshot, StableId};
 use crate::click::{ClickTiming, Holds};
 use crate::device::{Device, Start};
 use crate::error::{Error, Result};
@@ -31,6 +31,8 @@ pub fn find() -> Result<Vec<Found>> {
 pub struct Found {
     pub port: String,
     pub info: Info,
+    /// what it can do, the same as `device.snapshot().capabilities` would say right after opening it
+    pub capabilities: Capabilities,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -39,6 +41,7 @@ pub struct Connect {
     family: Option<Family>,
     id: Option<StableId>,
     click_timing: ClickTiming,
+    can: Vec<Action>,
 }
 
 impl Connect {
@@ -52,6 +55,14 @@ impl Connect {
             port: Some(path.into()),
             ..Self::default()
         }
+    }
+
+    /// skips a box that can't do this, checked once when it opens, so with a keyboard box and a mouse box
+    /// plugged in `.can(Action::Move)` opens the mouse one. call it again for each thing it has to do.
+    /// `Action::Connect` matches no box
+    pub fn can(mut self, action: Action) -> Self {
+        self.can.push(action);
+        self
     }
 
     /// only tries this family, so the port never gets anything meant for another box
@@ -97,6 +108,7 @@ impl Connect {
                 incoming: found.incoming,
                 click_timing: self.click_timing,
                 holds: Holds::from_clock(),
+                port: found.port,
             }),
             None => Err(search.error()),
         }
@@ -158,13 +170,24 @@ impl Connect {
                 // close it before asking the next port, so a box we already saw isn't kept busy while the rest
                 // get asked
                 opened.backend.shutdown(CLOSE_DEADLINE);
+                let capabilities = self.capabilities(&opened.snapshot);
                 search.seen.push(Found {
                     port: opened.port,
                     info: opened.snapshot.info,
+                    capabilities,
                 });
             }
         }
         search
+    }
+
+    /// what the device will say it can do, with the clicks and taps the core builds on the PC where the box has
+    /// none, so a check here agrees with `device.snapshot()`
+    fn capabilities(&self, snapshot: &Snapshot) -> Capabilities {
+        snapshot
+            .capabilities
+            .clone()
+            .with_host_taps(self.click_timing)
     }
 
     /// rules out what the port listing alone already can, so a box nobody asked for doesn't get opened
@@ -203,7 +226,8 @@ impl Connect {
             }
             let (signals, incoming) = mpsc::channel();
             match open(candidate, Sink(signals.clone())) {
-                Ok((backend, snapshot)) => {
+                Ok((backend, mut snapshot)) => {
+                    snapshot.info.port.clone_from(&port);
                     if let Some(expected) = &self.id
                         && snapshot.info.id.as_ref() != Some(expected)
                     {
@@ -215,6 +239,25 @@ impl Connect {
                                 found: snapshot.info.id,
                             });
                         }
+                        return None;
+                    }
+                    let capabilities = self.capabilities(&snapshot);
+                    let missing: Vec<Action> = self
+                        .can
+                        .iter()
+                        .copied()
+                        .filter(|action| !capabilities.get(*action).is_supported())
+                        .collect();
+                    if !missing.is_empty() {
+                        backend.shutdown(CLOSE_DEADLINE);
+                        search.incapable.push((
+                            Found {
+                                port,
+                                info: snapshot.info,
+                                capabilities,
+                            },
+                            missing,
+                        ));
                         return None;
                     }
                     return Some(Opened {
@@ -262,6 +305,8 @@ pub(crate) struct Search {
     opened: Option<Opened>,
     seen: Vec<Found>,
     skipped: Vec<Error>,
+    /// boxes that opened but can't do what `can` asked
+    incapable: Vec<(Found, Vec<Action>)>,
     tried: Vec<String>,
 }
 
@@ -275,10 +320,16 @@ impl Search {
             Error::PermissionDenied { .. } => 2,
             _ => 3,
         };
-        self.skipped
-            .into_iter()
-            .min_by_key(rank)
-            .unwrap_or(Error::NotFound { tried: self.tried })
+        let best = self.skipped.into_iter().min_by_key(rank);
+        match best {
+            Some(error) if rank(&error) < 3 => error,
+            // boxes answered and only fell short of `can`, which says more than the other misses
+            _ if !self.incapable.is_empty() => Error::NoBoxCan {
+                boxes: self.incapable,
+            },
+            Some(error) => error,
+            None => Error::NotFound { tried: self.tried },
+        }
     }
 }
 

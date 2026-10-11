@@ -37,3 +37,23 @@ impl System for OsSystem {
         port.map_err(|error| open_error(path, error))
     }
 }
+
+/// when anybox read some bytes off a port, taken right after the read returns
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Read {
+    pub(crate) at: std::time::Instant,
+    pub(crate) qpc: Option<i64>,
+}
+
+impl Read {
+    pub(crate) fn now() -> Self {
+        #[cfg(windows)]
+        let qpc = super::windows::qpc();
+        #[cfg(not(windows))]
+        let qpc = None;
+        Self {
+            at: std::time::Instant::now(),
+            qpc,
+        }
+    }
+}

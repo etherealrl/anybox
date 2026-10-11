@@ -13,11 +13,7 @@ fn motion() -> Event {
         dy: 0,
         wheel: 0,
         pan: 0,
-        at: super::Stamp {
-            arrived: std::time::Instant::now(),
-            since_open: Duration::ZERO,
-            box_time: None,
-        },
+        at: super::Stamp::new(std::time::Instant::now(), Duration::ZERO),
     }
 }
 
@@ -62,7 +58,7 @@ fn a_closed_queue_ends_after_what_was_queued() {
     let queue = Arc::new(Queue::new(8));
     queue.push(reset());
     queue.close();
-    let events = super::Events::new(queue, std::sync::Weak::<NoListeners>::new());
+    let events = super::Events::new(queue, std::sync::Weak::<NoListeners>::new(), 0);
     assert_eq!(events.recv(), Ok(reset()));
     assert_eq!(events.recv(), Err(super::Closed));
     assert_eq!(
@@ -74,7 +70,7 @@ fn a_closed_queue_ends_after_what_was_queued() {
 #[test]
 fn recv_timeout_tells_a_timeout_from_a_closed_stream() {
     let queue = Arc::new(Queue::new(8));
-    let events = super::Events::new(queue, std::sync::Weak::<NoListeners>::new());
+    let events = super::Events::new(queue, std::sync::Weak::<NoListeners>::new(), 0);
     assert_eq!(
         events.recv_timeout(Duration::from_millis(5)),
         Err(super::RecvTimeoutError::Timeout)
@@ -84,7 +80,7 @@ fn recv_timeout_tells_a_timeout_from_a_closed_stream() {
 struct NoListeners;
 
 impl super::Listeners for NoListeners {
-    fn receiver_dropped(&self) {}
+    fn receiver_dropped(&self, _: u64) {}
 }
 
 #[test]
@@ -151,11 +147,7 @@ fn key(pressed: bool) -> Event {
     Event::Key {
         key: crate::key::Key::A,
         pressed,
-        at: super::Stamp {
-            arrived: std::time::Instant::now(),
-            since_open: Duration::ZERO,
-            box_time: None,
-        },
+        at: super::Stamp::new(std::time::Instant::now(), Duration::ZERO),
     }
 }
 

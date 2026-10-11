@@ -50,8 +50,11 @@ pub use connect::{Connect, Found, connect, find};
 pub use device::Device;
 pub use error::{Error, Result};
 pub use event::{
-    BoxTime, Clock, Closed, DropSource, Event, Events, RecvTimeoutError, Stamp, TryRecvError,
+    BoxTime, Clock, Closed, DropSource, Event, EventKinds, Events, RecvTimeoutError, Stamp,
+    TryRecvError,
 };
+#[cfg(feature = "mock")]
+pub use family::medius::mock::MockPoller;
 pub use key::{Key, MediaKey};
 #[cfg(feature = "medius")]
 pub use medius;

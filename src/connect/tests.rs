@@ -5,7 +5,9 @@ use std::time::Duration;
 
 use super::{Connect, Search, port_order};
 use crate::backend::{Backend, Command, InputKind, InputKinds, LockSlot, Sink, Usage};
-use crate::capability::{Capabilities, Family, Firmware, Info, Snapshot, StableId};
+use crate::capability::{
+    Action, Button, Capabilities, Capability, Family, Firmware, Info, Snapshot, StableId,
+};
 use crate::error::{Error, Result};
 use crate::family::Open;
 use crate::transport::{Candidate, UsbId};
@@ -16,6 +18,8 @@ const B: StableId = StableId::Mac([6, 5, 4, 3, 2, 1]);
 #[derive(Clone)]
 enum Reply {
     Box(Option<StableId>),
+    /// a box whose mouse moves and clicks only through a press and a release, like a Medius
+    Mouse,
     Busy,
     TooOld,
 }
@@ -48,7 +52,7 @@ impl Backend for Quiet {
         Ok(())
     }
 
-    fn set_streams(&self, _: InputKinds) -> Result<()> {
+    fn set_streams(&self, _: InputKinds) -> std::result::Result<(), crate::backend::StreamFailure> {
         Ok(())
     }
 
@@ -91,6 +95,16 @@ fn answer(family: Family, candidate: &Candidate) -> Result<(Box<dyn Backend>, Sn
                 Snapshot::new(info, Capabilities::new(Vec::new())),
             ))
         }
+        Some(Reply::Mouse) => Ok((
+            Box::new(Quiet(port)),
+            Snapshot::new(
+                Info::new(family),
+                Capabilities::new(vec![Button::Left])
+                    .set(Action::Move, Capability::native())
+                    .set(Action::Press, Capability::native())
+                    .set(Action::Release, Capability::native()),
+            ),
+        )),
         Some(Reply::Busy) => Err(Error::PortBusy { port }),
         Some(Reply::TooOld) => Err(Error::FirmwareTooOld {
             family,
@@ -1083,4 +1097,85 @@ mod hardware {
         eprintln!("DONE, STOP");
         done();
     }
+}
+
+#[test]
+fn can_skips_a_box_that_cant_and_opens_the_next() {
+    script(&[
+        ("COM3", Family::Medius, Reply::Box(Some(A))),
+        ("COM4", Family::Medius, Reply::Mouse),
+    ]);
+    let listed = vec![ch343("COM3"), ch343("COM4")];
+    let connect = Connect::auto().can(Action::Move);
+    assert_eq!(first(&connect, listed.clone()).unwrap(), "COM4");
+    assert_eq!(log(), ["Medius COM3", "shut COM3", "Medius COM4"]);
+    let device = connect.open_in(&|| listed.clone(), PROBES).unwrap();
+    assert_eq!(device.snapshot().info.port, "COM4");
+}
+
+#[test]
+fn can_counts_a_click_the_pc_builds() {
+    script(&[("COM3", Family::Medius, Reply::Mouse)]);
+    let connect = Connect::auto().can(Action::Click);
+    assert_eq!(first(&connect, vec![ch343("COM3")]).unwrap(), "COM3");
+}
+
+#[test]
+fn find_with_can_lists_only_the_boxes_that_can_and_says_what_they_can() {
+    script(&[
+        ("COM3", Family::Medius, Reply::Box(Some(A))),
+        ("COM4", Family::Medius, Reply::Mouse),
+    ]);
+    let listed = vec![ch343("COM3"), ch343("COM4")];
+    let boxes = Connect::auto()
+        .can(Action::Move)
+        .find_in(&|| listed.clone(), PROBES)
+        .unwrap();
+    assert_eq!(boxes.len(), 1);
+    assert_eq!(boxes[0].port, "COM4");
+    assert_eq!(boxes[0].info.port, "COM4");
+    assert!(boxes[0].capabilities.get(Action::Move).is_supported());
+    assert!(boxes[0].capabilities.get(Action::Click).is_supported());
+    script(&[("COM3", Family::Medius, Reply::Box(Some(A)))]);
+    let none = Connect::auto()
+        .can(Action::Move)
+        .find_in(&|| vec![ch343("COM3")], PROBES)
+        .unwrap();
+    assert!(none.is_empty());
+}
+
+#[test]
+fn when_no_box_can_the_error_names_each_one_and_what_it_couldnt_do() {
+    script(&[
+        ("COM3", Family::Medius, Reply::Box(Some(A))),
+        ("COM4", Family::Medius, Reply::Mouse),
+    ]);
+    let error = first(
+        &Connect::auto().can(Action::Move).can(Action::KeyPress),
+        vec![ch343("COM3"), ch343("COM4")],
+    )
+    .unwrap_err();
+    match &error {
+        Error::NoBoxCan { boxes } => {
+            assert_eq!(boxes.len(), 2);
+            assert_eq!(boxes[0].1, vec![Action::Move, Action::KeyPress]);
+            assert_eq!(boxes[1].1, vec![Action::KeyPress]);
+        }
+        other => panic!("{other}"),
+    }
+    assert!(error.to_string().contains("COM4"), "{error}");
+}
+
+#[test]
+fn a_busy_port_still_wins_over_boxes_that_cant() {
+    script(&[
+        ("COM3", Family::Medius, Reply::Busy),
+        ("COM4", Family::Medius, Reply::Box(Some(A))),
+    ]);
+    let error = first(
+        &Connect::auto().can(Action::Move),
+        vec![ch343("COM3"), ch343("COM4")],
+    )
+    .unwrap_err();
+    assert!(matches!(error, Error::PortBusy { .. }), "{error}");
 }

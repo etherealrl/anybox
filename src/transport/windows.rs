@@ -274,3 +274,13 @@ impl Drop for Sleeper {
         }
     }
 }
+
+/// the raw QueryPerformanceCounter value, because an `Instant` can't be turned back into one and a USB capture
+/// stamps its packets in QPC
+pub(crate) fn qpc() -> Option<i64> {
+    let mut count = 0i64;
+    // SAFETY: QueryPerformanceCounter writes one i64 and can't fail on Windows XP or later
+    let ok =
+        unsafe { windows_sys::Win32::System::Performance::QueryPerformanceCounter(&mut count) };
+    (ok != 0).then_some(count)
+}

@@ -41,7 +41,10 @@ pub enum Event {
         at: Stamp,
     },
     /// how many events never reached you since the last `Dropped` from the same source. one from the box can mean
-    /// it restarted a stream, so what you knew about which physical buttons and keys were held may be out of date
+    /// it restarted a stream, so what you knew about which physical buttons and keys were held may be out of date.
+    /// the one for your own queue (`DropSource::Host`) sits at the front of the queue, not where the loss happened,
+    /// and on Medius the one from the box comes from a box wide counter read about once a second, so it can also
+    /// count what your own subscriptions through `medius()` lost
     #[non_exhaustive]
     Dropped {
         count: u64,
@@ -67,6 +70,173 @@ pub enum Event {
     Reconnected,
 }
 
+/// for tests and for code that builds events itself. the variants stay `#[non_exhaustive]` so a field added
+/// later doesn't break anyone, and these are how you make them from outside
+impl Event {
+    pub fn button(button: Button, pressed: bool, at: Stamp) -> Self {
+        Self::Button {
+            button,
+            pressed,
+            at,
+        }
+    }
+
+    pub fn key(key: Key, pressed: bool, at: Stamp) -> Self {
+        Self::Key { key, pressed, at }
+    }
+
+    pub fn media(key: MediaKey, pressed: bool, at: Stamp) -> Self {
+        Self::Media { key, pressed, at }
+    }
+
+    pub fn motion(dx: i32, dy: i32, wheel: i32, pan: i32, at: Stamp) -> Self {
+        Self::Motion {
+            dx,
+            dy,
+            wheel,
+            pan,
+            at,
+        }
+    }
+
+    pub fn dropped(count: u64, source: DropSource) -> Self {
+        Self::Dropped { count, source }
+    }
+
+    pub fn rejected(action: Action, count: u64) -> Self {
+        Self::Rejected { action, count }
+    }
+}
+
+/// which input a receiver wants, combined with `|`. a receiver only gets what it asked for, the box streams what
+/// any receiver wants, and connection events and drops reach every receiver
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct EventKinds {
+    buttons: bool,
+    motion: bool,
+    keys: bool,
+    media: bool,
+}
+
+impl EventKinds {
+    pub const NONE: Self = Self {
+        buttons: false,
+        motion: false,
+        keys: false,
+        media: false,
+    };
+    pub const BUTTONS: Self = Self {
+        buttons: true,
+        ..Self::NONE
+    };
+    pub const MOTION: Self = Self {
+        motion: true,
+        ..Self::NONE
+    };
+    pub const KEYS: Self = Self {
+        keys: true,
+        ..Self::NONE
+    };
+    pub const MEDIA: Self = Self {
+        media: true,
+        ..Self::NONE
+    };
+    /// everything the box can stream, what `events()` gives you
+    pub const ALL: Self = Self {
+        buttons: true,
+        motion: true,
+        keys: true,
+        media: true,
+    };
+
+    pub fn contains(self, other: Self) -> bool {
+        self & other == other
+    }
+
+    pub fn is_empty(self) -> bool {
+        self == Self::NONE
+    }
+
+    /// the kind an event belongs to, none for the ones every receiver gets
+    pub(crate) fn of(event: &Event) -> Option<Self> {
+        match event {
+            Event::Button { .. } => Some(Self::BUTTONS),
+            Event::Motion { .. } => Some(Self::MOTION),
+            Event::Key { .. } => Some(Self::KEYS),
+            Event::Media { .. } => Some(Self::MEDIA),
+            Event::Rejected { action, .. } => Self::of_action(*action),
+            _ => None,
+        }
+    }
+
+    /// the kind a stream's action is about, so its refusal only goes to the receivers that wanted it
+    pub(crate) fn of_action(action: Action) -> Option<Self> {
+        match action {
+            Action::ButtonEvents => Some(Self::BUTTONS),
+            Action::MotionEvents => Some(Self::MOTION),
+            Action::KeyEvents => Some(Self::KEYS),
+            Action::MediaEvents => Some(Self::MEDIA),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn to_input(self) -> crate::backend::InputKinds {
+        crate::backend::InputKinds {
+            buttons: self.buttons,
+            motion: self.motion,
+            keys: self.keys,
+            media: self.media,
+        }
+    }
+
+    pub(crate) fn from_input(kinds: crate::backend::InputKinds) -> Self {
+        Self {
+            buttons: kinds.buttons,
+            motion: kinds.motion,
+            keys: kinds.keys,
+            media: kinds.media,
+        }
+    }
+
+    /// each single kind in this set with the action that streams it
+    pub(crate) fn each(self) -> impl Iterator<Item = (Self, Action)> {
+        [
+            (Self::BUTTONS, Action::ButtonEvents),
+            (Self::MOTION, Action::MotionEvents),
+            (Self::KEYS, Action::KeyEvents),
+            (Self::MEDIA, Action::MediaEvents),
+        ]
+        .into_iter()
+        .filter(move |(kind, _)| self.contains(*kind))
+    }
+}
+
+impl std::ops::BitOr for EventKinds {
+    type Output = Self;
+
+    fn bitor(self, other: Self) -> Self {
+        Self {
+            buttons: self.buttons || other.buttons,
+            motion: self.motion || other.motion,
+            keys: self.keys || other.keys,
+            media: self.media || other.media,
+        }
+    }
+}
+
+impl std::ops::BitAnd for EventKinds {
+    type Output = Self;
+
+    fn bitand(self, other: Self) -> Self {
+        Self {
+            buttons: self.buttons && other.buttons,
+            motion: self.motion && other.motion,
+            keys: self.keys && other.keys,
+            media: self.media && other.media,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum DropSource {
@@ -79,12 +249,56 @@ pub enum DropSource {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Stamp {
-    /// when the event reached the PC. on Medius it's the box clock mapped onto the PC's, so it's only an estimate
-    /// there
+    /// the best guess at when the event happened, on the PC's clock. on Medius it's the box clock mapped onto the
+    /// PC's through the medius crate, which keeps it from ever going backwards and smooths it after bursts, so it's
+    /// an estimate there and NOT when the PC got the event, use `received` for that
     pub arrived: Instant,
     /// the same moment as the time since the device was opened, for code that can't use `Instant`
     pub since_open: Duration,
     pub box_time: Option<BoxTime>,
+    /// when anybox got the event. on MAKCU that's right after the port read returned with the report's last byte,
+    /// on Medius it's when anybox took it from the medius crate, which reads the port on its own thread, so it's a
+    /// bit after the read there. either way it's the read and not the USB arrival, driver buffering and a backlog
+    /// make it late, and reports that came in one read share it
+    pub received: Instant,
+    /// the same moment as `received`, as the time since the device was opened
+    pub received_since_open: Duration,
+    /// the raw QueryPerformanceCounter value at `received`, on Windows only, since an `Instant` can't be turned
+    /// back into one and a USB capture stamps its packets in QPC
+    pub received_qpc: Option<i64>,
+}
+
+impl Stamp {
+    /// for tests and for code that builds events itself. `received` starts out as `arrived`, and `since_open`
+    /// isn't checked against `arrived`
+    pub fn new(arrived: Instant, since_open: Duration) -> Self {
+        Self {
+            arrived,
+            since_open,
+            box_time: None,
+            received: arrived,
+            received_since_open: since_open,
+            received_qpc: None,
+        }
+    }
+
+    pub fn with_box_time(mut self, box_time: BoxTime) -> Self {
+        self.box_time = Some(box_time);
+        self
+    }
+
+    /// `received_since_open` comes out of `received` and `since_open`, so set those right first
+    pub fn with_received(mut self, received: Instant, qpc: Option<i64>) -> Self {
+        self.received = received;
+        self.received_since_open = if received >= self.arrived {
+            self.since_open + received.duration_since(self.arrived)
+        } else {
+            self.since_open
+                .saturating_sub(self.arrived.duration_since(received))
+        };
+        self.received_qpc = qpc;
+        self
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,6 +306,12 @@ pub struct Stamp {
 pub struct BoxTime {
     pub micros: u32,
     pub clock: Clock,
+}
+
+impl BoxTime {
+    pub fn new(micros: u32, clock: Clock) -> Self {
+        Self { micros, clock }
+    }
 }
 
 /// each box clock is its own counter, so only compare stamps that come from the same one
@@ -291,18 +511,23 @@ impl Queue {
 
 /// lets a receiver tell the device when it's dropped, so the box only streams input while someone listens
 pub(crate) trait Listeners: Send + Sync {
-    fn receiver_dropped(&self);
+    fn receiver_dropped(&self, id: u64);
 }
 
 /// a receiver of events from one device. it ends once the device is gone and you've read everything queued
 pub struct Events {
     queue: Arc<Queue>,
     listeners: Weak<dyn Listeners>,
+    id: u64,
 }
 
 impl Events {
-    pub(crate) fn new(queue: Arc<Queue>, listeners: Weak<dyn Listeners>) -> Self {
-        Self { queue, listeners }
+    pub(crate) fn new(queue: Arc<Queue>, listeners: Weak<dyn Listeners>, id: u64) -> Self {
+        Self {
+            queue,
+            listeners,
+            id,
+        }
     }
 
     pub fn recv(&self) -> Result<Event, Closed> {
@@ -361,7 +586,7 @@ impl Iterator for Events {
 impl Drop for Events {
     fn drop(&mut self) {
         if let Some(listeners) = self.listeners.upgrade() {
-            listeners.receiver_dropped();
+            listeners.receiver_dropped(self.id);
         }
     }
 }
@@ -369,6 +594,19 @@ impl Drop for Events {
 impl fmt::Debug for Events {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Events").finish_non_exhaustive()
+    }
+}
+
+impl std::ops::Not for EventKinds {
+    type Output = Self;
+
+    fn not(self) -> Self {
+        Self {
+            buttons: !self.buttons,
+            motion: !self.motion,
+            keys: !self.keys,
+            media: !self.media,
+        }
     }
 }
 

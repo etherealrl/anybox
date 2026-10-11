@@ -17,10 +17,17 @@ use crate::key::{Key, MediaKey};
 struct State {
     log: Vec<(Instant, Command)>,
     streams: Vec<InputKinds>,
+    /// what the fake streams now, so like the real backends it only records a change, and a reconnect forgets it
+    streaming: Option<InputKinds>,
     restarted: Vec<InputKind>,
     released_all: Vec<Vec<Usage>>,
     unlocked_all: Vec<Vec<LockSlot>>,
     fail_next: Option<Error>,
+    /// the next stream switch fails for these kinds with this error
+    fail_streams: Option<(InputKinds, Error)>,
+    /// the next restart of a stream fails with this error
+    fail_restart: Option<Error>,
+    shutdowns: usize,
     fail_releases: bool,
     pause_release: Option<Arc<Barrier>>,
     snapshot: Option<Snapshot>,
@@ -68,6 +75,7 @@ pub(crate) fn open(capabilities: Capabilities, click_timing: ClickTiming) -> (De
         incoming,
         click_timing,
         holds: Holds::seeded(42),
+        port: "fake".into(),
     })
     .unwrap();
     (device, handle)
@@ -117,6 +125,31 @@ impl Handle {
         self.state.lock().unwrap().fail_next = Some(error);
     }
 
+    pub(crate) fn fail_restart(&self, error: Error) {
+        self.state.lock().unwrap().fail_restart = Some(error);
+    }
+
+    pub(crate) fn shutdowns(&self) -> usize {
+        self.state.lock().unwrap().shutdowns
+    }
+
+    /// a button whose bytes were read at `read`, which a real link takes before anything else
+    pub(crate) fn button_read(&self, button: Button, read: crate::transport::os::Read) {
+        self.sink.input(
+            Input::Button {
+                button,
+                pressed: true,
+            },
+            Instant::now(),
+            None,
+            Some(read),
+        );
+    }
+
+    pub(crate) fn fail_streams(&self, kinds: InputKinds, error: Error) {
+        self.state.lock().unwrap().fail_streams = Some((kinds, error));
+    }
+
     pub(crate) fn fail_releases(&self, fail: bool) {
         self.state.lock().unwrap().fail_releases = fail;
     }
@@ -143,17 +176,18 @@ impl Handle {
                 micros: 1000,
                 clock: Clock::MediusHostChip,
             }),
+            None,
         );
     }
 
     pub(crate) fn key(&self, key: Key, pressed: bool) {
         self.sink
-            .input(Input::Key { key, pressed }, Instant::now(), None);
+            .input(Input::Key { key, pressed }, Instant::now(), None, None);
     }
 
     pub(crate) fn media(&self, key: MediaKey, pressed: bool) {
         self.sink
-            .input(Input::Media { key, pressed }, Instant::now(), None);
+            .input(Input::Media { key, pressed }, Instant::now(), None, None);
     }
 
     pub(crate) fn motion(&self, dx: i32) {
@@ -165,6 +199,7 @@ impl Handle {
                 pan: 0,
             },
             Instant::now(),
+            None,
             None,
         );
     }
@@ -188,6 +223,7 @@ impl Handle {
     pub(crate) fn reconnect(&self, capabilities: Capabilities) {
         let snapshot = Snapshot::new(Info::new(Family::Medius), capabilities);
         self.state.lock().unwrap().snapshot = Some(snapshot.clone());
+        self.state.lock().unwrap().streaming = None;
         self.sink.reconnected(snapshot);
     }
 
@@ -200,6 +236,7 @@ impl Handle {
     }
 
     pub(crate) fn session_reset(&self) {
+        self.state.lock().unwrap().streaming = None;
         self.sink.session_reset();
     }
 }
@@ -235,14 +272,25 @@ impl Backend for Fake {
         Ok(())
     }
 
-    fn set_streams(&self, kinds: InputKinds) -> Result<()> {
-        self.0.lock().unwrap().streams.push(kinds);
+    fn set_streams(
+        &self,
+        kinds: InputKinds,
+    ) -> std::result::Result<(), crate::backend::StreamFailure> {
+        let mut state = self.0.lock().unwrap();
+        if let Some((failed, error)) = state.fail_streams.take() {
+            return Err(crate::backend::StreamFailure { failed, error });
+        }
+        if state.streaming != Some(kinds) {
+            state.streaming = Some(kinds);
+            state.streams.push(kinds);
+        }
         Ok(())
     }
 
     fn restart_stream(&self, kind: InputKind) -> Result<()> {
-        self.0.lock().unwrap().restarted.push(kind);
-        Ok(())
+        let mut state = self.0.lock().unwrap();
+        state.restarted.push(kind);
+        state.fail_restart.take().map_or(Ok(()), Err)
     }
 
     fn unlock_all(&self, slots: &[LockSlot]) -> Result<()> {
@@ -259,7 +307,9 @@ impl Backend for Fake {
         Ok(())
     }
 
-    fn shutdown(&self, _deadline: Duration) {}
+    fn shutdown(&self, _deadline: Duration) {
+        self.0.lock().unwrap().shutdowns += 1;
+    }
 
     fn as_any(&self) -> &dyn Any {
         self

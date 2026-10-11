@@ -46,3 +46,7 @@ a Medius holds as many keys at once as the keyboard behind it can report, six on
 | media keys            | ✓             | ✗                |
 
 on the Medius every event also comes with the box's own timestamp, the MAKCU doesn't send one
+
+`received` is on every event from both boxes. on MAKCU it's the moment the port read returned, on Medius it's when anybox took the event from the medius crate, which reads the port on its own thread, so a bit later than the read
+
+on Medius each kind of event is its own subscription, so asking for buttons only never makes the box stream motion, and the order between two kinds is only as good as their box time

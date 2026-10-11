@@ -161,7 +161,29 @@ pub(crate) struct InputKinds {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum InputKind {
     Buttons,
+    Motion,
     Keys,
+    Media,
+}
+
+impl InputKind {
+    pub(crate) fn kinds(self) -> InputKinds {
+        let mut kinds = InputKinds::default();
+        match self {
+            Self::Buttons => kinds.buttons = true,
+            Self::Motion => kinds.motion = true,
+            Self::Keys => kinds.keys = true,
+            Self::Media => kinds.media = true,
+        }
+        kinds
+    }
+}
+
+/// the kinds that didn't switch the way they were asked to, and why. `Disconnected` means the reconnect asks again
+#[derive(Debug)]
+pub(crate) struct StreamFailure {
+    pub(crate) failed: InputKinds,
+    pub(crate) error: crate::error::Error,
 }
 
 /// one family's connection to one box. every method gives up and returns `Disconnected` after `WRITE_DEADLINE`
@@ -171,7 +193,8 @@ pub(crate) trait Backend: Send + Sync + 'static {
     /// has to check the command against what the box can do right now, because a reconnect can change that after the
     /// core already said yes
     fn send(&self, command: Command) -> Result<()>;
-    fn set_streams(&self, kinds: InputKinds) -> Result<()>;
+    /// switches each kind on or off to match `kinds`, and leaves a kind that's already right alone
+    fn set_streams(&self, kinds: InputKinds) -> std::result::Result<(), StreamFailure>;
     /// switches back on the one stream the box switched off, the others are left alone
     fn restart_stream(&self, kind: InputKind) -> Result<()>;
     fn release_all(&self, held: &[Usage]) -> Result<()>;
@@ -213,8 +236,11 @@ pub(crate) enum Signal {
         input: Input,
         arrived: Instant,
         box_time: Option<BoxTime>,
+        /// none where the box's own library reads the port, so anybox never sees the moment
+        read: Option<crate::transport::os::Read>,
     },
-    Dropped(u64, DropSource),
+    /// with a kind when only that kind's stream lost them, like one Medius subscription overflowing
+    Dropped(u64, DropSource, Option<InputKind>),
     /// the box switched one input stream off by itself and threw away what it had queued
     StreamLost(InputKind),
     /// the box refused a command after its call already returned
@@ -237,16 +263,28 @@ pub(crate) enum Signal {
 pub(crate) struct Sink(pub(crate) Sender<Signal>);
 
 impl Sink {
-    pub(crate) fn input(&self, input: Input, arrived: Instant, box_time: Option<BoxTime>) {
+    pub(crate) fn input(
+        &self,
+        input: Input,
+        arrived: Instant,
+        box_time: Option<BoxTime>,
+        read: Option<crate::transport::os::Read>,
+    ) {
         self.send(Signal::Input {
             input,
             arrived,
             box_time,
+            read,
         });
     }
 
     pub(crate) fn dropped(&self, count: u64, source: DropSource) {
-        self.send(Signal::Dropped(count, source));
+        self.send(Signal::Dropped(count, source, None));
+    }
+
+    /// events one kind's stream lost on the PC side, so only that kind's receivers hear about it
+    pub(crate) fn lost(&self, count: u64, kind: InputKind) {
+        self.send(Signal::Dropped(count, DropSource::Host, Some(kind)));
     }
 
     pub(crate) fn stream_lost(&self, kind: InputKind) {

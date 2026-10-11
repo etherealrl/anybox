@@ -261,6 +261,7 @@ impl Rig {
             incoming,
             click_timing: ClickTiming::Makcu,
             holds: Holds::from_clock(),
+            port: PORT.into(),
         })
         .unwrap();
         (device, poller)
@@ -782,10 +783,12 @@ fn a_stream_the_box_refuses_is_rejected() {
         state.refuse.insert(0x52);
     });
     assert!(matches!(
-        backend.set_streams(InputKinds {
-            buttons: true,
-            ..InputKinds::default()
-        }),
+        backend
+            .set_streams(InputKinds {
+                buttons: true,
+                ..InputKinds::default()
+            })
+            .map_err(|failure| failure.error),
         Err(Error::Rejected { .. })
     ));
     // nothing waits on a refused SET, so one of the two refusals also goes out as an event
@@ -1318,6 +1321,77 @@ mod hardware {
             .family(Family::MakcuV4)
             .open()
             .unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    #[cfg(windows)]
+    #[allow(unsafe_code)]
+    mod beeps {
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn Beep(frequency: u32, millis: u32) -> i32;
+        }
+
+        /// a high beep says start, two low ones say done. blocks while it sounds
+        pub(super) fn beep(high: bool) {
+            // SAFETY: Beep takes two plain numbers
+            unsafe {
+                Beep(if high { 1500 } else { 500 }, 400);
+            }
+        }
+
+        pub(super) fn done() {
+            beep(false);
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            beep(false);
+        }
+    }
+
+    /// needs you at the PC. after the high beep, click any mouse button about twenty times within 30 seconds, until
+    /// the two low beeps. it checks each event's `received` against a QPC read right after the event came out of
+    /// the receiver, so the read time is real and in order
+    #[cfg(windows)]
+    #[test]
+    #[ignore]
+    fn received_time_next_to_a_qpc_read_right_after() {
+        use crate::event::EventKinds;
+        use crate::transport::os::Read;
+
+        let device = open();
+        let events = device.events_of(EventKinds::BUTTONS);
+        beeps::beep(true);
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut gaps = Vec::new();
+        let mut last_qpc = 0i64;
+        while gaps.len() < 20 {
+            let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+                break;
+            };
+            match events.recv_timeout(left) {
+                Ok(Event::Button { at, .. }) => {
+                    let after = Read::now();
+                    let qpc = at.received_qpc.expect("a QPC on Windows");
+                    assert!(qpc >= last_qpc, "received went backwards");
+                    last_qpc = qpc;
+                    let ticks = after.qpc.unwrap() - qpc;
+                    let elapsed = after.at.duration_since(at.received);
+                    assert!(ticks >= 0, "the QPC read after came before received");
+                    gaps.push((ticks, elapsed));
+                }
+                Ok(_) => {}
+                Err(RecvTimeoutError::Timeout) => break,
+                Err(error) => panic!("{error:?}"),
+            }
+        }
+        beeps::done();
+        for (ticks, elapsed) in &gaps {
+            println!("qpc ticks after received {ticks:>7}, instant {elapsed:?}");
+        }
+        assert!(gaps.len() >= 5, "only {} clicks came in", gaps.len());
+        assert!(
+            gaps.iter()
+                .all(|(_, elapsed)| *elapsed < Duration::from_millis(50)),
+            "an event took more than 50 ms from the read to the app"
+        );
     }
 
     #[test]
@@ -2113,7 +2187,7 @@ fn a_keyboard_stream_that_reads_off_is_one_drop_and_switched_on_again_never_a_re
     assert_eq!(
         signals
             .iter()
-            .filter(|signal| matches!(signal, Signal::Dropped(1, DropSource::Device)))
+            .filter(|signal| matches!(signal, Signal::Dropped(1, DropSource::Device, _)))
             .count(),
         1
     );
@@ -2147,10 +2221,12 @@ fn a_refused_keyboard_stream_switch_names_key_events() {
         state.refuse.insert(0x52);
     });
     assert!(matches!(
-        backend.set_streams(InputKinds {
-            keys: true,
-            ..InputKinds::default()
-        }),
+        backend
+            .set_streams(InputKinds {
+                keys: true,
+                ..InputKinds::default()
+            })
+            .map_err(|failure| failure.error),
         Err(Error::Rejected {
             action: Action::KeyEvents,
             ..
@@ -2531,4 +2607,41 @@ fn shutdown_unmasks_a_key_whose_unlock_was_never_sent() {
     assert!(rig.state.lock().unwrap().masks.contains(&0x04));
     backend.shutdown(Duration::from_secs(1));
     assert!(rig.state.lock().unwrap().masks.is_empty());
+}
+
+#[test]
+fn an_event_says_when_its_bytes_were_read_and_the_qpc_on_windows() {
+    let rig = rig(State::makcu(4094));
+    let (device, _poller) = rig.device();
+    let events = device.events();
+    rig.fake
+        .send(&[0xDE, 0xAD, 0x03, 0x00, 0x53, 0x01, 0x02, 0x01]);
+    let Ok(Event::Button { at, .. }) = events.recv_timeout(Duration::from_secs(2)) else {
+        panic!("no button")
+    };
+    // on MAKCU the read is the best time anybox has, so it's both
+    assert_eq!(at.received, at.arrived);
+    assert_eq!(at.received_since_open, at.since_open);
+    assert_eq!(at.received_qpc.is_some(), cfg!(windows));
+}
+
+#[test]
+fn a_refused_stream_switch_is_one_rejected() {
+    let rig = rig(State::makcu(4094));
+    let (device, _poller) = rig.device();
+    rig.set(|state| {
+        state.refuse.insert(0x52);
+    });
+    let events = device.events_of(crate::event::EventKinds::BUTTONS);
+    let mut count = 0;
+    while let Ok(event) = events.recv_timeout(Duration::from_millis(700)) {
+        if let Event::Rejected {
+            action: Action::ButtonEvents,
+            count: n,
+        } = event
+        {
+            count += n;
+        }
+    }
+    assert_eq!(count, 1);
 }
