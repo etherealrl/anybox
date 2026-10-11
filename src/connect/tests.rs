@@ -1,0 +1,1086 @@
+use std::any::Any;
+use std::cell::RefCell;
+use std::path::Path;
+use std::time::Duration;
+
+use super::{Connect, Search, port_order};
+use crate::backend::{Backend, Command, InputKind, InputKinds, LockSlot, Sink, Usage};
+use crate::capability::{Capabilities, Family, Firmware, Info, Snapshot, StableId};
+use crate::error::{Error, Result};
+use crate::family::Open;
+use crate::transport::{Candidate, UsbId};
+
+const A: StableId = StableId::Mac([1, 2, 3, 4, 5, 6]);
+const B: StableId = StableId::Mac([6, 5, 4, 3, 2, 1]);
+
+#[derive(Clone)]
+enum Reply {
+    Box(Option<StableId>),
+    Busy,
+    TooOld,
+}
+
+thread_local! {
+    /// what each port and family pair answers, anything not in here is NotFound
+    static SCRIPT: RefCell<Vec<(String, Family, Reply)>> = const { RefCell::new(Vec::new()) };
+    /// every open and shutdown, in order
+    static LOG: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+fn script(replies: &[(&str, Family, Reply)]) {
+    SCRIPT.with_borrow_mut(|script| {
+        *script = replies
+            .iter()
+            .map(|(port, family, reply)| (port.to_string(), *family, reply.clone()))
+            .collect();
+    });
+    LOG.with_borrow_mut(Vec::clear);
+}
+
+fn log() -> Vec<String> {
+    LOG.with_borrow(Clone::clone)
+}
+
+struct Quiet(String);
+
+impl Backend for Quiet {
+    fn send(&self, _: Command) -> Result<()> {
+        Ok(())
+    }
+
+    fn set_streams(&self, _: InputKinds) -> Result<()> {
+        Ok(())
+    }
+
+    fn restart_stream(&self, _: InputKind) -> Result<()> {
+        Ok(())
+    }
+
+    fn unlock_all(&self, _: &[LockSlot]) -> Result<()> {
+        Ok(())
+    }
+
+    fn release_all(&self, _: &[Usage]) -> Result<()> {
+        Ok(())
+    }
+
+    fn shutdown(&self, _: Duration) {
+        LOG.with_borrow_mut(|log| log.push(format!("shut {}", self.0)));
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+fn answer(family: Family, candidate: &Candidate) -> Result<(Box<dyn Backend>, Snapshot)> {
+    let port = candidate.path.display().to_string();
+    LOG.with_borrow_mut(|log| log.push(format!("{family:?} {port}")));
+    let reply = SCRIPT.with_borrow(|script| {
+        script
+            .iter()
+            .find(|(at, of, _)| *at == port && *of == family)
+            .map(|(_, _, reply)| reply.clone())
+    });
+    match reply {
+        Some(Reply::Box(id)) => {
+            let mut info = Info::new(family);
+            info.id = id;
+            Ok((
+                Box::new(Quiet(port)),
+                Snapshot::new(info, Capabilities::new(Vec::new())),
+            ))
+        }
+        Some(Reply::Busy) => Err(Error::PortBusy { port }),
+        Some(Reply::TooOld) => Err(Error::FirmwareTooOld {
+            family,
+            found: Firmware::Build(4000),
+            needed: Firmware::Build(4085),
+        }),
+        None => Err(Error::NotFound { tried: vec![port] }),
+    }
+}
+
+fn medius(candidate: &Candidate, _: Sink) -> Result<(Box<dyn Backend>, Snapshot)> {
+    answer(Family::Medius, candidate)
+}
+
+fn makcu(candidate: &Candidate, _: Sink) -> Result<(Box<dyn Backend>, Snapshot)> {
+    answer(Family::MakcuV4, candidate)
+}
+
+const PROBES: &[(Family, Open)] = &[(Family::Medius, medius), (Family::MakcuV4, makcu)];
+
+fn usb(path: &str, vid: u16, pid: u16, serial: Option<&str>) -> Candidate {
+    Candidate {
+        path: path.into(),
+        usb: Some(UsbId {
+            vid,
+            pid,
+            serial: serial.map(String::from),
+        }),
+    }
+}
+
+fn ch343(path: &str) -> Candidate {
+    usb(path, 0x1A86, 0x55D3, None)
+}
+
+fn ch343_serial(path: &str, serial: &str) -> Candidate {
+    usb(path, 0x1A86, 0x55D3, Some(serial))
+}
+
+fn ftdi(path: &str) -> Candidate {
+    usb(path, 0x0403, 0x6001, None)
+}
+
+fn bare(path: &str) -> Candidate {
+    Candidate {
+        path: path.into(),
+        usb: None,
+    }
+}
+
+fn first(connect: &Connect, listed: Vec<Candidate>) -> std::result::Result<String, Error> {
+    let mut search = connect.search(&|| listed.clone(), PROBES, true);
+    match search.opened.take() {
+        Some(opened) => Ok(opened.port),
+        None => Err(search.error()),
+    }
+}
+
+fn found(connect: &Connect, listed: Vec<Candidate>) -> Result<Vec<(String, Family)>> {
+    Ok(connect
+        .find_in(&|| listed.clone(), PROBES)?
+        .into_iter()
+        .map(|found| (found.port, found.info.family))
+        .collect())
+}
+
+#[test]
+fn auto_never_opens_a_port_no_family_claims() {
+    script(&[
+        ("COM4", Family::Medius, Reply::Box(Some(A))),
+        ("COM5", Family::Medius, Reply::Box(Some(A))),
+    ]);
+    let result = found(
+        &Connect::auto(),
+        vec![ch343("COM3"), ftdi("COM4"), bare("COM5")],
+    );
+    assert_eq!(result.unwrap(), vec![]);
+    assert_eq!(log(), ["Medius COM3", "MakcuV4 COM3"]);
+}
+
+#[test]
+fn two_boxes_are_both_found_in_port_order() {
+    script(&[
+        ("COM11", Family::Medius, Reply::Box(Some(A))),
+        ("COM3", Family::MakcuV4, Reply::Box(None)),
+    ]);
+    let result = found(&Connect::auto(), vec![ch343("COM11"), ch343("COM3")]);
+    assert_eq!(
+        result.unwrap(),
+        [
+            ("COM3".to_string(), Family::MakcuV4),
+            ("COM11".to_string(), Family::Medius)
+        ]
+    );
+}
+
+#[test]
+fn ports_compare_by_their_number() {
+    let order = |a: &str, b: &str| port_order(Path::new(a), Path::new(b));
+    assert!(order("COM3", "COM11").is_lt());
+    assert!(order("COM11", "COM3").is_gt());
+    assert!(order("/dev/ttyACM9", "/dev/ttyACM10").is_lt());
+    assert!(order("/dev/ttyACM1", "/dev/ttyUSB0").is_lt());
+    assert!(order("COM3", "COM3").is_eq());
+}
+
+#[test]
+fn medius_is_asked_first_and_makcu_only_after_it_said_no() {
+    script(&[("COM3", Family::MakcuV4, Reply::Box(None))]);
+    assert_eq!(
+        first(&Connect::auto(), vec![ch343("COM3")]).unwrap(),
+        "COM3"
+    );
+    assert_eq!(log(), ["Medius COM3", "MakcuV4 COM3"]);
+
+    script(&[("COM3", Family::Medius, Reply::Box(Some(A)))]);
+    assert_eq!(
+        first(&Connect::auto(), vec![ch343("COM3")]).unwrap(),
+        "COM3"
+    );
+    assert_eq!(log(), ["Medius COM3"]);
+}
+
+#[test]
+fn family_and_id_pick_the_box_they_name() {
+    let replies = [
+        ("COM3", Family::Medius, Reply::Box(Some(A))),
+        ("COM4", Family::MakcuV4, Reply::Box(None)),
+    ];
+    let listed = || vec![ch343("COM3"), ch343("COM4")];
+    script(&replies);
+    let by_family = Connect::auto().family(Family::MakcuV4);
+    assert_eq!(first(&by_family, listed()).unwrap(), "COM4");
+    script(&replies);
+    assert_eq!(first(&Connect::auto().id(A), listed()).unwrap(), "COM3");
+    script(&replies);
+    match first(&Connect::auto().id(B), listed()) {
+        Err(Error::NotFound { tried }) => assert_eq!(tried, ["COM3", "COM4"]),
+        other => panic!("expected NotFound, got {other:?}"),
+    }
+    assert_eq!(log(), ["Medius COM3", "shut COM3", "Medius COM4"]);
+}
+
+#[test]
+fn a_busy_port_is_skipped_by_find_and_is_the_error_from_connect() {
+    script(&[
+        ("COM3", Family::Medius, Reply::Busy),
+        ("COM4", Family::Medius, Reply::Box(Some(A))),
+    ]);
+    let result = found(&Connect::auto(), vec![ch343("COM3"), ch343("COM4")]);
+    assert_eq!(result.unwrap(), [("COM4".to_string(), Family::Medius)]);
+
+    script(&[("COM3", Family::Medius, Reply::Busy)]);
+    assert!(matches!(
+        first(&Connect::auto(), vec![ch343("COM3")]),
+        Err(Error::PortBusy { port }) if port == "COM3"
+    ));
+}
+
+#[test]
+fn a_busy_port_does_not_hide_a_box_on_another_port() {
+    script(&[
+        ("COM3", Family::Medius, Reply::Busy),
+        ("COM4", Family::MakcuV4, Reply::Box(None)),
+    ]);
+    assert_eq!(
+        first(&Connect::auto(), vec![ch343("COM3"), ch343("COM4")]).unwrap(),
+        "COM4"
+    );
+}
+
+#[test]
+fn a_box_too_old_is_the_error_when_nothing_answered_and_find_leaves_it_out() {
+    script(&[
+        ("COM3", Family::Medius, Reply::Busy),
+        ("COM4", Family::MakcuV4, Reply::TooOld),
+    ]);
+    assert!(matches!(
+        first(&Connect::auto(), vec![ch343("COM3"), ch343("COM4")]),
+        Err(Error::FirmwareTooOld { .. })
+    ));
+
+    script(&[
+        ("COM4", Family::MakcuV4, Reply::TooOld),
+        ("COM5", Family::Medius, Reply::Box(Some(A))),
+    ]);
+    let result = found(&Connect::auto(), vec![ch343("COM4"), ch343("COM5")]);
+    assert_eq!(result.unwrap(), [("COM5".to_string(), Family::Medius)]);
+}
+
+#[test]
+fn find_closes_every_box_before_asking_the_next_port() {
+    script(&[
+        ("COM3", Family::Medius, Reply::Box(Some(A))),
+        ("COM4", Family::MakcuV4, Reply::Box(None)),
+    ]);
+    found(&Connect::auto(), vec![ch343("COM3"), ch343("COM4")]).unwrap();
+    assert_eq!(
+        log(),
+        [
+            "Medius COM3",
+            "shut COM3",
+            "Medius COM4",
+            "MakcuV4 COM4",
+            "shut COM4"
+        ]
+    );
+}
+
+#[cfg(all(feature = "medius", feature = "makcu"))]
+#[test]
+fn the_real_probe_table_asks_medius_first() {
+    let families: Vec<_> = crate::family::PROBES
+        .iter()
+        .map(|(family, _)| *family)
+        .collect();
+    assert_eq!(families, [Family::Medius, Family::MakcuV4]);
+}
+
+#[test]
+fn connect_stops_at_the_first_box() {
+    script(&[
+        ("COM3", Family::Medius, Reply::Box(Some(A))),
+        ("COM4", Family::Medius, Reply::Box(Some(B))),
+    ]);
+    assert_eq!(
+        first(&Connect::auto(), vec![ch343("COM3"), ch343("COM4")]).unwrap(),
+        "COM3"
+    );
+    assert_eq!(log(), ["Medius COM3"]);
+}
+
+#[test]
+fn a_named_port_is_asked_whatever_its_usb_id() {
+    script(&[("COM7", Family::Medius, Reply::Box(Some(A)))]);
+    assert_eq!(
+        first(&Connect::port("COM7"), vec![ftdi("COM7")]).unwrap(),
+        "COM7"
+    );
+    script(&[("COM7", Family::Medius, Reply::Box(Some(A)))]);
+    assert_eq!(first(&Connect::port("COM7"), vec![]).unwrap(), "COM7");
+}
+
+#[test]
+fn two_boxes_of_one_family_are_told_apart_by_id() {
+    let replies = [
+        ("COM3", Family::Medius, Reply::Box(Some(A))),
+        ("COM4", Family::Medius, Reply::Box(Some(B))),
+    ];
+    script(&replies);
+    let result = found(&Connect::auto(), vec![ch343("COM3"), ch343("COM4")]);
+    assert_eq!(result.unwrap().len(), 2);
+    script(&replies);
+    assert_eq!(
+        first(&Connect::auto().id(B), vec![ch343("COM3"), ch343("COM4")]).unwrap(),
+        "COM4"
+    );
+}
+
+#[test]
+fn a_port_gone_since_the_listing_is_skipped() {
+    // a port that's gone opens as NotFound in both backends
+    script(&[("COM4", Family::MakcuV4, Reply::Box(None))]);
+    assert_eq!(
+        first(&Connect::auto(), vec![ch343("COM3"), ch343("COM4")]).unwrap(),
+        "COM4"
+    );
+}
+
+#[test]
+fn a_usb_serial_id_never_opens_a_port_listing_another_serial() {
+    script(&[
+        (
+            "COM3",
+            Family::MakcuV4,
+            Reply::Box(Some(StableId::UsbSerial("S1".into()))),
+        ),
+        (
+            "COM4",
+            Family::MakcuV4,
+            Reply::Box(Some(StableId::UsbSerial("S2".into()))),
+        ),
+    ]);
+    let wanted = Connect::auto().id(StableId::UsbSerial("S2".into()));
+    let listed = vec![
+        ch343_serial("COM3", "S1"),
+        ch343_serial("COM4", "S2"),
+        ch343("COM5"),
+    ];
+    assert_eq!(first(&wanted, listed).unwrap(), "COM4");
+    assert_eq!(log(), ["MakcuV4 COM4"]);
+}
+
+#[test]
+fn each_id_kind_only_asks_its_family() {
+    script(&[]);
+    let _ = first(&Connect::auto().id(A), vec![ch343("COM3")]);
+    assert_eq!(log(), ["Medius COM3"]);
+    script(&[]);
+    let serial = Connect::auto().id(StableId::UsbSerial("S1".into()));
+    let _ = first(&serial, vec![ch343_serial("COM3", "S1")]);
+    assert_eq!(log(), ["MakcuV4 COM3"]);
+}
+
+#[test]
+fn a_busy_port_is_not_asked_by_the_other_families() {
+    script(&[("COM3", Family::Medius, Reply::Busy)]);
+    let _ = first(&Connect::auto(), vec![ch343("COM3")]);
+    assert_eq!(log(), ["Medius COM3"]);
+}
+
+#[test]
+fn the_most_useful_error_wins() {
+    let busy = || Error::PortBusy {
+        port: "COM4".into(),
+    };
+    let denied = || Error::PermissionDenied {
+        port: "COM5".into(),
+    };
+    let too_old = || Error::FirmwareTooOld {
+        family: Family::MakcuV4,
+        found: Firmware::Build(4000),
+        needed: Firmware::Build(4085),
+    };
+    let other = || Error::WrongFamily {
+        port: "COM6".into(),
+        expected: Family::Medius,
+        found: None,
+    };
+    let error = |skipped: Vec<Error>| {
+        Search {
+            skipped,
+            tried: vec!["COM3".into()],
+            ..Search::default()
+        }
+        .error()
+    };
+    assert!(matches!(
+        error(vec![other(), denied(), busy(), too_old()]),
+        Error::FirmwareTooOld { .. }
+    ));
+    assert!(matches!(
+        error(vec![other(), denied(), busy()]),
+        Error::PortBusy { .. }
+    ));
+    assert!(matches!(
+        error(vec![other(), denied()]),
+        Error::PermissionDenied { .. }
+    ));
+    assert!(matches!(error(vec![other()]), Error::WrongFamily { .. }));
+    assert!(matches!(error(vec![]), Error::NotFound { tried } if tried == ["COM3"]));
+}
+
+#[test]
+fn find_with_only_a_busy_box_is_that_error_and_with_no_ports_an_empty_list() {
+    script(&[("COM3", Family::Medius, Reply::Busy)]);
+    assert!(matches!(
+        found(&Connect::auto(), vec![ch343("COM3")]),
+        Err(Error::PortBusy { .. })
+    ));
+    script(&[]);
+    assert_eq!(found(&Connect::auto(), vec![ftdi("COM4")]).unwrap(), vec![]);
+    assert_eq!(
+        found(&Connect::auto(), vec![ch343("COM3")]).unwrap(),
+        vec![]
+    );
+}
+
+#[test]
+fn a_named_port_with_another_box_is_wrong_box() {
+    script(&[("COM3", Family::Medius, Reply::Box(Some(A)))]);
+    match first(&Connect::port("COM3").id(B), vec![ch343("COM3")]) {
+        Err(Error::WrongBox {
+            port,
+            expected,
+            found,
+        }) => {
+            assert_eq!(port, "COM3");
+            assert_eq!(expected, B);
+            assert_eq!(found, Some(A));
+        }
+        other => panic!("expected WrongBox, got {other:?}"),
+    }
+    assert_eq!(log(), ["Medius COM3", "shut COM3"]);
+}
+
+#[test]
+fn a_named_port_gone_while_it_was_asked_is_not_found_not_wrong_family() {
+    script(&[]);
+    let listings = std::cell::Cell::new(0);
+    let ports = || {
+        listings.set(listings.get() + 1);
+        if listings.get() == 1 {
+            vec![ch343("COM3")]
+        } else {
+            vec![]
+        }
+    };
+    let makcu_there = Connect::port("COM3").family(Family::MakcuV4);
+    let mut search = makcu_there.search(&ports, PROBES, true);
+    assert!(search.opened.take().is_none());
+    assert!(matches!(search.error(), Error::NotFound { .. }));
+}
+
+#[test]
+fn open_starts_the_device_on_the_first_box_only() {
+    script(&[
+        ("COM3", Family::Medius, Reply::Box(Some(A))),
+        ("COM4", Family::Medius, Reply::Box(Some(B))),
+    ]);
+    let listed = vec![ch343("COM4"), ch343("COM3")];
+    let device = Connect::auto().open_in(&|| listed.clone(), PROBES).unwrap();
+    assert_eq!(device.snapshot().info.id, Some(A));
+    drop(device);
+    assert_eq!(log(), ["Medius COM3", "shut COM3"]);
+}
+
+#[test]
+fn a_named_port_with_another_id_of_either_kind_is_wrong_box() {
+    let s1 = StableId::UsbSerial("S1".into());
+    let s2 = StableId::UsbSerial("S2".into());
+    script(&[("COM3", Family::MakcuV4, Reply::Box(Some(s1.clone())))]);
+    let by_serial = Connect::port("COM3").id(s2);
+    assert!(matches!(
+        first(&by_serial, vec![ch343_serial("COM3", "S1")]),
+        Err(Error::WrongBox { found: Some(found), .. }) if found == s1
+    ));
+    script(&[("COM3", Family::MakcuV4, Reply::Box(Some(s1.clone())))]);
+    assert!(matches!(
+        first(&Connect::port("COM3").id(A), vec![ch343_serial("COM3", "S1")]),
+        Err(Error::WrongBox { found: Some(found), .. }) if found == s1
+    ));
+}
+
+#[test]
+fn a_named_port_with_another_family_is_wrong_family_and_a_missing_one_not_found() {
+    script(&[("COM3", Family::Medius, Reply::Box(Some(A)))]);
+    let makcu_there = Connect::port("COM3").family(Family::MakcuV4);
+    assert!(matches!(
+        first(&makcu_there, vec![ch343("COM3")]),
+        Err(Error::WrongFamily {
+            expected: Family::MakcuV4,
+            ..
+        })
+    ));
+    assert!(matches!(
+        first(&makcu_there, vec![]),
+        Err(Error::NotFound { .. })
+    ));
+}
+
+#[test]
+fn find_takes_the_filters() {
+    script(&[
+        ("COM3", Family::Medius, Reply::Box(Some(A))),
+        ("COM4", Family::MakcuV4, Reply::Box(None)),
+    ]);
+    let result = found(
+        &Connect::auto().family(Family::MakcuV4),
+        vec![ch343("COM3"), ch343("COM4")],
+    );
+    assert_eq!(result.unwrap(), [("COM4".to_string(), Family::MakcuV4)]);
+    assert!(log().iter().all(|entry| !entry.starts_with("Medius")));
+}
+
+/// these need a Medius and a MAKCU plugged in, and keep your hands off the mouse while they run:
+/// ANYBOX_MEDIUS=COM18 ANYBOX_MAKCU=COM11 cargo test connect::tests::hardware -- --ignored --nocapture --test-threads 1
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod hardware {
+    use std::time::{Duration, Instant};
+
+    use crate::capability::{Family, StableId};
+    use crate::connect::{Connect, find};
+    use crate::error::Error;
+
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn GetCursorPos(point: *mut [i32; 2]) -> i32;
+    }
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn Beep(frequency: u32, millis: u32) -> i32;
+    }
+
+    /// a high beep says start, a low one says do the next thing, two low ones say done. blocks while it sounds
+    fn beep(high: bool) {
+        // safety: Beep takes two plain numbers
+        unsafe {
+            Beep(if high { 1500 } else { 500 }, 400);
+        }
+    }
+
+    fn done() {
+        beep(false);
+        std::thread::sleep(Duration::from_millis(150));
+        beep(false);
+    }
+
+    fn cursor() -> [i32; 2] {
+        let mut point = [0; 2];
+        // safety: GetCursorPos writes one POINT, two i32
+        assert_ne!(unsafe { GetCursorPos(&mut point) }, 0);
+        point
+    }
+
+    fn port(family: Family) -> String {
+        let name = match family {
+            Family::Medius => "ANYBOX_MEDIUS",
+            _ => "ANYBOX_MAKCU",
+        };
+        std::env::var(name).unwrap_or_else(|_| panic!("set {name} to the box's port"))
+    }
+
+    fn listed(port: &str) -> bool {
+        serialport::available_ports()
+            .unwrap_or_default()
+            .iter()
+            .any(|info| info.port_name == port)
+    }
+
+    fn print_usb_strings() {
+        for info in serialport::available_ports().unwrap() {
+            if let serialport::SerialPortType::UsbPort(usb) = info.port_type {
+                println!(
+                    "{} {:04X}:{:04X} manufacturer {:?} product {:?} serial {:?}",
+                    info.port_name,
+                    usb.vid,
+                    usb.pid,
+                    usb.manufacturer,
+                    usb.product,
+                    usb.serial_number
+                );
+            }
+        }
+    }
+
+    fn both() -> Vec<(String, Family, Option<StableId>)> {
+        let mut boxes: Vec<_> = find()
+            .unwrap_or_else(|error| panic!("{error}"))
+            .into_iter()
+            .map(|found| (found.port, found.info.family, found.info.id))
+            .collect();
+        boxes.sort_by_key(|(_, family, _)| *family != Family::Medius);
+        boxes
+    }
+
+    #[test]
+    #[ignore]
+    fn twenty_rounds_find_both_boxes_and_never_move_the_cursor() {
+        print_usb_strings();
+        let first = both();
+        println!("{first:?}");
+        assert_eq!(first.len(), 2, "expected both boxes");
+        assert_eq!(first[0].0, port(Family::Medius));
+        assert_eq!(first[1].0, port(Family::MakcuV4));
+        assert_eq!(first[1].1, Family::MakcuV4);
+        assert!(
+            first.iter().all(|(_, _, id)| id.is_some()),
+            "both boxes should have an id"
+        );
+        for round in 1..=20 {
+            let before = cursor();
+            let started = Instant::now();
+            let boxes = both();
+            let finding = started.elapsed();
+            assert_eq!(boxes, first, "round {round}");
+            // right after find closed them both open again, so nothing is still busy
+            let mut drops = Vec::new();
+            for (_, family, id) in &boxes {
+                let connect = match id {
+                    Some(id) => Connect::auto().id(id.clone()),
+                    None => Connect::port(port(*family)),
+                };
+                let device = connect
+                    .family(*family)
+                    .open()
+                    .unwrap_or_else(|error| panic!("round {round}: {error}"));
+                let dropping = Instant::now();
+                drop(device);
+                drops.push(dropping.elapsed());
+            }
+            assert_eq!(cursor(), before, "round {round} moved the cursor");
+            println!("round {round}: find {finding:?}, drops {drops:?}");
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn the_makcu_probe_leaves_a_medius_alone() {
+        let medius = port(Family::Medius);
+        let before = Connect::port(&medius)
+            .open()
+            .unwrap_or_else(|error| panic!("{error}"));
+        let identity = before.snapshot().info.clone();
+        drop(before);
+        let started = Instant::now();
+        let wrong = Connect::port(&medius).family(Family::MakcuV4).open();
+        println!("makcu probe on the medius took {:?}", started.elapsed());
+        assert!(matches!(wrong, Err(Error::WrongFamily { .. })), "{wrong:?}");
+        let after = Connect::port(&medius)
+            .open()
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(after.snapshot().info, identity);
+    }
+
+    #[test]
+    #[ignore]
+    fn connect_by_family_and_by_id_opens_the_right_box() {
+        for family in [Family::Medius, Family::MakcuV4] {
+            let device = Connect::auto()
+                .family(family)
+                .open()
+                .unwrap_or_else(|error| panic!("{error}"));
+            let info = device.snapshot().info.clone();
+            assert_eq!(info.family, family);
+            drop(device);
+            if let Some(id) = info.id {
+                let device = Connect::auto()
+                    .id(id.clone())
+                    .open()
+                    .unwrap_or_else(|error| panic!("{error}"));
+                assert_eq!(device.snapshot().info.id, Some(id));
+            }
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn a_held_box_is_busy_and_find_still_gives_the_other() {
+        let held = Connect::port(port(Family::Medius))
+            .family(Family::Medius)
+            .open()
+            .unwrap_or_else(|error| panic!("{error}"));
+        let boxes = both();
+        assert_eq!(boxes.len(), 1, "{boxes:?}");
+        assert_eq!(boxes[0].1, Family::MakcuV4);
+        let busy = Connect::auto().family(Family::Medius).open();
+        assert!(matches!(busy, Err(Error::PortBusy { .. })), "{busy:?}");
+        drop(held);
+    }
+
+    #[test]
+    #[ignore]
+    fn afterwards_each_box_still_answers_its_own_probe() {
+        for family in [Family::Medius, Family::MakcuV4] {
+            let started = Instant::now();
+            let device = Connect::port(port(family))
+                .family(family)
+                .open()
+                .unwrap_or_else(|error| panic!("{error}"));
+            println!(
+                "{family:?} opened in {:?}: {:?}",
+                started.elapsed(),
+                device.snapshot().info
+            );
+        }
+    }
+
+    fn boxes() -> [(Family, String); 2] {
+        [
+            (Family::Medius, port(Family::Medius)),
+            (Family::MakcuV4, port(Family::MakcuV4)),
+        ]
+    }
+
+    fn unplug(plug: u32) {
+        println!("UNPLUG BOTH ({plug}/3)");
+        while boxes().iter().any(|(_, port)| listed(port)) {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        println!("unplugged, plug them back in");
+    }
+
+    /// needs you at the PC. unplug both boxes when it says so, wait a second and plug them back in, three times
+    /// over. each box only gets asked with its own family, from the moment its own port shows up
+    #[test]
+    #[ignore]
+    fn cold_plug() {
+        for plug in 1..=3 {
+            unplug(plug);
+            std::thread::scope(|scope| {
+                for (family, port) in boxes() {
+                    scope.spawn(move || {
+                        while !listed(&port) {
+                            std::thread::sleep(Duration::from_millis(20));
+                        }
+                        let appeared = Instant::now();
+                        for tries in 1.. {
+                            match Connect::port(&port).family(family).open() {
+                                Ok(_) => {
+                                    println!(
+                                        "{family:?} answered {:?} after its port appeared, try {tries}",
+                                        appeared.elapsed()
+                                    );
+                                    return;
+                                }
+                                Err(error) if appeared.elapsed() < Duration::from_secs(30) => {
+                                    println!(
+                                        "{family:?} try {tries} failed {:?} after: {error}",
+                                        appeared.elapsed()
+                                    );
+                                }
+                                Err(error) => panic!("{family:?} never answered: {error}"),
+                            }
+                        }
+                    });
+                }
+            });
+        }
+        println!("DONE");
+    }
+
+    /// needs you at the PC, same as `cold_plug`, but here `find()` with no filters runs from the moment the MAKCU
+    /// port shows up
+    #[test]
+    #[ignore]
+    fn cold_plug_with_find() {
+        let makcu = port(Family::MakcuV4);
+        for plug in 1..=3 {
+            unplug(plug);
+            while !listed(&makcu) {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            let appeared = Instant::now();
+            for tries in 1.. {
+                let found = find().unwrap_or_default();
+                let families: Vec<_> = found.iter().map(|found| found.info.family).collect();
+                println!(
+                    "try {tries}, {:?} after the MAKCU port appeared: {families:?}",
+                    appeared.elapsed()
+                );
+                if families.len() == 2 {
+                    break;
+                }
+                assert!(
+                    appeared.elapsed() < Duration::from_secs(30),
+                    "never found both"
+                );
+            }
+        }
+        println!("DONE");
+    }
+
+    /// needs you at the PC with Notepad open and focused. on each box in turn it types `a`, then `A` with shift,
+    /// then taps `b`, then holds `c` for 700 ms (so Windows starts repeating it) and drops the device, which has to
+    /// stop the repeat. so each box should leave `aAbccc...` with a short run of c and nothing typed after DONE
+    #[test]
+    #[ignore]
+    fn keys_type_into_the_focused_window() {
+        use crate::key::Key;
+        for family in [Family::Medius, Family::MakcuV4] {
+            let device = Connect::port(port(family))
+                .family(family)
+                .open()
+                .unwrap_or_else(|error| panic!("{error}"));
+            println!("{family:?} typing");
+            device.press_key(Key::A).unwrap();
+            device.release_key(Key::A).unwrap();
+            device.press_key(Key::LEFT_SHIFT).unwrap();
+            device.press_key(Key::A).unwrap();
+            device.release_key(Key::A).unwrap();
+            device.release_key(Key::LEFT_SHIFT).unwrap();
+            device.tap_key(Key::B).unwrap();
+            device.press_key(Key::C).unwrap();
+            std::thread::sleep(Duration::from_millis(700));
+            let dropping = Instant::now();
+            drop(device);
+            println!("{family:?} dropped in {:?}", dropping.elapsed());
+            device_enter(family);
+        }
+        println!("DONE");
+    }
+
+    /// a new line in Notepad between the boxes, typed by the same box so nothing else touches the keyboard
+    fn device_enter(family: Family) {
+        use crate::key::Key;
+        let device = Connect::port(port(family)).family(family).open().unwrap();
+        device.tap_key(Key::ENTER).unwrap();
+    }
+
+    /// needs you at the PC. when it says TYPE on a box, type on the keyboard behind that box for 10 s (letters,
+    /// shift, then hold 7 letters at once). it prints every key event it gets, and an F13 it taps itself must NOT
+    /// come back as an event
+    #[test]
+    #[ignore]
+    fn key_events_from_the_keyboard_behind_each_box() {
+        use crate::event::Event;
+        use crate::key::Key;
+        let only: Option<Family> =
+            std::env::var("ANYBOX_ONLY")
+                .ok()
+                .map(|name| match name.as_str() {
+                    "medius" => Family::Medius,
+                    _ => Family::MakcuV4,
+                });
+        for family in [Family::Medius, Family::MakcuV4] {
+            if only.is_some_and(|only| only != family) {
+                continue;
+            }
+            let device = Connect::port(port(family))
+                .family(family)
+                .open()
+                .unwrap_or_else(|error| panic!("{error}"));
+            println!(
+                "{family:?} key events: {:?}",
+                device
+                    .snapshot()
+                    .capabilities
+                    .get(crate::capability::Action::KeyEvents)
+                    .execution
+            );
+            let events = device.events();
+            std::thread::sleep(Duration::from_millis(300));
+            device.tap_key(Key(0x68)).unwrap();
+            println!("TYPE on the keyboard behind {family:?} now");
+            let until = Instant::now() + Duration::from_secs(30);
+            let mut count = 0;
+            while Instant::now() < until {
+                match events.recv_timeout(Duration::from_millis(100)) {
+                    Ok(Event::Key {
+                        key, pressed, at, ..
+                    }) => {
+                        count += 1;
+                        assert_ne!(key, Key(0x68), "the injected F13 came back as an event");
+                        println!(
+                            "  {key} {} box {:?}",
+                            if pressed { "down" } else { "up" },
+                            at.box_time.map(|time| time.micros)
+                        );
+                    }
+                    Ok(Event::Button { .. } | Event::Motion { .. }) | Err(_) => {}
+                    Ok(other) => println!("  {other:?}"),
+                }
+            }
+            println!("{family:?}: {count} key events, STOP typing");
+        }
+        println!("DONE");
+    }
+
+    /// needs you at the PC and a Medius whose device has a media key interface. it turns the volume up twice and
+    /// then down twice, so watch the Windows volume overlay
+    #[test]
+    #[ignore]
+    fn media_keys_move_the_volume() {
+        use crate::key::MediaKey;
+        let device = Connect::port(port(Family::Medius))
+            .family(Family::Medius)
+            .open()
+            .unwrap_or_else(|error| panic!("{error}"));
+        println!(
+            "media: {:?}",
+            device
+                .snapshot()
+                .capabilities
+                .get(crate::capability::Action::MediaTap)
+                .execution
+        );
+        println!("WATCH the volume");
+        for key in [
+            MediaKey::VOLUME_UP,
+            MediaKey::VOLUME_UP,
+            MediaKey::VOLUME_DOWN,
+            MediaKey::VOLUME_DOWN,
+        ] {
+            device.tap_media(key).unwrap();
+            std::thread::sleep(Duration::from_millis(1500));
+        }
+        println!("DONE, STOP");
+    }
+
+    /// needs you at the PC, one box at a time (ANYBOX_LOCK_BOX=medius or makcu). each phase starts with PHASE,
+    /// lasts 10 s and counts the physical events that still come in while the lock is on
+    #[test]
+    #[ignore]
+    fn locks_with_you() {
+        use crate::capability::{Action, Axis, Button, Direction};
+        use crate::event::Event;
+        use crate::key::Key;
+        let family = match std::env::var("ANYBOX_LOCK_BOX").as_deref() {
+            Ok("makcu") => Family::MakcuV4,
+            _ => Family::Medius,
+        };
+        let device = Connect::port(port(family))
+            .family(family)
+            .open()
+            .unwrap_or_else(|error| panic!("{error}"));
+        let events = device.events();
+        let capabilities = device.snapshot().capabilities.clone();
+        let phase = |name: &str| {
+            println!("PHASE {name}");
+            let until = Instant::now() + Duration::from_secs(10);
+            let (mut buttons, mut keys, mut motion) = (0, 0, 0);
+            while Instant::now() < until {
+                match events.recv_timeout(Duration::from_millis(100)) {
+                    Ok(Event::Button { .. }) => buttons += 1,
+                    Ok(Event::Key { .. }) => keys += 1,
+                    Ok(Event::Motion { .. }) => motion += 1,
+                    _ => {}
+                }
+            }
+            println!("  events while locked: {buttons} button, {keys} key, {motion} motion");
+        };
+        let keys_only = std::env::var("ANYBOX_LOCK_ONLY").as_deref() == Ok("keys");
+        if !keys_only && capabilities.get(Action::LockButton).is_supported() {
+            device.lock_button(Button::Left).unwrap();
+            phase("left button locked");
+            device.unlock_button(Button::Left).unwrap();
+            device.lock_axis(Axis::X, Direction::Positive).unwrap();
+            phase("X positive locked");
+            device.unlock_axis(Axis::X, Direction::Positive).unwrap();
+            device.lock_axis(Axis::Y, Direction::Positive).unwrap();
+            phase("Y positive locked");
+            device.unlock_axis(Axis::Y, Direction::Positive).unwrap();
+            if capabilities.get(Action::ScaleAxis).is_supported() {
+                device.scale_axis(Axis::Y, Direction::Both, 30).unwrap();
+                phase("Y scaled to 30");
+                device.unlock_axis(Axis::Y, Direction::Both).unwrap();
+            }
+        }
+        let mouse_only = std::env::var("ANYBOX_LOCK_ONLY").as_deref() == Ok("mouse");
+        if !mouse_only && capabilities.get(Action::LockKey).is_supported() {
+            device.lock_key(Key::A).unwrap();
+            phase("key A locked");
+            device.unlock_key(Key::A).unwrap();
+        }
+        // one left locked on purpose, drop has to give it back
+        if capabilities.get(Action::LockButton).is_supported() {
+            device.lock_button(Button::Left).unwrap();
+        }
+        drop(events);
+        drop(device);
+        println!("DONE, STOP");
+    }
+
+    /// needs you at the PC. hold the physical left button at HOLD and anybox locks it, then let go at RELEASE and
+    /// move the mouse. it tells whether the PC still thinks the button is down after a lock lands on a held button
+    #[test]
+    #[ignore]
+    fn a_lock_on_a_held_button() {
+        use crate::capability::Button;
+        let family = match std::env::var("ANYBOX_LOCK_BOX").as_deref() {
+            Ok("makcu") => Family::MakcuV4,
+            _ => Family::Medius,
+        };
+        let device = Connect::port(port(family))
+            .family(family)
+            .open()
+            .unwrap_or_else(|error| panic!("{error}"));
+        eprintln!("HOLD");
+        beep(true);
+        std::thread::sleep(Duration::from_secs(4));
+        let started = Instant::now();
+        device.lock_button(Button::Left).unwrap();
+        eprintln!("locked in {:?}", started.elapsed());
+        std::thread::sleep(Duration::from_secs(3));
+        eprintln!("RELEASE");
+        beep(false);
+        std::thread::sleep(Duration::from_secs(6));
+        device.unlock_button(Button::Left).unwrap();
+        eprintln!("DONE, STOP");
+        done();
+    }
+
+    /// needs you at the PC and a Medius with a mouse that has pan. move the mouse during the first 5 s, then watch
+    /// a page that scrolls sideways while anybox pans right 5 notches and back. it prints the polling rate and the
+    /// identity the box shows the PC, both read through medius()
+    #[cfg(feature = "medius")]
+    #[test]
+    #[ignore]
+    fn pan_and_what_medius_says_about_the_mouse() {
+        let device = Connect::port(port(Family::Medius))
+            .family(Family::Medius)
+            .open()
+            .unwrap_or_else(|error| panic!("{error}"));
+        let crate_device = device.medius().unwrap();
+        println!("identity {:?}", crate_device.device_info());
+        println!("rate before moving {:?}", crate_device.query_rate());
+        eprintln!("MOVE");
+        beep(true);
+        std::thread::sleep(Duration::from_secs(5));
+        println!("rate after moving {:?}", crate_device.query_rate());
+        eprintln!("WATCH");
+        beep(false);
+        for notches in [1, 1, 1, 1, 1, -1, -1, -1, -1, -1] {
+            device.pan(notches).unwrap();
+            std::thread::sleep(Duration::from_millis(400));
+        }
+        eprintln!("DONE, STOP");
+        done();
+    }
+}

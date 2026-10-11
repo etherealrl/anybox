@@ -1,0 +1,39 @@
+use std::path::{Path, PathBuf};
+
+use serialport::SerialPortType;
+
+use super::{Candidate, Port, System, UsbId, open_error, trustworthy_serial};
+use crate::error::Result;
+
+/// the real serial ports of this machine
+#[derive(Debug, Default)]
+pub(crate) struct OsSystem;
+
+impl System for OsSystem {
+    fn ports(&self) -> Vec<Candidate> {
+        // if the port list can't be read there's just nothing to try, and the caller reports NotFound
+        let ports = serialport::available_ports().unwrap_or_default();
+        ports
+            .into_iter()
+            .map(|port| Candidate {
+                path: PathBuf::from(port.port_name),
+                usb: match port.port_type {
+                    SerialPortType::UsbPort(usb) => Some(UsbId {
+                        vid: usb.vid,
+                        pid: usb.pid,
+                        serial: usb.serial_number.filter(|s| trustworthy_serial(s)),
+                    }),
+                    _ => None,
+                },
+            })
+            .collect()
+    }
+
+    fn open(&self, path: &Path, baud: u32) -> Result<Box<dyn Port>> {
+        #[cfg(windows)]
+        let port = super::windows::open(path, baud);
+        #[cfg(unix)]
+        let port = super::unix::open(path, baud);
+        port.map_err(|error| open_error(path, error))
+    }
+}

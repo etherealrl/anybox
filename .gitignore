@@ -1,0 +1,6 @@
+/target/
+/.review/
+/.claude/skills/
+/.claude/settings.local.json
+.idea/
+/ref/

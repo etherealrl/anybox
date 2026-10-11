@@ -1,0 +1,33 @@
+name: support another box
+description: a box anybox doesn't talk to yet, or something a supported box can do that anybox doesn't expose
+labels: [box request]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ferrum and YSC8K are already in the works. anybox only adds what a box does natively, it never fakes what a box can't do, so this is about the box's own features
+  - type: input
+    id: box
+    attributes:
+      label: which box
+    validations:
+      required: true
+  - type: input
+    id: docs
+    attributes:
+      label: where its protocol is documented
+      description: the vendor's docs or reference code, anybox matches those and not guesses
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: what you'd want anybox to do with it
+    validations:
+      required: true
+  - type: checkboxes
+    id: test
+    attributes:
+      label: testing
+      options:
+        - label: i have this box and can test on it when asked

@@ -1,0 +1,57 @@
+name: something's wrong
+description: anybox does something it shouldn't, or the box acts differently from what the docs say
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        thanks for taking the time. the more exact this is, the faster it gets fixed, and if you're not sure about something just say so
+  - type: dropdown
+    id: box
+    attributes:
+      label: box
+      options:
+        - Medius
+        - MAKCU
+        - other
+    validations:
+      required: true
+  - type: input
+    id: firmware
+    attributes:
+      label: firmware
+      description: what `device.snapshot().info` shows, or what the vendor's tool says
+      placeholder: Medius 3.4.5, MAKCU V4.094
+    validations:
+      required: true
+  - type: input
+    id: behind
+    attributes:
+      label: what's plugged into the box
+      description: the mouse and or keyboard behind it, a lot of what a box can do depends on that
+      placeholder: Logitech G Pro X Superlight, Wooting 60HE
+  - type: input
+    id: setup
+    attributes:
+      label: anybox version and OS
+      placeholder: 0.1.0 on Windows 11
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: what happened, and what you expected instead
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: how to make it happen
+      description: the smallest bit of code that shows it is the best, otherwise the steps
+      render: rust
+  - type: textarea
+    id: error
+    attributes:
+      label: the error, word for word
+      description: if anybox gave you one
+      render: text
