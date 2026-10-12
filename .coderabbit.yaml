@@ -8,6 +8,10 @@ reviews:
   auto_review:
     enabled: true
     drafts: false
+  pre_merge_checks:
+    # a comment only goes where it says why, so most functions rightly have none
+    docstrings:
+      mode: "off"
   path_instructions:
     - path: "src/**/*.rs"
       instructions: |
