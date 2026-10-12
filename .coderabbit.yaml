@@ -18,5 +18,10 @@ reviews:
         anybox drives passthrough boxes behind one API. check that:
         - an operation a box can't do fails with Error::Unsupported and a reason, it's never faked or silently dropped
         - protocol bytes and behavior match the vendor's docs or reference code, and a claim about a box doesn't say it was checked on hardware unless it was
+        - comments only say why, never what the next line does
+        - tests live in <module>/tests.rs, never inline
+    - path: "**/*.md"
+      instructions: |
+        flag claims about a box that the vendor docs don't back, and anything that calls anybox or the boxes "mouse and keyboard" boxes (they're passthrough boxes)
 chat:
   auto_reply: true
