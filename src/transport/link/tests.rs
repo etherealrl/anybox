@@ -3,14 +3,104 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use super::{Link, Reprobe, Target};
+use super::{Link, Reprobe, Target, same_box};
 use crate::backend::{Input, Signal, Sink, WRITE_DEADLINE};
 use crate::capability::{Capabilities, Family, Info, Snapshot, StableId};
 use crate::error::Error;
+use crate::transport::Candidate;
 use crate::transport::codec::{Codec, Frame, Incoming};
 use crate::transport::fake::{FakeBox, FakeSystem};
 use crate::transport::probe::Probe;
 use crate::transport::{System, UsbId};
+
+#[test]
+fn targets_without_a_unique_id_require_the_original_path_and_exact_usb_tuple() {
+    for family in [Family::Ferrum, Family::Ysc] {
+        for original in [
+            None,
+            usb("SERIAL01"),
+            Some(UsbId {
+                vid: 0x1a86,
+                pid: 0xfe0c,
+                serial: None,
+            }),
+        ] {
+            let target = Target {
+                family,
+                path: "COM1".into(),
+                usb: original.clone(),
+                id: None,
+                bauds: vec![115200],
+            };
+            assert!(same_box(
+                &Candidate {
+                    path: "COM1".into(),
+                    usb: original.clone()
+                },
+                &target
+            ));
+            assert!(!same_box(
+                &Candidate {
+                    path: "COM2".into(),
+                    usb: original.clone()
+                },
+                &target
+            ));
+            for changed in [
+                None,
+                usb("OTHER0001"),
+                Some(UsbId {
+                    vid: 0x1234,
+                    pid: 0xfe0c,
+                    serial: None,
+                }),
+                Some(UsbId {
+                    vid: 0x1a86,
+                    pid: 0x1234,
+                    serial: Some("SERIAL01".into()),
+                }),
+            ] {
+                if changed != original {
+                    assert!(!same_box(
+                        &Candidate {
+                            path: "COM1".into(),
+                            usb: changed
+                        },
+                        &target
+                    ));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_nonunique_serial_does_not_follow_a_renamed_port_but_reopens_the_original_one() {
+    let setup = setup(echo);
+    setup.system.unplug("COM1");
+    assert_eq!(next_link_event(&setup.signals), "disconnected");
+    let renamed = FakeBox::new(echo);
+    setup.system.plug("COM7", usb("SERIAL01"), renamed.clone());
+    assert!(
+        setup
+            .signals
+            .recv_timeout(Duration::from_millis(350))
+            .is_err()
+    );
+    assert!(renamed.written().is_empty());
+    assert_eq!(setup.system.opened_at().len(), 1);
+    let original = FakeBox::new(echo);
+    setup.system.plug("COM1", usb("SERIAL01"), original);
+    assert_eq!(next_link_event(&setup.signals), "reconnected");
+    assert_eq!(
+        setup
+            .link
+            .request(b"Q6\n".to_vec(), Some(6))
+            .unwrap()
+            .as_deref(),
+        Some(&b"R6"[..])
+    );
+}
 
 /// a codec for plain text lines, where `R<key> ...` is a reply, `I<dx>` is motion and anything else is noise
 struct Lines;
@@ -422,7 +512,12 @@ fn a_missed_reply_takes_the_link_down_and_it_comes_back() {
 
 #[test]
 fn a_vanished_box_is_only_reattached_when_it_is_the_same_one() {
-    let setup = setup(echo);
+    let id = StableId::UsbSerial("SERIAL01".into());
+    let setup = setup_with(
+        echo,
+        Some(id.clone()),
+        answering_as(Arc::new(Mutex::new(with_id(Some(id))))),
+    );
     setup.system.unplug("COM1");
     assert_eq!(next_link_event(&setup.signals), "disconnected");
     assert!(matches!(

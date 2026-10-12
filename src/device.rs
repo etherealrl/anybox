@@ -331,7 +331,7 @@ impl Device {
 
     fn shutdown(&self) -> Result<()> {
         let released = self.core.release_everything();
-        self.core.backend.shutdown(SHUTDOWN_DEADLINE);
+        let stopped = self.core.backend.close(SHUTDOWN_DEADLINE);
         let _ = self.core.signals.send(Signal::Stop);
         if let Some((handle, done)) = lock(&self.link).take() {
             // a link thread stuck in a dead backend gets left behind, otherwise it would hang the caller
@@ -340,7 +340,7 @@ impl Device {
             }
         }
         self.core.close_receivers();
-        released
+        released.and(stopped)
     }
 }
 

@@ -29,7 +29,12 @@
 
 // with a box family left out, the shared code only the others use has nothing calling it
 #![cfg_attr(
-    not(all(feature = "medius", feature = "makcu", feature = "ferrum")),
+    not(all(
+        feature = "medius",
+        feature = "makcu",
+        feature = "ferrum",
+        feature = "ysc8k"
+    )),
     allow(dead_code)
 )]
 

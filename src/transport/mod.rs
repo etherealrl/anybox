@@ -58,6 +58,12 @@ pub(crate) fn is_ch343(usb: &UsbId) -> bool {
     (usb.vid, usb.pid) == (0x1A86, 0x55D3)
 }
 
+/// the YSC 8K V2's three ports, its command port, the chip facing the mouse and its bootloader. text meant for
+/// another box must never reach any of them
+pub(crate) fn is_ysc(usb: &UsbId) -> bool {
+    (usb.vid, usb.pid) == (0x1A86, 0xFE0C)
+}
+
 /// when a device has no serial number, serialport hands back a piece of the id Windows made up for it instead
 pub(crate) fn trustworthy_serial(serial: &str) -> bool {
     serial.len() > 2 && !serial.contains('&')

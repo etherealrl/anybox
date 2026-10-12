@@ -1,0 +1,18 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: en-US
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  auto_review:
+    enabled: true
+    drafts: false
+  path_instructions:
+    - path: "src/**/*.rs"
+      instructions: |
+        anybox drives passthrough boxes behind one API. check that:
+        - an operation a box can't do fails with Error::Unsupported and a reason, it's never faked or silently dropped
+        - protocol bytes and behavior match the vendor's docs or reference code, and a claim about a box doesn't say it was checked on hardware unless it was
+chat:
+  auto_reply: true

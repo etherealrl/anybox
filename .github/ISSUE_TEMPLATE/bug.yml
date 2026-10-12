@@ -13,6 +13,8 @@ body:
       options:
         - Medius
         - MAKCU
+        - Ferrum
+        - YSC 8K
         - other
     validations:
       required: true

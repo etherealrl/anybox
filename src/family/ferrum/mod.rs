@@ -15,7 +15,7 @@ use crate::capability::{
 use crate::error::{Error, Result};
 use crate::transport::link::{Link, Target};
 use crate::transport::probe::Probe;
-use crate::transport::{Candidate, Port, System, is_ch343};
+use crate::transport::{Candidate, Port, System, is_ch343, is_ysc};
 
 mod frames;
 mod poller;
@@ -74,8 +74,12 @@ pub(crate) fn attach(
     sink: Sink,
 ) -> Result<(FerrumBackend, Snapshot, Option<Poller>)> {
     let path = candidate.path.as_path();
-    // Medius and MAKCU sit behind a CH343, a Ferrum never does
-    if candidate.usb.as_ref().is_some_and(is_ch343) {
+    // Medius and MAKCU sit behind a CH343 and a YSC 8K has its own id, a Ferrum is never behind either
+    if candidate
+        .usb
+        .as_ref()
+        .is_some_and(|usb| is_ch343(usb) || is_ysc(usb))
+    {
         return Err(not_found(path));
     }
     let stop = AtomicBool::new(false);

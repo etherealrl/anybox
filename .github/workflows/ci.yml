@@ -32,3 +32,4 @@ jobs:
           cargo clippy --no-default-features --features medius --all-targets -- -D warnings
           cargo clippy --no-default-features --features makcu --all-targets -- -D warnings
           cargo clippy --no-default-features --features ferrum --all-targets -- -D warnings
+          cargo clippy --no-default-features --features ysc8k --all-targets -- -D warnings

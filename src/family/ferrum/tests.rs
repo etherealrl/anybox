@@ -684,6 +684,22 @@ fn a_legacy_port_with_a_prompt_opens_too() {
 }
 
 #[test]
+fn a_ysc_port_never_gets_asked() {
+    for serial in ["TOWMCULEFT", "TOWMCURIGHT", "TOWMCUIAP"] {
+        let rig = rig_with(
+            State::software(),
+            Some(UsbId {
+                vid: 0x1A86,
+                pid: 0xFE0C,
+                serial: Some(serial.into()),
+            }),
+        );
+        assert!(matches!(rig.attach(), Err(Error::NotFound { .. })));
+        assert!(rig.fake.written().is_empty(), "{serial}");
+    }
+}
+
+#[test]
 fn a_ch343_port_never_gets_asked() {
     let rig = rig_with(
         State::software(),
@@ -1045,6 +1061,37 @@ fn a_reconnect_asks_the_box_again_and_turns_the_streams_back_on() {
             ..
         })
     ));
+}
+
+#[test]
+fn a_ferrum_usb_serial_does_not_follow_a_renamed_port_without_a_unique_id() {
+    let identity = Some(UsbId {
+        vid: 0x10c4,
+        pid: 0xea60,
+        serial: Some("FERRUM01".into()),
+    });
+    let rig = rig_with(State::software(), identity.clone());
+    let (device, _) = rig.device();
+    assert_eq!(device.snapshot().info.id, None);
+    let events = device.events_of(EventKinds::NONE);
+    rig.system.unplug(PORT);
+    assert_eq!(events.recv_timeout(SHORT), Ok(Event::Disconnected));
+    let state = rig.state.clone();
+    let renamed = FakeBox::by_baud(move |baud, bytes| respond(&state, baud, bytes));
+    let opens = rig.system.opened_at().len();
+    rig.system.plug("COM8", identity.clone(), renamed.clone());
+    assert!(events.recv_timeout(Duration::from_millis(350)).is_err());
+    assert!(renamed.written().is_empty());
+    assert_eq!(rig.system.opened_at().len(), opens);
+    let state = rig.state.clone();
+    let original = FakeBox::by_baud(move |baud, bytes| respond(&state, baud, bytes));
+    rig.system.plug(PORT, identity, original.clone());
+    assert_eq!(
+        events.recv_timeout(Duration::from_secs(3)),
+        Ok(Event::Reconnected)
+    );
+    device.move_by(1, 2).unwrap();
+    assert!(original.written().contains(&b"km.move(1,2)\r\n".to_vec()));
 }
 
 #[test]

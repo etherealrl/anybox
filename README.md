@@ -26,16 +26,16 @@ some boxes can do things the others can't, and anybox doesn't hide those. you ge
 
 ## boxes
 
-> YSC8K is in the works, and KMBox B Pro and Net might get added if enough people ask for it, otherwise i won't spend time on it
+> KMBox B Pro and Net might get added if enough people ask for it, otherwise i won't spend time on it
 
 |            | firmware     | mouse | wheel | pan | keys | media keys | locks | scale | events        |
 | ---------- | ------------ | :---: | :---: | :-: | :--: | :--------: | :---: | :---: | ------------- |
 | **Medius** | 3.4.2+       |   ✓   |   ✓   |  ✓  |  ✓   |     ✓      |   ✓   |   ✓   | all           |
 | **MAKCU**  | V4.085+      |   ✓   |   ✓   |  ✗  |  ✓   |     ✗      |   ✓   |   ✗   | buttons, keys |
 | Ferrum     | docs only    |   ✓   |   ✓   |  ✗  | app  |     ✗      |   ✓   |   ✗   | all but media |
-| YSC8K      | in the works |       |       |     |      |            |       |       |               |
+| YSC8K V2   | docs only    |   ✓   |   ✓   |  ✗  |  ✓   |     ✗      |   ✓   |   ✗   | buttons, motion |
 
-Ferrum is written from its docs alone, nobody has run it on a real one yet, so expect surprises and tell me about them. "app" means only through the Ferrum app's port
+Ferrum and YSC8K are written from the vendor docs and reference code, nobody has run these backends on real ones yet, so expect surprises and tell me about them. "app" means only through the Ferrum app's port
 
 not every box can do everything, and [what each box can do](docs/boxes.md) has every method with the small differences. what you actually get also depends on what's plugged into the box, a mouse without horizontal scroll means no `pan` for example, so `device.snapshot().capabilities` is what tells you for sure, at runtime
 
@@ -72,6 +72,8 @@ fn main() -> anybox::Result<()> {
 ```
 
 `connect()` takes the first box it finds. `anybox::find()` lists every box on the machine with what each one can do, `Connect::port("COM18")` or `Connect::auto().family(Family::Medius)` opens the one you want, and `Connect::auto().can(Action::Move)` opens the first one that can move, so a keyboard box plugged in next to it gets skipped. a Ferrum isn't found on its own yet, open it with `Connect::port` or `.family(Family::Ferrum)`
+
+a YSC8K V2 is found on its own like a Medius or a MAKCU. a YSC or a Ferrum only comes back on the same port after a reconnect, so if its port name changes, connect again
 
 what happens on the box comes in as events:
 
@@ -184,6 +186,18 @@ Then:
 </details>
 
 ## box-specific behavior
+
+### YSC8K
+
+- only the V2, and none of this was checked on a real one yet, it all comes from the vendor docs and the vendor's own app
+- anybox talks to its TOWMCULEFT port, the other two ports of the box never get a single byte
+- clicks and key taps are timed on your PC, and the wheel takes one notch at a time
+- keys need a keyboard behind the box. if the box says there's none, keys turn off until you connect again
+- if the box is in debug mode, leave it in the vendor tool first, anybox won't connect otherwise
+- locks cover the five buttons and a whole X or Y axis, not one direction of it
+- buttons and motion come in one stream, and anybox doesn't know what was already held when you start listening, so a button that's already down when the first report comes in never shows its press, only its release
+- the box's curve and interpolation settings can shape your moves, anybox leaves them alone
+- i don't know yet whether events keep coming while something is locked, or what stays held when the port closes or the box loses power
 
 ### Ferrum
 
