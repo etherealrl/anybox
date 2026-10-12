@@ -331,7 +331,37 @@ fn the_real_probe_table_asks_medius_first_and_ferrum_last() {
         .iter()
         .map(|(family, _)| *family)
         .collect();
-    assert_eq!(families, [Family::Medius, Family::MakcuV4, Family::Ferrum]);
+    let mut expected = vec![Family::Medius, Family::MakcuV4];
+    #[cfg(feature = "ysc8k")]
+    expected.push(Family::Ysc);
+    expected.push(Family::Ferrum);
+    assert_eq!(families, expected);
+}
+
+#[test]
+fn ysc_listing_is_family_filtered_and_only_uses_the_complete_left_tuple() {
+    for family in [
+        None,
+        Some(Family::Medius),
+        Some(Family::MakcuV4),
+        Some(Family::Ferrum),
+        Some(Family::Ysc),
+    ] {
+        let connect = family.map_or_else(Connect::auto, |family| Connect::auto().family(family));
+        for serial in [
+            None,
+            Some("TOWMCULEFT"),
+            Some("TOWMCURIGHT"),
+            Some("TOWMCUIAP"),
+            Some("UNKNOWN"),
+        ] {
+            let candidate = usb("COM7", 0x1a86, 0xfe0c, serial);
+            assert_eq!(
+                connect.lists(&candidate),
+                serial == Some("TOWMCULEFT") && (family.is_none() || family == Some(Family::Ysc))
+            );
+        }
+    }
 }
 
 #[test]
@@ -1311,4 +1341,16 @@ fn a_ferrum_search_on_windows_only_takes_the_app_unless_legacy_is_asked_for() {
     script(&[("COM7", Family::Ferrum, Reply::Ferrum(FerrumApi::Legacy))]);
     let mut search = Connect::port("COM7").search(&|| listed.clone(), WITH_FERRUM, true);
     assert!(search.opened.take().is_some());
+}
+
+#[test]
+fn a_ferrum_search_never_lists_a_ysc_port() {
+    script(&[("COM9", Family::Ferrum, Reply::Ferrum(FerrumApi::Software))]);
+    let listed = vec![usb("COM9", 0x1A86, 0xFE0C, Some("TOWMCUIAP"))];
+    let seen = Connect::auto()
+        .family(Family::Ferrum)
+        .find_in(&|| listed.clone(), WITH_FERRUM)
+        .unwrap();
+    assert!(seen.is_empty());
+    assert!(log().is_empty());
 }

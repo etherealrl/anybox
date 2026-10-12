@@ -7,7 +7,7 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
-    #[error("no box answered{}, check it's plugged in and give it a few seconds if you just plugged it in. without a port, anybox only asks CH343 ports (1A86:55D3), so if your box sits behind another chip, name its port with Connect::port", tried_text(.tried))]
+    #[error("no box answered{}, check it's plugged in and give it a few seconds if you just plugged it in. without a port, anybox asks CH343 ports (1A86:55D3) and YSC V2 left ports (1A86:FE0C with serial TOWMCULEFT), so if your box sits behind another chip, name its port with Connect::port", tried_text(.tried))]
     #[non_exhaustive]
     NotFound { tried: Vec<String> },
 

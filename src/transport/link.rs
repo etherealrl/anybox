@@ -374,6 +374,9 @@ fn read_loop(
 }
 
 fn same_box(candidate: &Candidate, target: &Target) -> bool {
+    if target.id.is_none() {
+        return candidate.path == target.path && candidate.usb == target.usb;
+    }
     match (&target.usb, &candidate.usb) {
         (
             Some(UsbId {

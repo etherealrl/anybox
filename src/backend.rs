@@ -202,6 +202,11 @@ pub(crate) trait Backend: Send + Sync + 'static {
     /// them, MAKCU leaves them to its last check at shutdown, which only gets to them if the box answers in time
     fn unlock_all(&self, slots: &[LockSlot]) -> Result<()>;
     fn shutdown(&self, deadline: Duration);
+    /// lets explicit close report a failed final write, while drop can still give it a best effort
+    fn close(&self, deadline: Duration) -> Result<()> {
+        self.shutdown(deadline);
+        Ok(())
+    }
     fn as_any(&self) -> &dyn Any;
 }
 

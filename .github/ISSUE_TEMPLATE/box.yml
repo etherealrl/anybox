@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Ferrum and YSC8K are already in the works. anybox only adds what a box does natively, it never fakes what a box can't do, so this is about the box's own features
+        Ferrum and YSC 8K are already in (from their docs, waiting on a hardware run). anybox only adds what a box does natively, it never fakes what a box can't do, so this is about the box's own features
   - type: input
     id: box
     attributes:

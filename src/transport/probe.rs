@@ -18,8 +18,8 @@ impl<'a> Probe<'a> {
         Self { port, stop }
     }
 
-    /// writes, then reads until the codec splits off a frame that `accept` takes. it returns none when time
-    /// runs out or the probe was told to stop
+    /// writes, then reads until the codec splits off a frame that `accept` takes. it returns none when time runs
+    /// out or the probe was told to stop, and a probe that's already stopped doesn't write at all
     pub(crate) fn ask(
         &self,
         bytes: &[u8],
@@ -36,6 +36,9 @@ impl<'a> Probe<'a> {
 
     /// writes and waits for nothing, for a box that doesn't answer this
     pub(crate) fn say(&self, bytes: &[u8]) -> Result<()> {
+        if self.stop.load(Ordering::Acquire) {
+            return Err(Error::Disconnected);
+        }
         self.port.write_all(bytes).map_err(|_| Error::Disconnected)
     }
 
@@ -46,9 +49,7 @@ impl<'a> Probe<'a> {
         accept: impl Fn(&Frame) -> bool,
         within: Duration,
     ) -> Result<Option<Frame>> {
-        self.port
-            .write_all(bytes)
-            .map_err(|_| Error::Disconnected)?;
+        self.say(bytes)?;
         let deadline = Instant::now() + within;
         let mut buffer = Vec::new();
         let mut chunk = [0u8; 512];

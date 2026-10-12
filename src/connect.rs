@@ -10,7 +10,7 @@ use crate::device::{Device, Start};
 use crate::error::{Error, Result};
 use crate::family::{self, Open};
 use crate::transport::os::OsSystem;
-use crate::transport::{Candidate, System, is_ch343};
+use crate::transport::{Candidate, System, is_ch343, is_ysc};
 
 /// how long `find` waits for each box it opened to let go of its port
 const CLOSE_DEADLINE: Duration = Duration::from_secs(1);
@@ -46,8 +46,8 @@ pub struct Connect {
 }
 
 impl Connect {
-    /// asks every port a box could be behind, which for now means every CH343 (1A86:55D3) port. a Ferrum isn't
-    /// on one, so it's only asked with `.family(Family::Ferrum)` (every other port then) or `Connect::port`
+    /// asks CH343 (1A86:55D3) ports and YSC V2 left ports (1A86:FE0C with serial TOWMCULEFT). a Ferrum is only
+    /// asked with `.family(Family::Ferrum)` (the other ports then) or `Connect::port`
     pub fn auto() -> Self {
         Self::default()
     }
@@ -219,6 +219,10 @@ impl Connect {
         let ferrum = self.family == Some(Family::Ferrum);
         match &candidate.usb {
             Some(usb) if is_ch343(usb) => !ferrum,
+            Some(usb) if is_ysc(usb) => {
+                self.family.is_none_or(|family| family == Family::Ysc)
+                    && usb.serial.as_deref() == Some("TOWMCULEFT")
+            }
             Some(_) => ferrum,
             // the virtual port presumably shows up with no USB id, and the app only runs on Windows
             None => ferrum && cfg!(windows),

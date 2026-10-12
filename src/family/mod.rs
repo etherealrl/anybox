@@ -13,6 +13,8 @@ pub(crate) const PROBES: &[(Family, Open)] = &[
     (Family::Medius, medius::open),
     #[cfg(feature = "makcu")]
     (Family::MakcuV4, makcu::open),
+    #[cfg(feature = "ysc8k")]
+    (Family::Ysc, ysc8k::open),
     #[cfg(feature = "ferrum")]
     (Family::Ferrum, ferrum::open),
 ];
@@ -25,3 +27,5 @@ pub(crate) mod ferrum;
 pub(crate) mod makcu;
 #[cfg(feature = "medius")]
 pub(crate) mod medius;
+#[cfg(feature = "ysc8k")]
+pub(crate) mod ysc8k;
