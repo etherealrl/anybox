@@ -15,6 +15,8 @@ pub(crate) enum Incoming {
         input: Input,
         box_time: Option<BoxTime>,
     },
+    /// several at once, for a box that reports a whole state and leaves it to us to find what changed
+    Inputs(Vec<Input>),
     /// the box turned an input stream off on its own
     StreamLost(crate::backend::InputKind),
     /// the box refused the command with this key. if a request is waiting on the key this completes it,

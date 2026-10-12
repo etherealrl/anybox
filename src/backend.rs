@@ -248,8 +248,8 @@ pub(crate) enum Signal {
     SessionReset,
     Disconnected,
     Reconnected(Box<Snapshot>),
-    /// still the same box and device, just with other details (a new key limit for example), so nothing gets let
-    /// go or restarted
+    /// still the same box, just with other details (a new key limit, or a device that came or went on a box that
+    /// doesn't lose anything over it), so nothing gets let go. only the streams follow what it can do now
     Changed(Box<Snapshot>),
     /// lets a test wait until everything sent before it got handled
     #[cfg(test)]

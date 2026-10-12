@@ -31,3 +31,4 @@ jobs:
           cargo +1.88.0 check --all-features
           cargo clippy --no-default-features --features medius --all-targets -- -D warnings
           cargo clippy --no-default-features --features makcu --all-targets -- -D warnings
+          cargo clippy --no-default-features --features ferrum --all-targets -- -D warnings

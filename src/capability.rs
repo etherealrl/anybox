@@ -161,8 +161,13 @@ pub enum Execution {
 #[non_exhaustive]
 pub enum Quirk {
     /// after a release the box keeps the button up for a random while, and only then does the physical button
-    /// count again
+    /// count again. that's the box's default, a setting on the box that anybox can't read may turn it off
     ForcedUpOnRelease { min: Duration, max: Duration },
+    /// pressing and letting go of the physical button or key ends a press the box holds for you, the physical one
+    /// wins
+    PhysicalOverride,
+    /// the box only locks a whole axis, so locking or unlocking one way of it alone gets refused
+    WholeAxisOnly,
     /// the most wheel notches the box takes in one command
     NotchesPerCommand(u16),
     /// the box's click has its own timing and doesn't take a hold
@@ -355,6 +360,8 @@ pub struct Info {
     pub model: Option<String>,
     pub firmware: Option<Firmware>,
     pub id: Option<StableId>,
+    /// which of Ferrum's two APIs this is, none on other boxes
+    pub ferrum_api: Option<FerrumApi>,
 }
 
 impl Info {
@@ -365,7 +372,28 @@ impl Info {
             model: None,
             firmware: None,
             id: None,
+            ferrum_api: None,
         }
+    }
+}
+
+/// the two ways into a Ferrum
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum FerrumApi {
+    /// the virtual port the Ferrum app makes, Windows only. everything anybox does on a Ferrum works here
+    Software,
+    /// the box's own port, the only way in from Linux. it only moves, clicks, scrolls, locks buttons and whole
+    /// axes, and reports buttons, and a KMBox B+ answers on it exactly like a Ferrum does
+    Legacy,
+}
+
+impl fmt::Display for FerrumApi {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Software => "the Ferrum app's port",
+            Self::Legacy => "the box's own legacy port",
+        })
     }
 }
 

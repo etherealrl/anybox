@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use crate::capability::{Action, Family, Firmware, StableId};
+use crate::capability::{Action, Family, FerrumApi, Firmware, StableId};
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -47,6 +47,14 @@ pub enum Error {
         port: String,
         expected: StableId,
         found: Option<StableId>,
+    },
+
+    #[error("the Ferrum on {port} is on {found}, not {expected}{}", ferrum_api_hint(*.expected))]
+    #[non_exhaustive]
+    WrongFerrumApi {
+        port: String,
+        expected: FerrumApi,
+        found: FerrumApi,
     },
 
     #[error(
@@ -140,5 +148,14 @@ fn found_text(found: &Option<Family>) -> String {
     match found {
         Some(family) => format!(", it's a {family}"),
         None => String::new(),
+    }
+}
+
+fn ferrum_api_hint(expected: FerrumApi) -> &'static str {
+    match expected {
+        FerrumApi::Software => {
+            ", so start the Ferrum app and open its port, or ask for .ferrum_api(FerrumApi::Legacy) if the box's own port is really what you want"
+        }
+        _ => ", so open the box's own port (the CP210x one) instead",
     }
 }

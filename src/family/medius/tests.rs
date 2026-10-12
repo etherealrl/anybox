@@ -2085,3 +2085,22 @@ fn only_the_kind_that_didnt_fit_in_the_catch_table_is_rejected() {
     }
     assert_eq!(rejected, vec![Action::MotionEvents]);
 }
+
+#[test]
+fn only_a_port_behind_a_ch343_or_with_no_usb_id_could_be_a_medius() {
+    // the crate opens the port itself, so the check is all there is to see, a wrong chip never gets the probe
+    let with = |usb| crate::transport::Candidate {
+        path: "COM7".into(),
+        usb,
+    };
+    let chip = |vid, pid| {
+        Some(crate::transport::UsbId {
+            vid,
+            pid,
+            serial: None,
+        })
+    };
+    assert!(super::could_be_one(&with(chip(0x1A86, 0x55D3))));
+    assert!(super::could_be_one(&with(None)));
+    assert!(!super::could_be_one(&with(chip(0x10C4, 0xEA60))));
+}

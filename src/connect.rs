@@ -4,7 +4,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Duration;
 
 use crate::backend::{Backend, Signal, Sink};
-use crate::capability::{Action, Capabilities, Family, Info, Snapshot, StableId};
+use crate::capability::{Action, Capabilities, Family, FerrumApi, Info, Snapshot, StableId};
 use crate::click::{ClickTiming, Holds};
 use crate::device::{Device, Start};
 use crate::error::{Error, Result};
@@ -42,10 +42,12 @@ pub struct Connect {
     id: Option<StableId>,
     click_timing: ClickTiming,
     can: Vec<Action>,
+    ferrum_api: Option<FerrumApi>,
 }
 
 impl Connect {
-    /// asks every port a box could be behind, which for now means every CH343 (1A86:55D3) port
+    /// asks every port a box could be behind, which for now means every CH343 (1A86:55D3) port. a Ferrum isn't
+    /// on one, so it's only asked with `.family(Family::Ferrum)` (every other port then) or `Connect::port`
     pub fn auto() -> Self {
         Self::default()
     }
@@ -69,6 +71,16 @@ impl Connect {
     pub fn family(self, family: Family) -> Self {
         Self {
             family: Some(family),
+            ..self
+        }
+    }
+
+    /// only a Ferrum on this API, so asking for Software never ends up on the box's own legacy port. on Windows a
+    /// Ferrum search without a port already only takes Software, so ask for Legacy here if that's the one you
+    /// want. other boxes don't care about it
+    pub fn ferrum_api(self, api: FerrumApi) -> Self {
+        Self {
+            ferrum_api: Some(api),
             ..self
         }
     }
@@ -153,7 +165,7 @@ impl Connect {
             },
             None => listed
                 .into_iter()
-                .filter(|candidate| candidate.usb.as_ref().is_some_and(is_ch343))
+                .filter(|candidate| self.lists(candidate))
                 .collect(),
         };
         candidates.sort_by(|a, b| port_order(&a.path, &b.path));
@@ -200,7 +212,31 @@ impl Connect {
         }
     }
 
+    /// Medius and MAKCU are always behind a CH343. a Ferrum is behind a CP210x or the Ferrum app's virtual port,
+    /// and a CP210x is on lots of unrelated devices, so those ports only get text sent to them when a Ferrum was
+    /// asked for
+    fn lists(&self, candidate: &Candidate) -> bool {
+        let ferrum = self.family == Some(Family::Ferrum);
+        match &candidate.usb {
+            Some(usb) if is_ch343(usb) => !ferrum,
+            Some(_) => ferrum,
+            // the virtual port presumably shows up with no USB id, and the app only runs on Windows
+            None => ferrum && cfg!(windows),
+        }
+    }
+
+    /// on Windows the app's port is the one with everything, so a search there never picks the box's own legacy
+    /// port by accident. Linux has no app, so it takes whatever answers
+    fn wanted_ferrum_api(&self) -> Option<FerrumApi> {
+        self.ferrum_api
+            .or_else(|| (cfg!(windows) && self.port.is_none()).then_some(FerrumApi::Software))
+    }
+
     fn wants(&self, family: Family) -> bool {
+        // a Ferrum gets no USB id we know of yet, so it's only asked when someone asked for one
+        if family == Family::Ferrum && self.port.is_none() && self.family != Some(family) {
+            return false;
+        }
         // every family asks a named port, so another box there comes back as WrongBox and not NotFound
         let by_id = self.port.is_some()
             || match &self.id {
@@ -239,6 +275,18 @@ impl Connect {
                                 found: snapshot.info.id,
                             });
                         }
+                        return None;
+                    }
+                    if let (Some(expected), Some(found)) =
+                        (self.wanted_ferrum_api(), snapshot.info.ferrum_api)
+                        && expected != found
+                    {
+                        backend.shutdown(CLOSE_DEADLINE);
+                        search.skipped.push(Error::WrongFerrumApi {
+                            port,
+                            expected,
+                            found,
+                        });
                         return None;
                     }
                     let capabilities = self.capabilities(&snapshot);

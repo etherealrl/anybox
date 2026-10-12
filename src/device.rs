@@ -387,6 +387,23 @@ fn keeps_locked(snapshot: &Snapshot) -> bool {
         })
 }
 
+fn whole_axis_only(snapshot: &Snapshot) -> bool {
+    snapshot
+        .capabilities
+        .get(Action::LockAxis)
+        .quirks
+        .contains(&Quirk::WholeAxisOnly)
+}
+
+/// the other way along the same axis, none for anything that isn't an axis
+fn other_way(slot: LockSlot) -> Option<LockSlot> {
+    match slot {
+        LockSlot::Axis(axis, Sign::Positive) => Some(LockSlot::Axis(axis, Sign::Negative)),
+        LockSlot::Axis(axis, Sign::Negative) => Some(LockSlot::Axis(axis, Sign::Positive)),
+        _ => None,
+    }
+}
+
 /// the slots for one way, or both ways, along an axis
 fn slots(axis: Axis, direction: Direction) -> Vec<LockSlot> {
     let signs: &[Sign] = match direction {
@@ -698,6 +715,21 @@ impl Core {
     /// something held. every slot gets checked before any of them goes out, so a refused call changes nothing
     fn lock(&self, action: Action, slots: &[LockSlot], keep: i16) -> Result<()> {
         let (mut output, snapshot) = self.open_output()?;
+        // one way of an axis that's held alone (locked while the box could still do one way) can still be
+        // unlocked, the box then unlocks the whole axis, which is all that's locked on it
+        if let [slot] = *slots
+            && let Some(other) = other_way(slot)
+            && whole_axis_only(&snapshot)
+            && !(keep == UNLOCKED
+                && output.locked.contains_key(&slot)
+                && !output.locked.contains_key(&other))
+        {
+            return Err(Self::unsupported(
+                &snapshot,
+                action,
+                "it only locks a whole axis, so use Direction::Both",
+            ));
+        }
         for &slot in slots {
             let unlocking_held = keep == UNLOCKED && output.locked.contains_key(&slot);
             if !unlocking_held {
@@ -946,6 +978,14 @@ impl Core {
             return;
         }
         for (&slot, &keep) in &output.locked {
+            // a box that only locks a whole axis only gets it back when both ways were locked the same, a lone way
+            // waits for a box that can do it
+            if whole_axis_only(snapshot)
+                && let Some(other) = other_way(slot)
+                && output.locked.get(&other) != Some(&keep)
+            {
+                continue;
+            }
             let command = Command::Lock { slot, keep };
             if Self::gate(snapshot, command.action(), Timing::Any, command).is_ok() {
                 let _ = self.backend.send(command);
@@ -1066,12 +1106,15 @@ impl Core {
                 if output.closing {
                     return;
                 }
+                let snapshot = prepare(*snapshot, self.click_timing, &self.port);
                 *self
                     .snapshot
                     .write()
-                    .unwrap_or_else(PoisonError::into_inner) =
-                    prepare(*snapshot, self.click_timing, &self.port);
+                    .unwrap_or_else(PoisonError::into_inner) = snapshot.clone();
+                // a device that came or went can change which kinds the box streams
+                let refused = self.apply_streams(&output, &snapshot);
                 drop(output);
+                self.publish_all(refused);
             }
             Signal::SessionReset => {
                 let mut output = lock(&self.output);

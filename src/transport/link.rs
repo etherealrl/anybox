@@ -347,6 +347,11 @@ fn read_loop(
                             Incoming::Input { input, box_time } => {
                                 shared.sink.input(input, arrived, box_time, Some(read));
                             }
+                            Incoming::Inputs(inputs) => {
+                                for input in inputs {
+                                    shared.sink.input(input, arrived, None, Some(read));
+                                }
+                            }
                             Incoming::Noise => {}
                         }
                     }

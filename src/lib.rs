@@ -27,8 +27,11 @@
 //! the README has the full picture, which box does what, the differences between them, and how to add your own
 //! fallback for something a box can't do: <https://github.com/etherealrl/anybox>
 
-// with one box family left out, the shared code only the other one uses has nothing calling it
-#![cfg_attr(not(all(feature = "medius", feature = "makcu")), allow(dead_code))]
+// with a box family left out, the shared code only the others use has nothing calling it
+#![cfg_attr(
+    not(all(feature = "medius", feature = "makcu", feature = "ferrum")),
+    allow(dead_code)
+)]
 
 mod backend;
 mod capability;
@@ -42,8 +45,8 @@ mod key;
 mod transport;
 
 pub use capability::{
-    Action, Axis, Button, Capabilities, Capability, Direction, Execution, Family, Firmware, Info,
-    Quirk, Snapshot, StableId,
+    Action, Axis, Button, Capabilities, Capability, Direction, Execution, Family, FerrumApi,
+    Firmware, Info, Quirk, Snapshot, StableId,
 };
 pub use click::{Click, ClickTiming, Timing};
 pub use connect::{Connect, Found, connect, find};

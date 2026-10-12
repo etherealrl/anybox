@@ -1,6 +1,6 @@
 [package]
 name = "anybox-rs"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MPL-2.0"
@@ -26,11 +26,12 @@ unsafe_code = "deny"
 all = { level = "warn", priority = -1 }
 
 [features]
-default = ["medius", "makcu"]
+default = ["medius", "makcu", "ferrum"]
 medius = ["dep:medius"]
 # a device over the medius crate's mock box, for testing code that uses anybox without a box
 mock = ["medius", "medius/mock"]
 makcu = []
+ferrum = []
 
 [dependencies]
 medius = { version = "=3.4.3", optional = true }

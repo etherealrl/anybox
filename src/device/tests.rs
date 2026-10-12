@@ -1635,3 +1635,21 @@ fn received_is_the_read_the_backend_took_not_when_the_core_got_it() {
     assert_eq!(at.received_qpc, Some(42));
     assert!(at.arrived > at.received);
 }
+
+#[test]
+fn a_change_that_adds_a_kind_streams_it_to_whoever_wants_it() {
+    let buttons = mouse().set(Action::ButtonEvents, Capability::native());
+    let (device, fake) = fake::open(buttons.clone(), ClickTiming::Makcu);
+    let _events = device.events();
+    device.settle();
+    fake.changed(buttons.set(Action::KeyEvents, Capability::native()));
+    device.settle();
+    assert_eq!(
+        fake.streams().last(),
+        Some(&InputKinds {
+            buttons: true,
+            keys: true,
+            ..InputKinds::default()
+        })
+    );
+}

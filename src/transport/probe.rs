@@ -34,6 +34,11 @@ impl<'a> Probe<'a> {
         answer
     }
 
+    /// writes and waits for nothing, for a box that doesn't answer this
+    pub(crate) fn say(&self, bytes: &[u8]) -> Result<()> {
+        self.port.write_all(bytes).map_err(|_| Error::Disconnected)
+    }
+
     fn exchange(
         &self,
         bytes: &[u8],

@@ -6,7 +6,7 @@ use std::time::Duration;
 use super::{Connect, Search, port_order};
 use crate::backend::{Backend, Command, InputKind, InputKinds, LockSlot, Sink, Usage};
 use crate::capability::{
-    Action, Button, Capabilities, Capability, Family, Firmware, Info, Snapshot, StableId,
+    Action, Button, Capabilities, Capability, Family, FerrumApi, Firmware, Info, Snapshot, StableId,
 };
 use crate::error::{Error, Result};
 use crate::family::Open;
@@ -18,6 +18,8 @@ const B: StableId = StableId::Mac([6, 5, 4, 3, 2, 1]);
 #[derive(Clone)]
 enum Reply {
     Box(Option<StableId>),
+    /// a Ferrum on one of its two APIs
+    Ferrum(FerrumApi),
     /// a box whose mouse moves and clicks only through a press and a release, like a Medius
     Mouse,
     Busy,
@@ -90,6 +92,14 @@ fn answer(family: Family, candidate: &Candidate) -> Result<(Box<dyn Backend>, Sn
         Some(Reply::Box(id)) => {
             let mut info = Info::new(family);
             info.id = id;
+            Ok((
+                Box::new(Quiet(port)),
+                Snapshot::new(info, Capabilities::new(Vec::new())),
+            ))
+        }
+        Some(Reply::Ferrum(api)) => {
+            let mut info = Info::new(family);
+            info.ferrum_api = Some(api);
             Ok((
                 Box::new(Quiet(port)),
                 Snapshot::new(info, Capabilities::new(Vec::new())),
@@ -314,14 +324,14 @@ fn find_closes_every_box_before_asking_the_next_port() {
     );
 }
 
-#[cfg(all(feature = "medius", feature = "makcu"))]
+#[cfg(all(feature = "medius", feature = "makcu", feature = "ferrum"))]
 #[test]
-fn the_real_probe_table_asks_medius_first() {
+fn the_real_probe_table_asks_medius_first_and_ferrum_last() {
     let families: Vec<_> = crate::family::PROBES
         .iter()
         .map(|(family, _)| *family)
         .collect();
-    assert_eq!(families, [Family::Medius, Family::MakcuV4]);
+    assert_eq!(families, [Family::Medius, Family::MakcuV4, Family::Ferrum]);
 }
 
 #[test]
@@ -1178,4 +1188,127 @@ fn a_busy_port_still_wins_over_boxes_that_cant() {
     )
     .unwrap_err();
     assert!(matches!(error, Error::PortBusy { .. }), "{error}");
+}
+
+fn ferrum(candidate: &Candidate, _: Sink) -> Result<(Box<dyn Backend>, Snapshot)> {
+    answer(Family::Ferrum, candidate)
+}
+
+const WITH_FERRUM: &[(Family, Open)] = &[
+    (Family::Medius, medius),
+    (Family::MakcuV4, makcu),
+    (Family::Ferrum, ferrum),
+];
+
+fn cp210x(path: &str) -> Candidate {
+    usb(path, 0x10C4, 0xEA60, None)
+}
+
+#[test]
+fn a_ferrum_is_never_asked_unless_someone_asks_for_one() {
+    script(&[("COM7", Family::Ferrum, Reply::Box(None))]);
+    let listed = vec![ch343("COM3"), cp210x("COM7"), bare("COM8")];
+    let seen = Connect::auto()
+        .find_in(&|| listed.clone(), WITH_FERRUM)
+        .unwrap();
+    assert!(seen.is_empty());
+    assert_eq!(log(), ["Medius COM3", "MakcuV4 COM3"]);
+}
+
+#[test]
+fn asking_for_a_ferrum_skips_the_ch343_ports_and_asks_the_rest() {
+    script(&[("COM7", Family::Ferrum, Reply::Box(None))]);
+    let listed = vec![ch343("COM3"), cp210x("COM7"), ftdi("COM9"), bare("COM8")];
+    let seen = Connect::auto()
+        .family(Family::Ferrum)
+        .find_in(&|| listed.clone(), WITH_FERRUM)
+        .unwrap();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].port, "COM7");
+    // the Ferrum app's virtual port only exists on Windows, so a port with no USB id is only asked there
+    let expected: &[&str] = if cfg!(windows) {
+        &["Ferrum COM7", "shut COM7", "Ferrum COM8", "Ferrum COM9"]
+    } else {
+        &["Ferrum COM7", "shut COM7", "Ferrum COM9"]
+    };
+    assert_eq!(log(), expected);
+}
+
+#[test]
+fn a_named_port_asks_a_ferrum_after_the_others() {
+    script(&[("COM7", Family::Ferrum, Reply::Box(None))]);
+    let mut search = Connect::port("COM7").search(&|| vec![cp210x("COM7")], WITH_FERRUM, true);
+    assert_eq!(search.opened.take().unwrap().port, "COM7");
+    assert_eq!(log(), ["Medius COM7", "MakcuV4 COM7", "Ferrum COM7"]);
+}
+
+#[test]
+fn an_id_never_asks_a_ferrum_since_it_has_none() {
+    script(&[("COM7", Family::Ferrum, Reply::Box(None))]);
+    let mut search = Connect::auto().family(Family::Ferrum).id(A).search(
+        &|| vec![cp210x("COM7")],
+        WITH_FERRUM,
+        true,
+    );
+    assert!(search.opened.take().is_none());
+    assert!(log().is_empty());
+}
+
+#[test]
+fn asking_for_one_ferrum_api_skips_the_other_with_a_reason() {
+    script(&[
+        ("COM7", Family::Ferrum, Reply::Ferrum(FerrumApi::Legacy)),
+        ("COM8", Family::Ferrum, Reply::Ferrum(FerrumApi::Software)),
+    ]);
+    let listed = vec![cp210x("COM7"), cp210x("COM8")];
+    let connect = Connect::auto()
+        .family(Family::Ferrum)
+        .ferrum_api(FerrumApi::Software);
+    let mut search = connect.search(&|| listed.clone(), WITH_FERRUM, true);
+    assert_eq!(search.opened.take().unwrap().port, "COM8");
+    assert_eq!(log(), ["Ferrum COM7", "shut COM7", "Ferrum COM8"]);
+
+    script(&[("COM7", Family::Ferrum, Reply::Ferrum(FerrumApi::Legacy))]);
+    let error = Connect::port("COM7")
+        .ferrum_api(FerrumApi::Software)
+        .search(&|| vec![cp210x("COM7")], WITH_FERRUM, true)
+        .error();
+    assert!(
+        matches!(
+            error,
+            Error::WrongFerrumApi {
+                expected: FerrumApi::Software,
+                found: FerrumApi::Legacy,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+    assert!(
+        error.to_string().contains("start the Ferrum app"),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_ferrum_search_on_windows_only_takes_the_app_unless_legacy_is_asked_for() {
+    script(&[("COM7", Family::Ferrum, Reply::Ferrum(FerrumApi::Legacy))]);
+    let listed = vec![cp210x("COM7")];
+    let mut search =
+        Connect::auto()
+            .family(Family::Ferrum)
+            .search(&|| listed.clone(), WITH_FERRUM, true);
+    assert_eq!(search.opened.take().is_some(), !cfg!(windows));
+
+    script(&[("COM7", Family::Ferrum, Reply::Ferrum(FerrumApi::Legacy))]);
+    let mut search = Connect::auto()
+        .family(Family::Ferrum)
+        .ferrum_api(FerrumApi::Legacy)
+        .search(&|| listed.clone(), WITH_FERRUM, true);
+    assert!(search.opened.take().is_some());
+
+    // naming the port is asking for whatever is on it
+    script(&[("COM7", Family::Ferrum, Reply::Ferrum(FerrumApi::Legacy))]);
+    let mut search = Connect::port("COM7").search(&|| listed.clone(), WITH_FERRUM, true);
+    assert!(search.opened.take().is_some());
 }

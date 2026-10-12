@@ -46,6 +46,9 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 /// opens a Medius box on one port, or returns `NotFound` when what's there isn't one
 pub(crate) fn open(candidate: &Candidate, sink: Sink) -> Result<(Box<dyn Backend>, Snapshot)> {
     let path = candidate.path.as_path();
+    if !could_be_one(candidate) {
+        return Err(not_found(path));
+    }
     // the crate already locks the port on Linux (exclusive while it opens, shared after), so a second Anybox
     // can't get in. the thing is it drops the OS error code, so we take the lock and let go of it here just to
     // tell a busy, forbidden or missing port apart
@@ -59,6 +62,15 @@ pub(crate) fn open(candidate: &Candidate, sink: Sink) -> Result<(Box<dyn Backend
     let (backend, snapshot, poller) = build(device, sink)?;
     poller.spawn()?;
     Ok((Box::new(backend), snapshot))
+}
+
+/// a Medius is always behind a CH343, so a named port with another chip never gets the 6 Mbaud probe. a port with
+/// no USB id might still be one
+pub(crate) fn could_be_one(candidate: &Candidate) -> bool {
+    candidate
+        .usb
+        .as_ref()
+        .is_none_or(crate::transport::is_ch343)
 }
 
 fn old_firmware_or_nothing(path: &Path) -> Error {
