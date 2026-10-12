@@ -64,7 +64,8 @@ fn reads_writes_and_closes_end_up_in_order_with_their_bytes() {
         out.lines(),
         [
             "COM3 open",
-            "COM3 write ok 4 70 69 6e 67 |ping|",
+            "COM3 write 4 70 69 6e 67 |ping|",
+            "COM3 write ok",
             "COM3 read 6 70 6f 6e 67 0d 0a |pong..|",
             "COM3 close",
         ]
@@ -84,7 +85,14 @@ fn a_failed_write_and_a_vanished_port_say_so() {
     assert!(port.write_all(b"x").is_err());
     let mut buffer = [0u8; 16];
     assert_eq!(port.read(&mut buffer).unwrap(), 0);
-    assert_eq!(out.lines()[1..], ["COM3 write failed 1 78 |x|", "COM3 eof"]);
+    assert_eq!(
+        out.lines()[1..],
+        [
+            "COM3 write 1 78 |x|",
+            "COM3 write failed broken pipe",
+            "COM3 eof"
+        ]
+    );
 }
 
 #[test]
@@ -126,4 +134,17 @@ fn a_failed_open_is_in_the_trace_and_keeps_its_error() {
         lines[0].starts_with("COM9 open failed no box answered"),
         "{lines:?}"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn only_the_user_can_read_the_trace() {
+    use std::os::unix::fs::PermissionsExt;
+    let file = std::env::temp_dir().join(format!("anybox-trace-{}", std::process::id()));
+    std::fs::write(&file, b"").unwrap();
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+    drop(create(&file).unwrap());
+    let mode = std::fs::metadata(&file).unwrap().permissions().mode();
+    std::fs::remove_file(&file).unwrap();
+    assert_eq!(mode & 0o777, 0o600);
 }

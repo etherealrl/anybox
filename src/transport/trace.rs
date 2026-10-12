@@ -1,5 +1,4 @@
 use std::fmt::Write as _;
-use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -68,7 +67,21 @@ pub(crate) fn wrap(path: &Path, port: Result<Box<dyn Port>>) -> Result<Box<dyn P
 }
 
 pub(crate) fn create(file: &Path) -> std::result::Result<Arc<Trace>, String> {
-    File::create(file)
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    // the trace has everything typed on the keyboard behind the box in it, passwords included, so only the
+    // user may read it
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let opened = options.open(file);
+    #[cfg(unix)]
+    let opened = opened.and_then(|f| {
+        use std::os::unix::fs::PermissionsExt;
+        // mode only applies to a file that didn't exist yet
+        f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        Ok(f)
+    });
+    opened
         // a big buffer so the reader thread almost never waits on the disk, a close flushes it anyway
         .map(|f| Arc::new(Trace::new(Box::new(BufWriter::with_capacity(1 << 20, f)))))
         .map_err(|error| format!("couldn't create the trace file {}: {error}", file.display()))
@@ -116,14 +129,16 @@ impl Port for Traced {
     }
 
     fn write_all(&self, bytes: &[u8]) -> io::Result<()> {
+        // logged before it goes out, otherwise a fast reply can land in the trace ahead of what it answers. a
+        // failed write may have sent part of it or nothing, the line after it says which
+        self.trace.line(&self.path, "write", bytes);
         let written = self.port.write_all(bytes);
-        // a failed write may have sent part of it or nothing, so it's never shown as bytes that went out
-        let what = if written.is_ok() {
-            "write ok"
-        } else {
-            "write failed"
-        };
-        self.trace.line(&self.path, what, bytes);
+        match &written {
+            Ok(()) => self.trace.line(&self.path, "write ok", &[]),
+            Err(error) => self
+                .trace
+                .line(&self.path, &format!("write failed {error}"), &[]),
+        }
         written
     }
 
