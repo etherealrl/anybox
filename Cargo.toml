@@ -1,6 +1,6 @@
 [package]
 name = "anybox-rs"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 rust-version = "1.88"
 license = "MPL-2.0"
@@ -33,6 +33,8 @@ mock = ["medius", "medius/mock"]
 makcu = []
 ferrum = []
 ysc8k = ["dep:serde_json"]
+# every byte to and from a box, into the file ANYBOX_TRACE names. for debugging a box, not for shipping
+trace = []
 
 [dependencies]
 medius = { version = "=3.4.3", optional = true }

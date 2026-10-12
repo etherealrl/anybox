@@ -55,6 +55,8 @@ on Linux it needs libudev to find the boxes, that's `libudev-dev` and `pkg-confi
 
 to test your own code without a box plugged in, turn on the `mock` feature. `Device::mock_medius` gives you a device over the medius crate's mock box, running the exact same code a real Medius gets. it only proves your code works though, not how the hardware behaves
 
+if a box acts weird and you want to see what actually goes over the wire, turn on the `trace` feature and set `ANYBOX_TRACE` to a file path. every byte anybox sends and gets back ends up in that file with a timestamp, the Medius is the one exception since it talks through the medius crate
+
 ## usage
 
 ```rust,no_run

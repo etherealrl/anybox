@@ -34,7 +34,10 @@ impl System for OsSystem {
         let port = super::windows::open(path, baud);
         #[cfg(unix)]
         let port = super::unix::open(path, baud);
-        port.map_err(|error| open_error(path, error))
+        let port = port.map_err(|error| open_error(path, error));
+        #[cfg(feature = "trace")]
+        let port = super::trace::wrap(path, port);
+        port
     }
 }
 

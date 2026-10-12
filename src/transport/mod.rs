@@ -8,6 +8,8 @@ pub(crate) mod codec;
 pub(crate) mod link;
 pub(crate) mod os;
 pub(crate) mod probe;
+#[cfg(feature = "trace")]
+mod trace;
 
 #[cfg(test)]
 pub(crate) mod fake;
