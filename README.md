@@ -230,7 +230,7 @@ Then:
 
 ### MAKCU
 
-- the box takes about 1,400 moves a second, past that it refuses them and an `Event::Rejected` counts the ones it dropped. so if you move once per frame at a high frame rate, add up the deltas and send them every millisecond or two instead. moving the real mouse at the same time probably lowers that, i haven't measured it yet
+- on a MAKCU on V4.094 (measured with a USB capture, nobody touching the mouse) about 1,400 moves a second got through and the rest were refused, and an `Event::Rejected` counts the ones it dropped. that's one box and one firmware, so take it as a ballpark and not a promise. if you move once per frame at a high frame rate, add up the deltas and send them every millisecond or two instead. moving the real mouse at the same time probably lowers that, i haven't measured it yet
 - a key tap without a hold lasts about one report, so some apps miss it, pass a hold with `tap_key_with` if it has to land. a click is fine, the box holds it 35 to 75 ms by itself
 - a key press right after a tap gets refused
 - a lock on a button that's already held still lets its release through
