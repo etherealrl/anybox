@@ -12,7 +12,7 @@ use crate::family::{self, Open};
 use crate::transport::os::OsSystem;
 use crate::transport::{Candidate, System, is_ch343, is_ysc};
 
-/// how long `find` waits for each box it opened to let go of its port
+/// how long `scan` waits for each box it opened to let go of its port
 const CLOSE_DEADLINE: Duration = Duration::from_secs(1);
 
 /// connects to the first box found, in port order
@@ -20,20 +20,32 @@ pub fn connect() -> Result<Device> {
     Connect::auto().open()
 }
 
-/// every box on this machine in port order. each one gets opened, described and closed again
-pub fn find() -> Result<Vec<Found>> {
-    Connect::auto().find()
+/// every port a search looks at and what's on it, in port order, so a picker can show the boxes you can use and
+/// why you can't use the others. it opens, describes and closes every box, so it's slow (a YSC search takes about
+/// 2 s a port), `candidates()` is the cheap one to call often
+pub fn scan() -> Vec<Scanned> {
+    Connect::auto().scan()
+}
+
+/// one port a scan looked at. `result` is the box on it, or the error a search of just that port gives. mostly
+/// that's busy (the box you already have open shows up as busy too, so leave its port out), not allowed, too old,
+/// `NoBoxCan` for a box that can't do what `can` asked, or `NotFound` when nothing answered
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct Scanned {
+    pub port: String,
+    pub result: Result<Found>,
 }
 
 /// the ports a search would look at, in port order, without opening any of them or sending them a byte. it can't
-/// tell whether a box is on one, only where one could be, so it's cheap enough to call every second and run `find`
+/// tell whether a box is on one, only where one could be, so it's cheap enough to call every second and run `scan`
 /// when the list changes. a Ferrum has no USB id anybox knows, so its port is never listed here. a YSC V1 sits behind the same
 /// chip as a Medius or a MAKCU, so its port shows up here, but only `.family(Family::Ysc)` ever looks for a V1 on it
 pub fn candidates() -> Vec<String> {
     Connect::auto().candidates()
 }
 
-/// one box `find` saw
+/// one box a scan saw
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Found {
@@ -111,7 +123,7 @@ impl Connect {
         }
     }
 
-    /// the ports `find` and `open` would look at with these filters, see `candidates()`. with
+    /// the ports `scan` and `open` would look at with these filters, see `candidates()`. with
     /// `.family(Family::Ferrum)` that's every port that isn't a CH343 or a YSC port, plus on Windows the ones with no
     /// USB id
     pub fn candidates(&self) -> Vec<String> {
@@ -158,7 +170,7 @@ impl Connect {
         ports: &dyn Fn() -> Vec<Candidate>,
         probes: &[(Family, Open)],
     ) -> Result<Device> {
-        let mut search = self.search(ports, probes, true);
+        let mut search = self.search(ports, probes);
         match search.opened.take() {
             Some(found) => Device::start(Start {
                 backend: found.backend,
@@ -173,49 +185,66 @@ impl Connect {
         }
     }
 
-    /// every box that passes the filters in port order. each one gets opened, described and closed again
-    pub fn find(self) -> Result<Vec<Found>> {
-        self.find_in(&|| OsSystem.ports(), family::PROBES)
+    /// what happened on every port this search looks at, in port order, see `anybox::scan`
+    pub fn scan(self) -> Vec<Scanned> {
+        self.scan_in(&|| OsSystem.ports(), family::PROBES)
     }
 
-    pub(crate) fn find_in(
+    pub(crate) fn scan_in(
         &self,
         ports: &dyn Fn() -> Vec<Candidate>,
         probes: &[(Family, Open)],
-    ) -> Result<Vec<Found>> {
-        let search = self.search(ports, probes, false);
-        // a box that's plugged in but busy gives its error, otherwise a picker would show no box at all
-        if search.seen.is_empty() && !search.skipped.is_empty() {
-            return Err(search.error());
-        }
-        Ok(search.seen)
+    ) -> Vec<Scanned> {
+        self.listed(ports())
+            .iter()
+            .map(|candidate| {
+                let port = candidate.path.display().to_string();
+                let mut search = Search {
+                    tried: vec![port.clone()],
+                    ..Search::default()
+                };
+                let result = match self.probe(candidate, ports, probes, &mut search) {
+                    Some(opened) => {
+                        opened.backend.shutdown(CLOSE_DEADLINE);
+                        Ok(Found {
+                            capabilities: self.capabilities(&opened.snapshot),
+                            port: opened.port,
+                            info: opened.snapshot.info,
+                        })
+                    }
+                    None => Err(search.error()),
+                };
+                Scanned { port, result }
+            })
+            .collect()
     }
 
-    /// the boxes on the candidate ports in port order, and what went wrong on the others. with `first` it stops
-    /// at the first box that passes the filters
+    /// the boxes a scan found, for the tests that only care about those
+    #[cfg(test)]
+    pub(crate) fn found_in(
+        &self,
+        ports: &dyn Fn() -> Vec<Candidate>,
+        probes: &[(Family, Open)],
+    ) -> Vec<Found> {
+        self.scan_in(ports, probes)
+            .into_iter()
+            .filter_map(|scanned| scanned.result.ok())
+            .collect()
+    }
+
+    /// the first box on the candidate ports in port order that passes the filters, and what went wrong on the
+    /// ports before it
     pub(crate) fn search(
         &self,
         ports: &dyn Fn() -> Vec<Candidate>,
         probes: &[(Family, Open)],
-        first: bool,
     ) -> Search {
         let mut search = Search::default();
         for candidate in &self.listed(ports()) {
             search.tried.push(candidate.path.display().to_string());
             if let Some(opened) = self.probe(candidate, ports, probes, &mut search) {
-                if first {
-                    search.opened = Some(opened);
-                    break;
-                }
-                // close it before asking the next port, so a box we already saw isn't kept busy while the rest
-                // get asked
-                opened.backend.shutdown(CLOSE_DEADLINE);
-                let capabilities = self.capabilities(&opened.snapshot);
-                search.seen.push(Found {
-                    port: opened.port,
-                    info: opened.snapshot.info,
-                    capabilities,
-                });
+                search.opened = Some(opened);
+                break;
             }
         }
         search
@@ -392,7 +421,6 @@ pub(crate) struct Opened {
 #[derive(Default)]
 pub(crate) struct Search {
     opened: Option<Opened>,
-    seen: Vec<Found>,
     skipped: Vec<Error>,
     /// boxes that opened but can't do what `can` asked
     incapable: Vec<(Found, Vec<Action>)>,

@@ -166,19 +166,19 @@ fn bare(path: &str) -> Candidate {
 }
 
 fn first(connect: &Connect, listed: Vec<Candidate>) -> std::result::Result<String, Error> {
-    let mut search = connect.search(&|| listed.clone(), PROBES, true);
+    let mut search = connect.search(&|| listed.clone(), PROBES);
     match search.opened.take() {
         Some(opened) => Ok(opened.port),
         None => Err(search.error()),
     }
 }
 
-fn found(connect: &Connect, listed: Vec<Candidate>) -> Result<Vec<(String, Family)>> {
-    Ok(connect
-        .find_in(&|| listed.clone(), PROBES)?
+fn found(connect: &Connect, listed: Vec<Candidate>) -> Vec<(String, Family)> {
+    connect
+        .found_in(&|| listed.clone(), PROBES)
         .into_iter()
         .map(|found| (found.port, found.info.family))
-        .collect())
+        .collect()
 }
 
 #[test]
@@ -191,7 +191,7 @@ fn auto_never_opens_a_port_no_family_claims() {
         &Connect::auto(),
         vec![ch343("COM3"), ftdi("COM4"), bare("COM5")],
     );
-    assert_eq!(result.unwrap(), vec![]);
+    assert_eq!(result, vec![]);
     assert_eq!(log(), ["Medius COM3", "MakcuV4 COM3"]);
 }
 
@@ -203,7 +203,7 @@ fn two_boxes_are_both_found_in_port_order() {
     ]);
     let result = found(&Connect::auto(), vec![ch343("COM11"), ch343("COM3")]);
     assert_eq!(
-        result.unwrap(),
+        result,
         [
             ("COM3".to_string(), Family::MakcuV4),
             ("COM11".to_string(), Family::Medius)
@@ -259,13 +259,13 @@ fn family_and_id_pick_the_box_they_name() {
 }
 
 #[test]
-fn a_busy_port_is_skipped_by_find_and_is_the_error_from_connect() {
+fn a_busy_port_is_left_out_of_a_scan_and_is_the_error_from_connect() {
     script(&[
         ("COM3", Family::Medius, Reply::Busy),
         ("COM4", Family::Medius, Reply::Box(Some(A))),
     ]);
     let result = found(&Connect::auto(), vec![ch343("COM3"), ch343("COM4")]);
-    assert_eq!(result.unwrap(), [("COM4".to_string(), Family::Medius)]);
+    assert_eq!(result, [("COM4".to_string(), Family::Medius)]);
 
     script(&[("COM3", Family::Medius, Reply::Busy)]);
     assert!(matches!(
@@ -287,7 +287,7 @@ fn a_busy_port_does_not_hide_a_box_on_another_port() {
 }
 
 #[test]
-fn a_box_too_old_is_the_error_when_nothing_answered_and_find_leaves_it_out() {
+fn a_box_too_old_is_the_error_when_nothing_answered_and_a_scan_leaves_it_out() {
     script(&[
         ("COM3", Family::Medius, Reply::Busy),
         ("COM4", Family::MakcuV4, Reply::TooOld),
@@ -302,16 +302,16 @@ fn a_box_too_old_is_the_error_when_nothing_answered_and_find_leaves_it_out() {
         ("COM5", Family::Medius, Reply::Box(Some(A))),
     ]);
     let result = found(&Connect::auto(), vec![ch343("COM4"), ch343("COM5")]);
-    assert_eq!(result.unwrap(), [("COM5".to_string(), Family::Medius)]);
+    assert_eq!(result, [("COM5".to_string(), Family::Medius)]);
 }
 
 #[test]
-fn find_closes_every_box_before_asking_the_next_port() {
+fn a_scan_closes_every_box_before_asking_the_next_port() {
     script(&[
         ("COM3", Family::Medius, Reply::Box(Some(A))),
         ("COM4", Family::MakcuV4, Reply::Box(None)),
     ]);
-    found(&Connect::auto(), vec![ch343("COM3"), ch343("COM4")]).unwrap();
+    found(&Connect::auto(), vec![ch343("COM3"), ch343("COM4")]);
     assert_eq!(
         log(),
         [
@@ -396,7 +396,7 @@ fn two_boxes_of_one_family_are_told_apart_by_id() {
     ];
     script(&replies);
     let result = found(&Connect::auto(), vec![ch343("COM3"), ch343("COM4")]);
-    assert_eq!(result.unwrap().len(), 2);
+    assert_eq!(result.len(), 2);
     script(&replies);
     assert_eq!(
         first(&Connect::auto().id(B), vec![ch343("COM3"), ch343("COM4")]).unwrap(),
@@ -499,18 +499,16 @@ fn the_most_useful_error_wins() {
 }
 
 #[test]
-fn find_with_only_a_busy_box_is_that_error_and_with_no_ports_an_empty_list() {
+fn a_scan_of_a_busy_box_says_busy_and_with_no_ports_is_empty() {
     script(&[("COM3", Family::Medius, Reply::Busy)]);
     assert!(matches!(
-        found(&Connect::auto(), vec![ch343("COM3")]),
+        &Connect::auto().scan_in(&|| vec![ch343("COM3")], PROBES)[0].result,
         Err(Error::PortBusy { .. })
     ));
+    assert!(Connect::auto().scan_in(&Vec::new, PROBES).is_empty());
     script(&[]);
-    assert_eq!(found(&Connect::auto(), vec![ftdi("COM4")]).unwrap(), vec![]);
-    assert_eq!(
-        found(&Connect::auto(), vec![ch343("COM3")]).unwrap(),
-        vec![]
-    );
+    assert_eq!(found(&Connect::auto(), vec![ftdi("COM4")]), vec![]);
+    assert_eq!(found(&Connect::auto(), vec![ch343("COM3")]), vec![]);
 }
 
 #[test]
@@ -544,7 +542,7 @@ fn a_named_port_gone_while_it_was_asked_is_not_found_not_wrong_family() {
         }
     };
     let makcu_there = Connect::port("COM3").family(Family::MakcuV4);
-    let mut search = makcu_there.search(&ports, PROBES, true);
+    let mut search = makcu_there.search(&ports, PROBES);
     assert!(search.opened.take().is_none());
     assert!(matches!(search.error(), Error::NotFound { .. }));
 }
@@ -597,7 +595,7 @@ fn a_named_port_with_another_family_is_wrong_family_and_a_missing_one_not_found(
 }
 
 #[test]
-fn find_takes_the_filters() {
+fn a_scan_takes_the_filters() {
     script(&[
         ("COM3", Family::Medius, Reply::Box(Some(A))),
         ("COM4", Family::MakcuV4, Reply::Box(None)),
@@ -606,7 +604,7 @@ fn find_takes_the_filters() {
         &Connect::auto().family(Family::MakcuV4),
         vec![ch343("COM3"), ch343("COM4")],
     );
-    assert_eq!(result.unwrap(), [("COM4".to_string(), Family::MakcuV4)]);
+    assert_eq!(result, [("COM4".to_string(), Family::MakcuV4)]);
     assert!(log().iter().all(|entry| !entry.starts_with("Medius")));
 }
 
@@ -618,7 +616,7 @@ mod hardware {
     use std::time::{Duration, Instant};
 
     use crate::capability::{Family, StableId};
-    use crate::connect::{Connect, find};
+    use crate::connect::{Connect, scan};
     use crate::error::Error;
 
     #[link(name = "user32")]
@@ -684,9 +682,9 @@ mod hardware {
     }
 
     fn both() -> Vec<(String, Family, Option<StableId>)> {
-        let mut boxes: Vec<_> = find()
-            .unwrap_or_else(|error| panic!("{error}"))
+        let mut boxes: Vec<_> = scan()
             .into_iter()
+            .filter_map(|scanned| scanned.result.ok())
             .map(|found| (found.port, found.info.family, found.info.id))
             .collect();
         boxes.sort_by_key(|(_, family, _)| *family != Family::Medius);
@@ -713,7 +711,7 @@ mod hardware {
             let boxes = both();
             let finding = started.elapsed();
             assert_eq!(boxes, first, "round {round}");
-            // right after find closed them both open again, so nothing is still busy
+            // right after the scan closed them both they open again, so nothing is still busy
             let mut drops = Vec::new();
             for (_, family, id) in &boxes {
                 let connect = match id {
@@ -729,7 +727,7 @@ mod hardware {
                 drops.push(dropping.elapsed());
             }
             assert_eq!(cursor(), before, "round {round} moved the cursor");
-            println!("round {round}: find {finding:?}, drops {drops:?}");
+            println!("round {round}: scan {finding:?}, drops {drops:?}");
         }
     }
 
@@ -775,7 +773,7 @@ mod hardware {
 
     #[test]
     #[ignore]
-    fn a_held_box_is_busy_and_find_still_gives_the_other() {
+    fn a_held_box_is_busy_and_a_scan_still_gives_the_other() {
         let held = Connect::port(port(Family::Medius))
             .family(Family::Medius)
             .open()
@@ -859,11 +857,11 @@ mod hardware {
         println!("DONE");
     }
 
-    /// needs you at the PC, same as `cold_plug`, but here `find()` with no filters runs from the moment the MAKCU
+    /// needs you at the PC, same as `cold_plug`, but here `scan()` with no filters runs from the moment the MAKCU
     /// port shows up
     #[test]
     #[ignore]
-    fn cold_plug_with_find() {
+    fn cold_plug_with_scan() {
         let makcu = port(Family::MakcuV4);
         for plug in 1..=3 {
             unplug(plug);
@@ -872,7 +870,10 @@ mod hardware {
             }
             let appeared = Instant::now();
             for tries in 1.. {
-                let found = find().unwrap_or_default();
+                let found: Vec<_> = scan()
+                    .into_iter()
+                    .filter_map(|scanned| scanned.result.ok())
+                    .collect();
                 let families: Vec<_> = found.iter().map(|found| found.info.family).collect();
                 println!(
                     "try {tries}, {:?} after the MAKCU port appeared: {families:?}",
@@ -1161,7 +1162,7 @@ fn can_counts_a_click_the_pc_builds() {
 }
 
 #[test]
-fn find_with_can_lists_only_the_boxes_that_can_and_says_what_they_can() {
+fn a_scan_with_can_lists_only_the_boxes_that_can_and_says_what_they_can() {
     script(&[
         ("COM3", Family::Medius, Reply::Box(Some(A))),
         ("COM4", Family::Medius, Reply::Mouse),
@@ -1169,8 +1170,7 @@ fn find_with_can_lists_only_the_boxes_that_can_and_says_what_they_can() {
     let listed = vec![ch343("COM3"), ch343("COM4")];
     let boxes = Connect::auto()
         .can(Action::Move)
-        .find_in(&|| listed.clone(), PROBES)
-        .unwrap();
+        .found_in(&|| listed.clone(), PROBES);
     assert_eq!(boxes.len(), 1);
     assert_eq!(boxes[0].port, "COM4");
     assert_eq!(boxes[0].info.port, "COM4");
@@ -1179,8 +1179,7 @@ fn find_with_can_lists_only_the_boxes_that_can_and_says_what_they_can() {
     script(&[("COM3", Family::Medius, Reply::Box(Some(A)))]);
     let none = Connect::auto()
         .can(Action::Move)
-        .find_in(&|| vec![ch343("COM3")], PROBES)
-        .unwrap();
+        .found_in(&|| vec![ch343("COM3")], PROBES);
     assert!(none.is_empty());
 }
 
@@ -1238,9 +1237,7 @@ fn cp210x(path: &str) -> Candidate {
 fn a_ferrum_is_never_asked_unless_someone_asks_for_one() {
     script(&[("COM7", Family::Ferrum, Reply::Box(None))]);
     let listed = vec![ch343("COM3"), cp210x("COM7"), bare("COM8")];
-    let seen = Connect::auto()
-        .find_in(&|| listed.clone(), WITH_FERRUM)
-        .unwrap();
+    let seen = Connect::auto().found_in(&|| listed.clone(), WITH_FERRUM);
     assert!(seen.is_empty());
     assert_eq!(log(), ["Medius COM3", "MakcuV4 COM3"]);
 }
@@ -1251,8 +1248,7 @@ fn asking_for_a_ferrum_skips_the_ch343_ports_and_asks_the_rest() {
     let listed = vec![ch343("COM3"), cp210x("COM7"), ftdi("COM9"), bare("COM8")];
     let seen = Connect::auto()
         .family(Family::Ferrum)
-        .find_in(&|| listed.clone(), WITH_FERRUM)
-        .unwrap();
+        .found_in(&|| listed.clone(), WITH_FERRUM);
     assert_eq!(seen.len(), 1);
     assert_eq!(seen[0].port, "COM7");
     // the Ferrum app's virtual port only exists on Windows, so a port with no USB id is only asked there
@@ -1267,7 +1263,7 @@ fn asking_for_a_ferrum_skips_the_ch343_ports_and_asks_the_rest() {
 #[test]
 fn a_named_port_asks_a_ferrum_after_the_others() {
     script(&[("COM7", Family::Ferrum, Reply::Box(None))]);
-    let mut search = Connect::port("COM7").search(&|| vec![cp210x("COM7")], WITH_FERRUM, true);
+    let mut search = Connect::port("COM7").search(&|| vec![cp210x("COM7")], WITH_FERRUM);
     assert_eq!(search.opened.take().unwrap().port, "COM7");
     assert_eq!(log(), ["Medius COM7", "MakcuV4 COM7", "Ferrum COM7"]);
 }
@@ -1275,11 +1271,10 @@ fn a_named_port_asks_a_ferrum_after_the_others() {
 #[test]
 fn an_id_never_asks_a_ferrum_since_it_has_none() {
     script(&[("COM7", Family::Ferrum, Reply::Box(None))]);
-    let mut search = Connect::auto().family(Family::Ferrum).id(A).search(
-        &|| vec![cp210x("COM7")],
-        WITH_FERRUM,
-        true,
-    );
+    let mut search = Connect::auto()
+        .family(Family::Ferrum)
+        .id(A)
+        .search(&|| vec![cp210x("COM7")], WITH_FERRUM);
     assert!(search.opened.take().is_none());
     assert!(log().is_empty());
 }
@@ -1294,14 +1289,14 @@ fn asking_for_one_ferrum_api_skips_the_other_with_a_reason() {
     let connect = Connect::auto()
         .family(Family::Ferrum)
         .ferrum_api(FerrumApi::Software);
-    let mut search = connect.search(&|| listed.clone(), WITH_FERRUM, true);
+    let mut search = connect.search(&|| listed.clone(), WITH_FERRUM);
     assert_eq!(search.opened.take().unwrap().port, "COM8");
     assert_eq!(log(), ["Ferrum COM7", "shut COM7", "Ferrum COM8"]);
 
     script(&[("COM7", Family::Ferrum, Reply::Ferrum(FerrumApi::Legacy))]);
     let error = Connect::port("COM7")
         .ferrum_api(FerrumApi::Software)
-        .search(&|| vec![cp210x("COM7")], WITH_FERRUM, true)
+        .search(&|| vec![cp210x("COM7")], WITH_FERRUM)
         .error();
     assert!(
         matches!(
@@ -1324,22 +1319,21 @@ fn asking_for_one_ferrum_api_skips_the_other_with_a_reason() {
 fn a_ferrum_search_on_windows_only_takes_the_app_unless_legacy_is_asked_for() {
     script(&[("COM7", Family::Ferrum, Reply::Ferrum(FerrumApi::Legacy))]);
     let listed = vec![cp210x("COM7")];
-    let mut search =
-        Connect::auto()
-            .family(Family::Ferrum)
-            .search(&|| listed.clone(), WITH_FERRUM, true);
+    let mut search = Connect::auto()
+        .family(Family::Ferrum)
+        .search(&|| listed.clone(), WITH_FERRUM);
     assert_eq!(search.opened.take().is_some(), !cfg!(windows));
 
     script(&[("COM7", Family::Ferrum, Reply::Ferrum(FerrumApi::Legacy))]);
     let mut search = Connect::auto()
         .family(Family::Ferrum)
         .ferrum_api(FerrumApi::Legacy)
-        .search(&|| listed.clone(), WITH_FERRUM, true);
+        .search(&|| listed.clone(), WITH_FERRUM);
     assert!(search.opened.take().is_some());
 
     // naming the port is asking for whatever is on it
     script(&[("COM7", Family::Ferrum, Reply::Ferrum(FerrumApi::Legacy))]);
-    let mut search = Connect::port("COM7").search(&|| listed.clone(), WITH_FERRUM, true);
+    let mut search = Connect::port("COM7").search(&|| listed.clone(), WITH_FERRUM);
     assert!(search.opened.take().is_some());
 }
 
@@ -1349,8 +1343,7 @@ fn a_ferrum_search_never_lists_a_ysc_port() {
     let listed = vec![usb("COM9", 0x1A86, 0xFE0C, Some("TOWMCUIAP"))];
     let seen = Connect::auto()
         .family(Family::Ferrum)
-        .find_in(&|| listed.clone(), WITH_FERRUM)
-        .unwrap();
+        .found_in(&|| listed.clone(), WITH_FERRUM);
     assert!(seen.is_empty());
     assert!(log().is_empty());
 }
@@ -1406,7 +1399,7 @@ fn only_a_ysc_search_sweeps_a_port_that_isnt_a_v2_one() {
     ];
     let asked = |connect: Connect| {
         script(&[]);
-        let _ = connect.find_in(&|| listed.clone(), WITH_YSC);
+        let _ = connect.found_in(&|| listed.clone(), WITH_YSC);
         log()
             .into_iter()
             .filter(|line| line.starts_with("Ysc"))
@@ -1423,4 +1416,82 @@ fn only_a_ysc_search_sweeps_a_port_that_isnt_a_v2_one() {
         asked(Connect::port("COM9").family(Family::Ysc)),
         ["Ysc COM9"]
     );
+}
+
+#[test]
+fn a_scan_gives_every_port_its_own_outcome_in_port_order() {
+    script(&[
+        ("COM3", Family::Medius, Reply::Busy),
+        ("COM4", Family::MakcuV4, Reply::TooOld),
+        ("COM6", Family::Medius, Reply::Box(Some(A))),
+    ]);
+    let scanned = Connect::auto().scan_in(
+        &|| vec![ch343("COM6"), ch343("COM3"), ch343("COM5"), ch343("COM4")],
+        PROBES,
+    );
+    let ports: Vec<&str> = scanned.iter().map(|s| s.port.as_str()).collect();
+    assert_eq!(ports, ["COM3", "COM4", "COM5", "COM6"]);
+    assert!(matches!(&scanned[0].result, Err(Error::PortBusy { port }) if port == "COM3"));
+    assert!(matches!(
+        &scanned[1].result,
+        Err(Error::FirmwareTooOld { .. })
+    ));
+    assert!(matches!(&scanned[2].result, Err(Error::NotFound { tried }) if tried == &["COM5"]));
+    assert!(
+        matches!(&scanned[3].result, Ok(found) if found.port == "COM6" && found.info.family == Family::Medius)
+    );
+    assert!(log().contains(&"shut COM6".to_string()));
+}
+
+#[test]
+fn a_scan_says_which_box_fell_short_of_can_on_its_own_port() {
+    script(&[
+        ("COM3", Family::Medius, Reply::Box(Some(A))),
+        ("COM4", Family::Medius, Reply::Mouse),
+    ]);
+    let scanned = Connect::auto()
+        .can(Action::KeyPress)
+        .scan_in(&|| vec![ch343("COM3"), ch343("COM4")], PROBES);
+    assert!(
+        matches!(&scanned[0].result, Err(Error::NoBoxCan { boxes }) if boxes.len() == 1 && boxes[0].0.port == "COM3")
+    );
+    assert!(
+        matches!(&scanned[1].result, Err(Error::NoBoxCan { boxes }) if boxes[0].1 == [Action::KeyPress])
+    );
+}
+
+#[test]
+fn a_scan_of_a_named_port_says_what_open_would() {
+    script(&[("COM3", Family::Medius, Reply::Box(Some(A)))]);
+    let scan = |connect: Connect| connect.scan_in(&|| vec![ch343("COM3")], PROBES);
+    assert!(matches!(
+        &scan(Connect::port("COM3").id(B))[0].result,
+        Err(Error::WrongBox { .. })
+    ));
+    assert!(matches!(
+        &scan(Connect::port("COM3").family(Family::MakcuV4))[0].result,
+        Err(Error::WrongFamily { .. })
+    ));
+
+    script(&[("COM7", Family::Ferrum, Reply::Ferrum(FerrumApi::Legacy))]);
+    let scanned = Connect::port("COM7")
+        .ferrum_api(FerrumApi::Software)
+        .scan_in(&|| vec![cp210x("COM7")], WITH_FERRUM);
+    assert!(matches!(
+        &scanned[0].result,
+        Err(Error::WrongFerrumApi { .. })
+    ));
+}
+
+#[test]
+fn a_scan_describes_a_box_the_same_way_open_does() {
+    script(&[("COM3", Family::Medius, Reply::Mouse)]);
+    let connect =
+        Connect::auto().click_timing(crate::ClickTiming::Fixed(Duration::from_millis(50)));
+    let listed = || vec![ch343("COM3")];
+    let scanned = connect.scan_in(&listed, PROBES);
+    let found = scanned[0].result.as_ref().unwrap();
+    let device = connect.clone().open_in(&listed, PROBES).unwrap();
+    assert_eq!(found.capabilities, device.snapshot().capabilities);
+    assert_eq!(found.info, device.snapshot().info);
 }
