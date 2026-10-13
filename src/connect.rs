@@ -25,6 +25,13 @@ pub fn find() -> Result<Vec<Found>> {
     Connect::auto().find()
 }
 
+/// the ports a search would look at, in port order, without opening any of them or sending them a byte. it can't
+/// tell whether a box is on one, only where one could be, so it's cheap enough to call every second and run `find`
+/// when the list changes. a Ferrum has no USB id anybox knows, so its port is never listed here
+pub fn candidates() -> Vec<String> {
+    Connect::auto().candidates()
+}
+
 /// one box `find` saw
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -102,6 +109,40 @@ impl Connect {
         }
     }
 
+    /// the ports `find` and `open` would look at with these filters, see `candidates()`. with
+    /// `.family(Family::Ferrum)` that's every port that isn't a CH343 or a YSC port, plus on Windows the ones with no
+    /// USB id
+    pub fn candidates(&self) -> Vec<String> {
+        self.candidates_in(&|| OsSystem.ports())
+    }
+
+    pub(crate) fn candidates_in(&self, ports: &dyn Fn() -> Vec<Candidate>) -> Vec<String> {
+        self.listed(ports())
+            .into_iter()
+            .map(|candidate| candidate.path.display().to_string())
+            .collect()
+    }
+
+    /// the candidates in port order, before anything gets opened
+    fn listed(&self, listed: Vec<Candidate>) -> Vec<Candidate> {
+        let mut candidates: Vec<Candidate> = match &self.port {
+            // a port the caller names gets asked whatever its USB id is, because the caller knows what's on it
+            Some(path) => match listed.into_iter().find(|candidate| &candidate.path == path) {
+                Some(candidate) => vec![candidate],
+                None => vec![Candidate {
+                    path: path.clone(),
+                    usb: None,
+                }],
+            },
+            None => listed
+                .into_iter()
+                .filter(|candidate| self.lists(candidate) && self.might_be(candidate))
+                .collect(),
+        };
+        candidates.sort_by(|a, b| port_order(&a.path, &b.path));
+        candidates
+    }
+
     pub fn open(self) -> Result<Device> {
         self.open_in(&|| OsSystem.ports(), family::PROBES)
     }
@@ -153,26 +194,7 @@ impl Connect {
         first: bool,
     ) -> Search {
         let mut search = Search::default();
-        let listed = ports();
-        let mut candidates: Vec<Candidate> = match &self.port {
-            // a port the caller names gets asked whatever its USB id is, because the caller knows what's on it
-            Some(path) => match listed.into_iter().find(|candidate| &candidate.path == path) {
-                Some(candidate) => vec![candidate],
-                None => vec![Candidate {
-                    path: path.clone(),
-                    usb: None,
-                }],
-            },
-            None => listed
-                .into_iter()
-                .filter(|candidate| self.lists(candidate))
-                .collect(),
-        };
-        candidates.sort_by(|a, b| port_order(&a.path, &b.path));
-        for candidate in &candidates {
-            if self.port.is_none() && !self.might_be(candidate) {
-                continue;
-            }
+        for candidate in &self.listed(ports()) {
             search.tried.push(candidate.path.display().to_string());
             if let Some(opened) = self.probe(candidate, ports, probes, &mut search) {
                 if first {
@@ -218,7 +240,8 @@ impl Connect {
     fn lists(&self, candidate: &Candidate) -> bool {
         let ferrum = self.family == Some(Family::Ferrum);
         match &candidate.usb {
-            Some(usb) if is_ch343(usb) => !ferrum,
+            // anybox only opens a YSC on its TOWMCULEFT port, so a CH343 port is no use to a YSC search
+            Some(usb) if is_ch343(usb) => !ferrum && self.family != Some(Family::Ysc),
             Some(usb) if is_ysc(usb) => {
                 self.family.is_none_or(|family| family == Family::Ysc)
                     && usb.serial.as_deref() == Some("TOWMCULEFT")

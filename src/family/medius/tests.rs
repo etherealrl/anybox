@@ -2094,7 +2094,7 @@ fn only_a_port_behind_a_ch343_or_with_no_usb_id_could_be_a_medius() {
         usb,
     };
     let chip = |vid, pid| {
-        Some(crate::transport::UsbId {
+        Some(crate::transport::PortUsb {
             vid,
             pid,
             serial: None,
@@ -2103,4 +2103,20 @@ fn only_a_port_behind_a_ch343_or_with_no_usb_id_could_be_a_medius() {
     assert!(super::could_be_one(&with(chip(0x1A86, 0x55D3))));
     assert!(super::could_be_one(&with(None)));
     assert!(!super::could_be_one(&with(chip(0x10C4, 0xEA60))));
+}
+
+#[test]
+fn the_clone_s_usb_ids_are_the_peripheral_and_no_clone_is_none() {
+    let mock = mouse(5, true).with_device_info(medius::DeviceInfo {
+        vid: 0x046d,
+        pid: 0xc08b,
+        ..medius::DeviceInfo::default()
+    });
+    let (_, snapshot, _, _) = backend(&mock);
+    assert_eq!(
+        snapshot.info.peripheral,
+        Some(crate::capability::UsbIds::new(0x046d, 0xc08b))
+    );
+    let (_, snapshot, _, _) = backend(&mouse(5, true));
+    assert_eq!(snapshot.info.peripheral, None);
 }

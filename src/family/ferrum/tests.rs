@@ -8,7 +8,9 @@ use std::time::{Duration, Instant};
 use super::frames::{self, FerrumFrames, LEGACY_VERSION, SOFTWARE_VERSION};
 use super::{BAUDS, FerrumBackend, Poller, attach};
 use crate::backend::{Input, Signal, Sink};
-use crate::capability::{Action, Axis, Button, Direction, Family, FerrumApi, Quirk, Snapshot};
+use crate::capability::{
+    Action, Axis, Button, Direction, Family, FerrumApi, Quirk, Snapshot, UsbIds,
+};
 use crate::click::{Click, ClickTiming, Holds};
 use crate::device::{Device, Start};
 use crate::error::Error;
@@ -16,7 +18,7 @@ use crate::event::{Event, EventKinds};
 use crate::key::Key;
 use crate::transport::codec::{Codec, Incoming};
 use crate::transport::fake::{FakeBox, FakeSystem};
-use crate::transport::{Candidate, System, UsbId};
+use crate::transport::{Candidate, PortUsb, System};
 
 const PORT: &str = "COM7";
 const SHORT: Duration = Duration::from_millis(500);
@@ -32,6 +34,10 @@ struct State {
     roles: bool,
     /// an app new enough to know the directional axis locks
     directional: bool,
+    /// what `device.VID()` and `device.PID()` answer, none for an app that doesn't know them
+    ids: Option<(&'static str, &'static str)>,
+    /// an app that answers nothing at all to `device.` commands, against what the docs say
+    ids_silent: bool,
     silent: bool,
     /// whether the legacy port puts a prompt after what it sends, the docs contradict themselves on it
     legacy_prompt: bool,
@@ -49,6 +55,8 @@ impl State {
             keyboard: true,
             roles: true,
             directional: true,
+            ids: Some(("046d", "c08b")),
+            ids_silent: false,
             silent: false,
             legacy_prompt: false,
             streams: HashMap::new(),
@@ -83,6 +91,8 @@ impl State {
             ("km.has_mouse", "") if self.roles => Some(bit(self.mouse)),
             ("km.has_keyboard", "") if self.roles => Some(bit(self.keyboard)),
             ("km.lock_mx+", "") if self.directional => Some("0".into()),
+            ("device.VID", "") => self.ids.map(|(vid, _)| format!("VID={vid}")),
+            ("device.PID", "") => self.ids.map(|(_, pid)| format!("PID={pid}")),
             ("km.buttons" | "km.axes" | "km.keys", "") => {
                 Some(bit(self.streams.get(name).copied().unwrap_or(false)))
             }
@@ -106,6 +116,9 @@ fn respond(shared: &Shared, baud: u32, bytes: &[u8]) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
     for line in text.split(['\r', '\n']).filter(|line| !line.is_empty()) {
         state.lines.push(line.into());
+        if state.ids_silent && line.starts_with("device.") {
+            continue;
+        }
         let result = state.answer(line);
         match state.api {
             FerrumApi::Software => {
@@ -131,8 +144,8 @@ fn respond(shared: &Shared, baud: u32, bytes: &[u8]) -> Vec<Vec<u8>> {
     vec![out]
 }
 
-fn cp210x() -> Option<UsbId> {
-    Some(UsbId {
+fn cp210x() -> Option<PortUsb> {
+    Some(PortUsb {
         vid: 0x10C4,
         pid: 0xEA60,
         serial: None,
@@ -149,7 +162,7 @@ fn rig(state: State) -> Rig {
     rig_with(state, cp210x())
 }
 
-fn rig_with(state: State, usb: Option<UsbId>) -> Rig {
+fn rig_with(state: State, usb: Option<PortUsb>) -> Rig {
     let state = Arc::new(Mutex::new(state));
     let fake = FakeBox::by_baud({
         let state = state.clone();
@@ -554,7 +567,9 @@ fn the_software_api_opens_and_says_what_is_behind_it() {
             "mouse_proxy.stop()",
             "km.has_mouse()",
             "km.has_keyboard()",
-            "km.lock_mx+()"
+            "km.lock_mx+()",
+            "device.VID()",
+            "device.PID()"
         ]
     );
 }
@@ -688,7 +703,7 @@ fn a_ysc_port_never_gets_asked() {
     for serial in ["TOWMCULEFT", "TOWMCURIGHT", "TOWMCUIAP"] {
         let rig = rig_with(
             State::software(),
-            Some(UsbId {
+            Some(PortUsb {
                 vid: 0x1A86,
                 pid: 0xFE0C,
                 serial: Some(serial.into()),
@@ -703,7 +718,7 @@ fn a_ysc_port_never_gets_asked() {
 fn a_ch343_port_never_gets_asked() {
     let rig = rig_with(
         State::software(),
-        Some(UsbId {
+        Some(PortUsb {
             vid: 0x1A86,
             pid: 0x55D3,
             serial: None,
@@ -1065,7 +1080,7 @@ fn a_reconnect_asks_the_box_again_and_turns_the_streams_back_on() {
 
 #[test]
 fn a_ferrum_usb_serial_does_not_follow_a_renamed_port_without_a_unique_id() {
-    let identity = Some(UsbId {
+    let identity = Some(PortUsb {
         vid: 0x10c4,
         pid: 0xea60,
         serial: Some("FERRUM01".into()),
@@ -1470,4 +1485,86 @@ mod hardware {
         println!("after reopening {:?}", ask(b"km.left()\r\n"));
         println!("release {:?}", ask(b"km.left(0)\r\n"));
     }
+}
+
+// the device plugged into the box, by its USB ids
+
+#[test]
+fn the_first_peripheral_s_usb_ids_are_read_at_open() {
+    let rig = rig(State::software());
+    let (device, _) = rig.device();
+    assert_eq!(
+        device.snapshot().info.peripheral,
+        Some(UsbIds::new(0x046d, 0xc08b))
+    );
+}
+
+#[test]
+fn nothing_plugged_in_is_no_peripheral_and_the_default_pair_is_never_asked() {
+    let rig = rig(State {
+        mouse: false,
+        keyboard: false,
+        ..State::software()
+    });
+    let (device, _) = rig.device();
+    assert_eq!(device.snapshot().info.peripheral, None);
+    assert!(!rig.lines().iter().any(|line| line.starts_with("device.")));
+}
+
+#[test]
+fn an_app_that_doesnt_know_the_ids_still_opens_with_no_peripheral() {
+    let rig = rig(State {
+        ids: None,
+        ..State::software()
+    });
+    let (device, _) = rig.device();
+    assert_eq!(device.snapshot().info.peripheral, None);
+}
+
+#[test]
+fn the_legacy_port_is_never_asked_for_ids() {
+    let rig = rig(State::legacy(115_200));
+    let (device, _) = rig.device();
+    assert_eq!(device.snapshot().info.peripheral, None);
+    assert!(!rig.lines().iter().any(|line| line.starts_with("device.")));
+}
+
+#[test]
+fn only_four_hex_digits_after_the_asked_name_are_an_id() {
+    assert_eq!(super::usb_id(Some(b"VID=046d"), "VID"), Some(0x046d));
+    assert_eq!(super::usb_id(Some(b"PID=C53F"), "PID"), Some(0xc53f));
+    assert_eq!(super::usb_id(Some(b"PID=c53f"), "VID"), None);
+    assert_eq!(super::usb_id(Some(b"VID=46d"), "VID"), None);
+    assert_eq!(super::usb_id(Some(b"VID=046d0"), "VID"), None);
+    assert_eq!(super::usb_id(Some(b"VID=04zd"), "VID"), None);
+    assert_eq!(super::usb_id(Some(b""), "VID"), None);
+    assert_eq!(super::usb_id(None, "VID"), None);
+}
+
+#[test]
+fn a_mouse_set_in_the_app_later_brings_its_ids_and_a_changed() {
+    let rig = rig(State {
+        mouse: false,
+        keyboard: false,
+        ..State::software()
+    });
+    let (device, poller) = rig.device();
+    let events = device.events();
+    assert_eq!(device.snapshot().info.peripheral, None);
+    rig.set(|state| state.mouse = true);
+    poller.unwrap().tick();
+    until(|| device.snapshot().info.peripheral == Some(UsbIds::new(0x046d, 0xc08b)));
+    assert!(
+        std::iter::from_fn(|| events.recv_timeout(SHORT).ok()).any(|e| matches!(e, Event::Changed))
+    );
+}
+
+#[test]
+fn an_app_that_says_nothing_to_the_ids_still_opens_with_no_peripheral() {
+    let rig = rig(State {
+        ids_silent: true,
+        ..State::software()
+    });
+    let (device, _) = rig.device();
+    assert_eq!(device.snapshot().info.peripheral, None);
 }

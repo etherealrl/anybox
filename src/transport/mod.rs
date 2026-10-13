@@ -22,7 +22,7 @@ mod windows;
 pub(crate) const READ_SLICE: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct UsbId {
+pub(crate) struct PortUsb {
     pub(crate) vid: u16,
     pub(crate) pid: u16,
     /// only set when it's a real serial number, see `trustworthy_serial`
@@ -32,7 +32,7 @@ pub(crate) struct UsbId {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Candidate {
     pub(crate) path: PathBuf,
-    pub(crate) usb: Option<UsbId>,
+    pub(crate) usb: Option<PortUsb>,
 }
 
 /// the operating system's side, so the link can run on a fake one in tests
@@ -56,13 +56,13 @@ pub(crate) trait Port: Send + Sync {
 
 /// the WCH CH343 bridge that Medius and MAKCU V4 both sit behind. MAKXD, other mak-suite boards and a lot of
 /// ESP32 dev boards use it too, so it only says a box might be there, not which one or that it's a box at all
-pub(crate) fn is_ch343(usb: &UsbId) -> bool {
+pub(crate) fn is_ch343(usb: &PortUsb) -> bool {
     (usb.vid, usb.pid) == (0x1A86, 0x55D3)
 }
 
 /// the YSC 8K V2's three ports, its command port, the chip facing the mouse and its bootloader. text meant for
 /// another box must never reach any of them
-pub(crate) fn is_ysc(usb: &UsbId) -> bool {
+pub(crate) fn is_ysc(usb: &PortUsb) -> bool {
     (usb.vid, usb.pid) == (0x1A86, 0xFE0C)
 }
 

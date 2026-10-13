@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use super::codec::{Codec, Frame, Incoming, Key};
 use super::os::Read;
 use super::probe::Probe;
-use super::{Candidate, Port, System, UsbId};
+use super::{Candidate, Port, PortUsb, System};
 use crate::backend::{Sink, WRITE_DEADLINE};
 use crate::capability::{Family, Snapshot, StableId};
 use crate::error::{Error, Result};
@@ -23,7 +23,7 @@ const BACKOFF_MAX: Duration = Duration::from_secs(2);
 pub(crate) struct Target {
     pub(crate) family: Family,
     pub(crate) path: PathBuf,
-    pub(crate) usb: Option<UsbId>,
+    pub(crate) usb: Option<PortUsb>,
     pub(crate) id: Option<StableId>,
     /// tried in order on every reconnect, so a box that got switched to another baud rate still comes back
     pub(crate) bauds: Vec<u32>,
@@ -379,7 +379,7 @@ fn same_box(candidate: &Candidate, target: &Target) -> bool {
     }
     match (&target.usb, &candidate.usb) {
         (
-            Some(UsbId {
+            Some(PortUsb {
                 serial: Some(serial),
                 ..
             }),

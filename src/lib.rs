@@ -51,10 +51,10 @@ mod transport;
 
 pub use capability::{
     Action, Axis, Button, Capabilities, Capability, Direction, Execution, Family, FerrumApi,
-    Firmware, Info, Quirk, Snapshot, StableId,
+    Firmware, Info, Quirk, Snapshot, StableId, UsbIds,
 };
 pub use click::{Click, ClickTiming, Timing};
-pub use connect::{Connect, Found, connect, find};
+pub use connect::{Connect, Found, candidates, connect, find};
 pub use device::Device;
 pub use error::{Error, Result};
 pub use event::{

@@ -18,7 +18,7 @@ use crate::event::{DropSource, Event};
 use crate::key::Key;
 use crate::transport::codec::{Codec, Incoming};
 use crate::transport::fake::{FakeBox, FakeSystem};
-use crate::transport::{Candidate, System, UsbId};
+use crate::transport::{Candidate, PortUsb, System};
 
 const PORT: &str = "COM11";
 const SERIAL: &str = "SERIAL0001";
@@ -191,8 +191,8 @@ fn respond(shared: &Shared, baud: u32, bytes: &[u8]) -> Vec<Vec<u8>> {
     }
 }
 
-fn makcu_usb() -> Option<UsbId> {
-    Some(UsbId {
+fn makcu_usb() -> Option<PortUsb> {
+    Some(PortUsb {
         vid: 0x1A86,
         pid: 0x55D3,
         serial: Some(SERIAL.into()),
@@ -209,7 +209,7 @@ fn rig(state: State) -> Rig {
     rig_with(state, makcu_usb())
 }
 
-fn rig_with(state: State, usb: Option<UsbId>) -> Rig {
+fn rig_with(state: State, usb: Option<PortUsb>) -> Rig {
     let state = Arc::new(Mutex::new(state));
     let fake = FakeBox::by_baud({
         let state = state.clone();
@@ -602,7 +602,7 @@ fn the_firmware_gate_sits_at_4085_and_below_5000() {
 
 #[test]
 fn a_port_that_says_its_another_box_is_never_asked() {
-    let ysc = Some(UsbId {
+    let ysc = Some(PortUsb {
         vid: 0x1A86,
         pid: 0xFE0C,
         serial: Some("TOWMCULEFT".into()),
@@ -990,7 +990,7 @@ fn another_box_on_the_same_port_is_not_taken_back() {
     let rig = rig(State::makcu(4094));
     let (_backend, _snapshot, _poller, signals) = rig.attach().unwrap();
     rig.system.unplug(PORT);
-    let other = Some(UsbId {
+    let other = Some(PortUsb {
         vid: 0x1A86,
         pid: 0x55D3,
         serial: Some("5C00000000".into()),
@@ -1938,8 +1938,15 @@ fn a_keyboard_routed_or_pulled_after_connect_shows_up_on_the_fourth_tick() {
     for _ in 0..4 {
         poller.tick();
     }
+    let signals: Vec<Signal> = signals.try_iter().collect();
+    // held state gets let go on a MAKCU route change, so it's a reconnect and never a quiet change
+    assert!(
+        !signals
+            .iter()
+            .any(|signal| matches!(signal, Signal::Changed(_)))
+    );
     let snapshots: Vec<Snapshot> = signals
-        .try_iter()
+        .into_iter()
         .filter_map(|signal| match signal {
             Signal::Reconnected(snapshot) => Some(*snapshot),
             _ => None,

@@ -11,6 +11,7 @@ use crate::backend::{
 };
 use crate::capability::{
     Action, Axis, Button, Capabilities, Capability, Family, FerrumApi, Info, Quirk, Snapshot,
+    UsbIds,
 };
 use crate::error::{Error, Result};
 use crate::transport::link::{Link, Target};
@@ -55,6 +56,7 @@ pub(crate) struct Roles {
     pub(crate) mouse: bool,
     pub(crate) keyboard: bool,
     pub(crate) directional: bool,
+    pub(crate) peripheral: Option<UsbIds>,
 }
 
 /// opens a Ferrum on one port, or returns `NotFound` when what's there isn't one
@@ -211,6 +213,7 @@ fn describe(probe: &Probe<'_>, api: FerrumApi) -> Result<Roles> {
                 mouse: true,
                 keyboard: false,
                 directional: false,
+                peripheral: None,
             })
         }
         FerrumApi::Software => {
@@ -233,14 +236,48 @@ fn describe(probe: &Probe<'_>, api: FerrumApi) -> Result<Roles> {
                     .into(),
                 })
             };
-            Ok(Roles {
+            let mut roles = Roles {
                 mouse: has("km.has_mouse()")?,
                 keyboard: has("km.has_keyboard()")?,
                 // the read form only gets a result from an app that knows the command
                 directional: bit(query(probe, "km.lock_mx+()")?.as_deref()).is_some(),
-            })
+                peripheral: None,
+            };
+            roles.peripheral = peripheral(&roles, |command| query(probe, command))?;
+            Ok(roles)
         }
     }
+}
+
+/// what's plugged into the box by its USB ids, none when nothing is (the box then answers a default pair that's
+/// also a real Logitech receiver) or when the app doesn't know the commands
+pub(crate) fn peripheral(
+    roles: &Roles,
+    mut ask: impl FnMut(&str) -> Result<Option<Vec<u8>>>,
+) -> Result<Option<UsbIds>> {
+    if !roles.mouse && !roles.keyboard {
+        return Ok(None);
+    }
+    let mut id = |name: &str| match ask(&format!("device.{name}()")) {
+        Ok(result) => Ok(usb_id(result.as_deref(), name)),
+        // the docs say an app echoes a command it doesn't know with no result, silence is caught too in case one doesn't
+        Err(Error::Timeout { .. }) => Ok(None),
+        Err(error) => Err(error),
+    };
+    Ok(id("VID")?
+        .zip(id("PID")?)
+        .map(|(vid, pid)| UsbIds::new(vid, pid)))
+}
+
+/// `VID=046d` for `device.VID()`, 4 hex digits and the name it was asked for
+pub(crate) fn usb_id(result: Option<&[u8]>, name: &str) -> Option<u16> {
+    let hex = std::str::from_utf8(result?)
+        .ok()?
+        .strip_prefix(name)?
+        .strip_prefix('=')?;
+    (hex.len() == 4 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then(|| u16::from_str_radix(hex, 16).ok())
+        .flatten()
 }
 
 /// a `1` or `0` result, none for no result or anything else
@@ -255,6 +292,7 @@ pub(crate) fn bit(result: Option<&[u8]>) -> Option<bool> {
 pub(crate) fn snapshot(api: FerrumApi, roles: Roles) -> Snapshot {
     let mut info = Info::new(Family::Ferrum);
     info.ferrum_api = Some(api);
+    info.peripheral = roles.peripheral;
     info.model = Some(
         match api {
             FerrumApi::Software => "Ferrum",

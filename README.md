@@ -77,6 +77,8 @@ fn main() -> anybox::Result<()> {
 
 a YSC8K V2 is found on its own like a Medius or a MAKCU. a YSC or a Ferrum only comes back on the same port after a reconnect, so if its port name changes, connect again
 
+to notice a box getting plugged in, `anybox::candidates()` lists the ports a search would look at without opening any of them, so you can call it every second and only run `find()` when the list changes. `snapshot().info.peripheral` has the USB ids of the device plugged into the box, which is what the box shows the PC, on a Medius and on a Ferrum's app port. a MAKCU has no way to say it
+
 what happens on the box comes in as events:
 
 ```rust,no_run
@@ -95,6 +97,8 @@ fn main() -> anybox::Result<()> {
     Ok(())
 }
 ```
+
+`Event::Changed` means the snapshot changed without a reconnect, a mouse set in the Ferrum app for example, so read `snapshot()` again. a MAKCU gives a `Reconnected` for a mouse or keyboard coming or going instead, so watch both
 
 a receiver can ask for only some kinds, `device.events_of(EventKinds::BUTTONS)` for a hotkey for example, and then the box doesn't stream motion or keys just for it. the box only streams while at least one receiver wants something. just so you know, a receiver of keys sees every key typed on the keyboard behind the box, passwords included
 
@@ -195,6 +199,7 @@ Then:
 - anybox talks to its TOWMCULEFT port, the other two ports of the box never get a single byte
 - clicks and key taps are timed on your PC, and the wheel takes one notch at a time
 - keys need a keyboard behind the box. if the box says there's none, keys turn off until you connect again
+- anybox can't tell yet whether a mouse is behind the box, so moves, presses and button events say they work even when nothing is plugged in
 - if the box is in debug mode, leave it in the vendor tool first, anybox won't connect otherwise
 - locks cover the five buttons and a whole X or Y axis, not one direction of it
 - buttons and motion come in one stream, and anybox doesn't know what was already held when you start listening, so a button that's already down when the first report comes in never shows its press, only its release
@@ -215,6 +220,7 @@ Then:
 - the app's Move Multiplier scales every move and anybox can't read it, so leave it at 1 if your moves have to be exact
 - the box never says no, so a command it doesn't take just does nothing. anybox only sends what the box says it has
 - a mouse or keyboard you set in the app after connecting shows up within a second
+- `info.peripheral` comes from the app's `device.VID()` and `device.PID()`, which name the first device plugged into the box, not always the mouse. with nothing plugged in the app answers a default pair that's also a real Logitech receiver, so anybox leaves it empty then
 - the legacy port answers exactly like a KMBox B+, so a B+ opens as a legacy Ferrum too. anybox only promises the legacy commands there, and nobody tried it on a B+
 - locking one way of an axis needs an app that has directional locks, otherwise (and on the legacy port) you can only lock a whole axis
 - i don't know yet whether the events include what anybox sends or only what you do yourself
@@ -226,6 +232,8 @@ Then:
 - a lock on a button that's already held still lets its release through
 - if your app gets killed, its locks stay on the box until something unlocks them
 - after a reconnect anybox lets go of what was held, press again if you still need it
+- right after a reconnect the mouse behind the box can take a second or so to show up again, so until then the snapshot has no mouse and mouse calls come back unsupported. you get a second `Reconnected` once it's there, so wait for that one
+- unplugging the box restarts it, so a button held at that moment stays down in Windows after the reconnect, because the box never sends it the release. anybox can't fix that without clicking for you, a real click on that button clears it
 
 ### Medius
 

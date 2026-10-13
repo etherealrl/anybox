@@ -6,7 +6,8 @@ use std::time::{Duration, Instant};
 use super::frames;
 use super::{Roles, Shared, line, snapshot};
 use crate::backend::Sink;
-use crate::capability::Action;
+use crate::capability::{Action, FerrumApi};
+use crate::error::Result;
 use crate::transport::link::Link;
 
 const PAUSE: Duration = Duration::from_secs(1);
@@ -52,6 +53,13 @@ impl Poller {
         super::bit(frames::result(&reply, true))
     }
 
+    fn result(&self, command: &str) -> Result<Option<Vec<u8>>> {
+        let reply = self
+            .link
+            .request(line(command), Some(frames::key(command.as_bytes())))?;
+        Ok(reply.and_then(|reply| frames::result(&reply, true).map(<[u8]>::to_vec)))
+    }
+
     pub(crate) fn tick(&self) {
         let generation = self.shared.generation.load(Ordering::Acquire);
         let (Some(mouse), Some(keyboard)) =
@@ -69,14 +77,19 @@ impl Poller {
         {
             return;
         }
-        let fresh = snapshot(
-            self.shared.api,
-            Roles {
-                mouse,
-                keyboard,
-                directional: self.shared.directional.load(Ordering::Acquire),
-            },
-        );
+        let mut roles = Roles {
+            mouse,
+            keyboard,
+            directional: self.shared.directional.load(Ordering::Acquire),
+            peripheral: None,
+        };
+        if self.shared.api == FerrumApi::Software {
+            let Ok(peripheral) = super::peripheral(&roles, |command| self.result(command)) else {
+                return;
+            };
+            roles.peripheral = peripheral;
+        }
+        let fresh = snapshot(self.shared.api, roles);
         // a reprobe only runs while the port is down, so holding it up here means none can slip in between
         self.link.while_up(|| {
             if self.shared.generation.load(Ordering::Acquire) != generation {

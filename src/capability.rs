@@ -362,6 +362,12 @@ pub struct Info {
     pub id: Option<StableId>,
     /// which of Ferrum's two APIs this is, none on other boxes
     pub ferrum_api: Option<FerrumApi>,
+    /// the USB ids of the device plugged into the box, which is the identity the box shows the PC, so you can
+    /// tell which device on the PC goes through the box. a Ferrum on its Software API and a Medius report it, a
+    /// MAKCU can't and a YSC isn't read yet. on a Ferrum it's the first device plugged into the box, not always the
+    /// mouse. it's read when you connect and again when what's plugged in changes, so swapping one mouse for
+    /// another within a second can leave the old ids here until the next reconnect
+    pub peripheral: Option<UsbIds>,
 }
 
 impl Info {
@@ -373,6 +379,7 @@ impl Info {
             firmware: None,
             id: None,
             ferrum_api: None,
+            peripheral: None,
         }
     }
 }
@@ -397,8 +404,22 @@ impl fmt::Display for FerrumApi {
     }
 }
 
+/// a USB vendor and product id
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub struct UsbIds {
+    pub vid: u16,
+    pub pid: u16,
+}
+
+impl UsbIds {
+    pub fn new(vid: u16, pid: u16) -> Self {
+        Self { vid, pid }
+    }
+}
+
 /// who the box is and what it can do, both always read from the same connection
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Snapshot {
     pub info: Info,
