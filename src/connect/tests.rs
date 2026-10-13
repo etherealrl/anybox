@@ -1440,7 +1440,6 @@ fn a_scan_gives_every_port_its_own_outcome_in_port_order() {
     assert!(
         matches!(&scanned[3].result, Ok(found) if found.port == "COM6" && found.info.family == Family::Medius)
     );
-    // the box it opened got closed again
     assert!(log().contains(&"shut COM6".to_string()));
 }
 

@@ -73,7 +73,7 @@ fn main() -> anybox::Result<()> {
 }
 ```
 
-`connect()` takes the first box it finds. `anybox::scan()` gives every port it looks at with what's on it, the box and what it can do or why you can't use it (busy, not allowed, too old, nothing there etc), which is what a box picker wants. `Connect::port("COM18")` or `Connect::auto().family(Family::Medius)` opens the one you want, and `Connect::auto().can(Action::Move)` opens the first one that can move, so a keyboard box plugged in next to it gets skipped. a scan opens every box, so don't run it every second, `candidates()` below is the cheap one. a Ferrum isn't found on its own yet, open it with `Connect::port` or `.family(Family::Ferrum)`
+`connect()` takes the first box it finds. `anybox::scan()` gives every port it looks at with what's on it, the box and what it can do or why you can't use it (busy, not allowed, too old, nothing there etc), which is what a box picker wants. `Connect::port("COM18")` or `Connect::auto().family(Family::Medius)` opens the one you want, and `Connect::auto().can(Action::Move)` opens the first one that can move, so a box with only a keyboard behind it gets skipped. a scan opens every box, so don't run it every second, `candidates()` below is the cheap one. a Ferrum isn't found on its own yet, open it with `Connect::port` or `.family(Family::Ferrum)`
 
 a YSC8K (the V1, the only one sold so far) sits behind the same USB chip as a Medius and a MAKCU, so it only gets asked with `.family(Family::Ysc)`, and that asks every one of those ports at up to 9 rates (about 2 s each when nothing YSC is there). a YSC or a Ferrum only comes back on the same port after a reconnect, so if its port name changes, connect again
 
