@@ -54,7 +54,7 @@ pub use capability::{
     Firmware, Info, Quirk, Snapshot, StableId, UsbIds,
 };
 pub use click::{Click, ClickTiming, Timing};
-pub use connect::{Connect, Found, candidates, connect, find};
+pub use connect::{Connect, Found, Scanned, candidates, connect, scan};
 pub use device::Device;
 pub use error::{Error, Result};
 pub use event::{

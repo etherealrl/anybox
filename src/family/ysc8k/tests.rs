@@ -990,9 +990,7 @@ fn discovery_uses_the_production_connect_path_and_only_lists_left_ports() {
         assert_eq!(device.snapshot().info.id, None);
         device.close().unwrap();
     }
-    let found = Connect::auto()
-        .find_in(&|| rig.system.ports(), probes)
-        .unwrap();
+    let found = Connect::auto().found_in(&|| rig.system.ports(), probes);
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].port, "COM7");
     assert_eq!(
@@ -1004,8 +1002,7 @@ fn discovery_uses_the_production_connect_path_and_only_lists_left_ports() {
     assert!(
         Connect::auto()
             .id(StableId::UsbSerial("TOWMCULEFT".into()))
-            .find_in(&|| rig.system.ports(), probes)
-            .unwrap()
+            .found_in(&|| rig.system.ports(), probes)
             .is_empty()
     );
 }
@@ -1050,9 +1047,7 @@ fn multiple_left_boxes_are_listed_in_port_order_and_cannot_be_selected_by_role_i
     rig.system.plug("COM10", usb(Some("TOWMCULEFT")), second);
     SYSTEM.with_borrow_mut(|system| *system = Some(rig.system.clone()));
     let probes: &[(Family, crate::family::Open)] = &[(Family::Ysc, open_fake)];
-    let found = Connect::auto()
-        .find_in(&|| rig.system.ports(), probes)
-        .unwrap();
+    let found = Connect::auto().found_in(&|| rig.system.ports(), probes);
     assert_eq!(
         found
             .iter()
@@ -1151,7 +1146,7 @@ fn busy_and_permission_errors_survive_discovery() {
         Err(Error::PortBusy { .. })
     ));
     assert!(matches!(
-        Connect::auto().find_in(&|| rig.system.ports(), probes),
+        &Connect::auto().scan_in(&|| rig.system.ports(), probes)[0].result,
         Err(Error::PortBusy { .. })
     ));
     #[cfg(unix)]

@@ -73,11 +73,11 @@ fn main() -> anybox::Result<()> {
 }
 ```
 
-`connect()` takes the first box it finds. `anybox::find()` lists every box on the machine with what each one can do, `Connect::port("COM18")` or `Connect::auto().family(Family::Medius)` opens the one you want, and `Connect::auto().can(Action::Move)` opens the first one that can move, so a keyboard box plugged in next to it gets skipped. a Ferrum isn't found on its own yet, open it with `Connect::port` or `.family(Family::Ferrum)`
+`connect()` takes the first box it finds. `anybox::scan()` gives every port it looks at with what's on it, the box and what it can do or why you can't use it (busy, not allowed, too old, nothing there etc), which is what a box picker wants. `Connect::port("COM18")` or `Connect::auto().family(Family::Medius)` opens the one you want, and `Connect::auto().can(Action::Move)` opens the first one that can move, so a keyboard box plugged in next to it gets skipped. a scan opens every box, so don't run it every second, `candidates()` below is the cheap one. a Ferrum isn't found on its own yet, open it with `Connect::port` or `.family(Family::Ferrum)`
 
 a YSC8K (the V1, the only one sold so far) sits behind the same USB chip as a Medius and a MAKCU, so it only gets asked with `.family(Family::Ysc)`, and that asks every one of those ports at up to 9 rates (about 2 s each when nothing YSC is there). a YSC or a Ferrum only comes back on the same port after a reconnect, so if its port name changes, connect again
 
-to notice a box getting plugged in, `anybox::candidates()` lists the ports a search would look at without opening any of them, so you can call it every second and only run `find()` when the list changes. `snapshot().info.peripheral` has the USB ids of the device plugged into the box, which is what the box shows the PC, on a Medius and on a Ferrum's app port. a MAKCU has no way to say it
+to notice a box getting plugged in, `anybox::candidates()` lists the ports a search would look at without opening any of them, so you can call it every second and only run `scan()` when the list changes. `snapshot().info.peripheral` has the USB ids of the device plugged into the box, which is what the box shows the PC, on a Medius and on a Ferrum's app port. a MAKCU has no way to say it
 
 what happens on the box comes in as events:
 
