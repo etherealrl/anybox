@@ -20,6 +20,13 @@ mod frames;
 use frames::YscFrames;
 
 const BAUD: u32 = 115_200;
+/// the vendor driver's own order for finding a V1's rate, read out of its auto detect
+const V1_BAUDS: [u32; 9] = [
+    4_000_000, 115_200, 3_000_000, 230_400, 2_000_000, 460_800, 1_500_000, 921_600, 1_000_000,
+];
+/// how long the vendor driver waits for a V1's answer at each rate
+const V1_WAIT: Duration = Duration::from_millis(200);
+const BOOTLOADER: &str = "the YSC box is in its bootloader, finish or leave the firmware update in the vendor tool and connect again";
 const KEYBOARD: &str =
     "the YSC box says there's no keyboard behind it, so plug one in and connect again";
 const BUTTONS: [Button; 5] = [
@@ -34,20 +41,29 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-fn guard(candidate: &Candidate) -> Result<()> {
-    if let Some(usb) = candidate.usb.as_ref().filter(|usb| is_ysc(usb)) {
-        match usb.serial.as_deref() {
-            Some("TOWMCULEFT") => return Ok(()),
-            Some(role @ ("TOWMCURIGHT" | "TOWMCUIAP")) => {
-                return Err(Error::Unsupported {
-                    action: Action::Connect,
-                    family: Family::Ysc,
-                    reason: format!("this is the {role} port, use the TOWMCULEFT port instead")
-                        .into(),
-                });
-            }
-            _ => {}
+/// the single chip box behind a USB serial bridge, or the dual chip one on its own CDC ports
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Variant {
+    V1,
+    V2,
+}
+
+/// a V2 only gets anything on its left port. any other port is taken as a V1, the connect code only lets a YSC
+/// probe there when the caller asked for a YSC
+fn guard(candidate: &Candidate) -> Result<Variant> {
+    let Some(usb) = candidate.usb.as_ref().filter(|usb| is_ysc(usb)) else {
+        return Ok(Variant::V1);
+    };
+    match usb.serial.as_deref() {
+        Some("TOWMCULEFT") => return Ok(Variant::V2),
+        Some(role @ ("TOWMCURIGHT" | "TOWMCUIAP")) => {
+            return Err(Error::Unsupported {
+                action: Action::Connect,
+                family: Family::Ysc,
+                reason: format!("this is the {role} port, use the TOWMCULEFT port instead").into(),
+            });
         }
+        _ => {}
     }
     Err(Error::NotFound {
         tried: vec![candidate.path.display().to_string()],
@@ -65,21 +81,38 @@ fn line(text: &str) -> Vec<u8> {
     format!("{text}\r\n").into_bytes()
 }
 
-fn describe(probe: &Probe<'_>, reconnect: bool) -> Result<Snapshot> {
-    let budget = if reconnect {
-        WRITE_DEADLINE
-    } else {
-        Duration::from_millis(1500)
+fn version(variant: Variant, frame: &[u8]) -> Option<String> {
+    match variant {
+        Variant::V1 => frames::v1_version(frame),
+        Variant::V2 => frames::version(frame),
+    }
+}
+
+fn describe(probe: &Probe<'_>, reconnect: bool, variant: Variant) -> Result<Snapshot> {
+    let budget = match (variant, reconnect) {
+        (Variant::V1, _) => V1_WAIT,
+        (Variant::V2, true) => WRITE_DEADLINE,
+        (Variant::V2, false) => Duration::from_millis(1500),
     };
     let reply = probe.ask(
         &packet("{\"cmd\":132}")?,
         &mut YscFrames::probe(),
-        |frame| frames::version(frame).is_some(),
+        |frame| {
+            version(variant, frame).is_some()
+                || (variant == Variant::V1 && frames::bootloader(frame))
+        },
         budget,
     )?;
+    if variant == Variant::V1 && reply.as_deref().is_some_and(frames::bootloader) {
+        return Err(Error::Unsupported {
+            action: Action::Connect,
+            family: Family::Ysc,
+            reason: BOOTLOADER.into(),
+        });
+    }
     let version = reply
         .as_deref()
-        .and_then(frames::version)
+        .and_then(|frame| version(variant, frame))
         .ok_or(Error::NotFound { tried: Vec::new() })?;
     let debug_budget = if reconnect {
         WRITE_DEADLINE
@@ -97,7 +130,7 @@ fn describe(probe: &Probe<'_>, reconnect: bool) -> Result<Snapshot> {
     }
     probe.say(&packet("{\"cmd\":34,\"status\":0}")?)?;
     probe.say(&line("km.echo(1)"))?;
-    Ok(snapshot(version))
+    Ok(snapshot(version, variant))
 }
 
 pub(crate) fn open(candidate: &Candidate, sink: Sink) -> Result<(Box<dyn Backend>, Snapshot)> {
@@ -110,11 +143,42 @@ pub(crate) fn attach(
     candidate: &Candidate,
     sink: Sink,
 ) -> Result<(YscBackend, Snapshot)> {
-    guard(candidate)?;
-    let port = system.open(&candidate.path, BAUD)?;
     let stop = AtomicBool::new(false);
-    let snapshot = describe(&Probe::new(&*port, &stop), false)?;
-    start(system, port, candidate, snapshot, sink)
+    if guard(candidate)? == Variant::V2 {
+        let port = system.open(&candidate.path, BAUD)?;
+        let snapshot = describe(&Probe::new(&*port, &stop), false, Variant::V2)?;
+        return start(
+            system,
+            port,
+            candidate,
+            snapshot,
+            Variant::V2,
+            vec![BAUD],
+            sink,
+        );
+    }
+    for &baud in &V1_BAUDS {
+        let port = match system.open(&candidate.path, baud) {
+            Ok(port) => port,
+            // a bridge whose driver doesn't take this rate can still take the next one
+            Err(Error::Io(_)) => continue,
+            Err(error) => return Err(error),
+        };
+        match describe(&Probe::new(&*port, &stop), false, Variant::V1) {
+            Ok(snapshot) => {
+                // a reconnect tries the rate that worked first, then the rest in the vendor's order
+                let bauds = std::iter::once(baud)
+                    .chain(V1_BAUDS.into_iter().filter(|&other| other != baud))
+                    .collect();
+                return start(system, port, candidate, snapshot, Variant::V1, bauds, sink);
+            }
+            Err(Error::NotFound { .. }) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Err(Error::NotFound {
+        tried: vec![candidate.path.display().to_string()],
+    })
 }
 
 fn start(
@@ -122,15 +186,15 @@ fn start(
     port: Box<dyn Port>,
     candidate: &Candidate,
     snapshot: Snapshot,
+    variant: Variant,
+    bauds: Vec<u32>,
     sink: Sink,
 ) -> Result<(YscBackend, Snapshot)> {
     let shared = Arc::new(Shared::new(snapshot.clone()));
     let reprobe = {
         let shared = shared.clone();
-        let candidate = candidate.clone();
         Box::new(move |probe: &Probe<'_>| {
-            guard(&candidate)?;
-            let snapshot = describe(probe, true)?;
+            let snapshot = describe(probe, true, variant)?;
             // a key write that's half recorded would land in the old history and survive the reset
             let _requests = lock(&shared.requests);
             let mut state = lock(&shared.state);
@@ -149,7 +213,7 @@ fn start(
             path: candidate.path.clone(),
             usb: candidate.usb.clone(),
             id: None,
-            bauds: vec![BAUD],
+            bauds,
         },
         reprobe,
         sink,
@@ -157,9 +221,15 @@ fn start(
     Ok((YscBackend { shared, link }, snapshot))
 }
 
-fn snapshot(version: String) -> Snapshot {
+fn snapshot(version: String, variant: Variant) -> Snapshot {
     let mut info = Info::new(Family::Ysc);
-    info.model = Some("YSC 8K V2".into());
+    info.model = Some(
+        match variant {
+            Variant::V1 => "YSC 8K V1",
+            Variant::V2 => "YSC 8K V2",
+        }
+        .into(),
+    );
     info.firmware = Some(Firmware::Text(version));
     let capabilities = Capabilities::new(BUTTONS.to_vec())
         .with_axes(vec![Axis::X, Axis::Y])

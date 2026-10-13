@@ -806,19 +806,18 @@ fn every_command_goes_out_the_way_the_docs_write_it() {
 }
 
 #[test]
-fn a_hold_or_a_big_scroll_is_refused_before_it_goes_out() {
+fn a_hold_is_a_press_and_a_release_and_a_big_scroll_is_refused_before_it_goes_out() {
     let rig = rig(State::software());
     let (device, _) = rig.device();
     rig.clear();
     let hold = Click::hold(Duration::from_millis(50));
-    assert!(matches!(
-        device.click_with(Button::Left, hold),
-        Err(Error::Unsupported { .. })
-    ));
-    assert!(matches!(
-        device.tap_key_with(Key::A, hold),
-        Err(Error::Unsupported { .. })
-    ));
+    device.click_with(Button::Left, hold).unwrap();
+    device.tap_key_with(Key::A, hold).unwrap();
+    assert_eq!(
+        rig.lines(),
+        ["km.left(1)", "km.left(0)", "km.down(4)", "km.up(4)"]
+    );
+    rig.clear();
     assert!(matches!(device.wheel(128), Err(Error::Unsupported { .. })));
     device.wheel(127).unwrap();
     assert_eq!(rig.lines(), ["km.wheel(127)"]);

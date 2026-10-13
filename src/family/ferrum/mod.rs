@@ -366,7 +366,7 @@ pub(crate) fn snapshot(api: FerrumApi, roles: Roles) -> Snapshot {
             )
     } else {
         let none = Capability::unsupported(
-            "there's no device set as a mouse in the Ferrum app right now, set one and it shows up by itself",
+            "the Ferrum app has no device set as a mouse right now, or the box isn't plugged into this PC, set one or plug the box back in and it shows up by itself",
         );
         mouse
             .into_iter()
@@ -389,7 +389,7 @@ pub(crate) fn snapshot(api: FerrumApi, roles: Roles) -> Snapshot {
             .set(Action::LockKey, Capability::native()),
         FerrumApi::Software => {
             let none = Capability::unsupported(
-                "there's no device set as a keyboard in the Ferrum app right now, set one and it shows up by itself",
+                "the Ferrum app has no device set as a keyboard right now, or the box isn't plugged into this PC, set one or plug the box back in and it shows up by itself",
             );
             keyboard
                 .into_iter()

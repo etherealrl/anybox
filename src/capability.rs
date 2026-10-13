@@ -170,7 +170,8 @@ pub enum Quirk {
     WholeAxisOnly,
     /// the most wheel notches the box takes in one command
     NotchesPerCommand(u16),
-    /// the box's click has its own timing and doesn't take a hold
+    /// the box's click has its own timing and can't take a hold, so a click with one is timed from the PC with a
+    /// press and a release
     FixedClickTiming,
     /// the longest hold the box's click takes
     MaxHold(Duration),

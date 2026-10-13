@@ -1543,36 +1543,31 @@ fn an_optional_partial_debug_frame_is_discarded_without_another_identity_request
 }
 
 #[test]
-fn wrong_vid_pid_or_no_usb_tuple_is_refused_by_the_backend_before_any_open() {
+fn a_port_that_isnt_a_v2_one_only_gets_the_v1_sweep_and_a_v2_answer_there_isnt_a_v1() {
     let rig = Rig::new();
-    for identity in [
-        None,
-        Some(crate::transport::PortUsb {
-            vid: 0x1234,
-            pid: 0xfe0c,
-            serial: Some("TOWMCULEFT".into()),
-        }),
-        Some(crate::transport::PortUsb {
-            vid: 0x1a86,
-            pid: 0x55d3,
-            serial: Some("TOWMCULEFT".into()),
-        }),
-    ] {
-        let (tx, _) = mpsc::channel();
-        assert!(matches!(
-            attach(
-                Arc::new(rig.system.clone()),
-                &Candidate {
-                    path: "COM7".into(),
-                    usb: identity
-                },
-                Sink(tx)
-            ),
-            Err(Error::NotFound { .. })
-        ));
-    }
-    assert!(rig.system.opened_at().is_empty());
-    assert!(rig.fake.written().is_empty());
+    let (tx, _) = mpsc::channel();
+    let candidate = Candidate {
+        path: "COM7".into(),
+        usb: ch343(),
+    };
+    let started = Instant::now();
+    assert!(matches!(
+        attach(Arc::new(rig.system.clone()), &candidate, Sink(tx)),
+        Err(Error::NotFound { .. })
+    ));
+    // 9 rates at the vendor's 200 ms each
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(rig.system.opened_at(), V1_BAUDS);
+    assert!(
+        rig.fake
+            .written()
+            .iter()
+            .all(|bytes| *bytes == wire(r#"{"cmd":132}"#))
+    );
 }
 
 #[test]
@@ -1635,4 +1630,102 @@ fn past_changed(events: &crate::event::Events) -> Event {
             event => return event,
         }
     }
+}
+
+const V1_REPLY: &str = r#"{"code":200,"message":"version","data":"Jul 23 2026"}"#;
+
+fn ch343() -> Option<crate::transport::PortUsb> {
+    Some(crate::transport::PortUsb {
+        vid: 0x1a86,
+        pid: 0x55d3,
+        serial: Some("5B69201745".into()),
+    })
+}
+
+/// a V1 that only understands `rate` and never answers cmd 702
+fn v1_at(rate: u32, reply: &'static str) -> Arc<FakeBox> {
+    let mut state = BoxState {
+        debug: None,
+        ..BoxState::default()
+    };
+    FakeBox::by_baud(move |baud, bytes| {
+        if baud != rate {
+            Vec::new()
+        } else if bytes == wire(r#"{"cmd":132}"#) {
+            vec![wire(reply)]
+        } else {
+            respond(&mut state, bytes)
+        }
+    })
+}
+
+fn attach_at(system: &FakeSystem, path: &str) -> Result<(YscBackend, Snapshot, Receiver<Signal>)> {
+    let candidate = system
+        .ports()
+        .into_iter()
+        .find(|c| c.path == Path::new(path))
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let (backend, snapshot) = attach(Arc::new(system.clone()), &candidate, Sink(tx))?;
+    Ok((backend, snapshot, rx))
+}
+
+#[test]
+fn a_v1_is_found_at_its_rate_in_the_vendor_order_and_keeps_being_a_v1_after_a_reconnect_at_another()
+{
+    let system = FakeSystem::default();
+    system.plug("COM3", ch343(), v1_at(2_000_000, V1_REPLY));
+    let (backend, snapshot, rx) = attach_at(&system, "COM3").unwrap();
+    assert_eq!(
+        system.opened_at(),
+        [4_000_000, 115_200, 3_000_000, 230_400, 2_000_000]
+    );
+    assert_eq!(snapshot.info.model.as_deref(), Some("YSC 8K V1"));
+    assert_eq!(
+        snapshot.info.firmware,
+        Some(Firmware::Text("Jul 23 2026".into()))
+    );
+
+    system.unplug("COM3");
+    signal(&rx, |signal| matches!(signal, Signal::Disconnected));
+    system.plug("COM3", ch343(), v1_at(4_000_000, V1_REPLY));
+    let Signal::Reconnected(again) = signal(&rx, |signal| matches!(signal, Signal::Reconnected(_)))
+    else {
+        unreachable!()
+    };
+    assert_eq!(again.info.model.as_deref(), Some("YSC 8K V1"));
+    // the rate it was at first, then the rest in the vendor order, so 4M is next
+    assert_eq!(system.opened_at()[5..7], [2_000_000, 4_000_000]);
+    backend.shutdown(WRITE_DEADLINE);
+}
+
+#[test]
+fn a_v1_in_its_bootloader_is_refused_and_only_ever_asked_its_version() {
+    let system = FakeSystem::default();
+    let fake = v1_at(
+        1_500_000,
+        r#"{"code":200,"message":"version","data":"YSC-IAP"}"#,
+    );
+    system.plug("COM3", ch343(), fake.clone());
+    let Err(Error::Unsupported { reason, .. }) = attach_at(&system, "COM3") else {
+        panic!("the bootloader opened");
+    };
+    assert!(reason.contains("bootloader"), "{reason}");
+    assert_eq!(system.opened_at().last(), Some(&1_500_000));
+    assert!(
+        fake.written()
+            .iter()
+            .all(|bytes| *bytes == wire(r#"{"cmd":132}"#))
+    );
+}
+
+#[test]
+fn a_rate_the_bridge_cant_take_is_skipped_and_the_next_one_still_finds_the_v1() {
+    let system = FakeSystem::default();
+    system.plug("COM3", ch343(), v1_at(115_200, V1_REPLY));
+    system.refuse_baud(4_000_000);
+    let (backend, snapshot, _) = attach_at(&system, "COM3").unwrap();
+    assert_eq!(snapshot.info.model.as_deref(), Some("YSC 8K V1"));
+    assert_eq!(system.opened_at(), [115_200]);
+    backend.shutdown(WRITE_DEADLINE);
 }

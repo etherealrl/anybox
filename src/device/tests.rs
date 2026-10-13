@@ -99,19 +99,41 @@ fn a_click_is_only_composed_when_press_and_release_both_work() {
 }
 
 #[test]
-fn a_fixed_timing_click_refuses_a_hold() {
+fn a_fixed_timing_click_with_a_hold_is_timed_on_the_host() {
+    let capabilities = mouse().set(
+        Action::Click,
+        Capability::native().with(Quirk::FixedClickTiming),
+    );
+    let (device, fake) = fake::open(capabilities, ClickTiming::Makcu);
+    device
+        .click_with(Button::Left, Click::hold(Duration::from_millis(40)))
+        .unwrap();
+    let log = fake.timed_log();
+    assert_eq!(
+        log.iter().map(|(_, c)| *c).collect::<Vec<_>>(),
+        vec![Command::Press(Button::Left), Command::Release(Button::Left)]
+    );
+    assert!(log[1].0 - log[0].0 >= Duration::from_millis(40));
+    device.click(Button::Left).unwrap();
+    assert_eq!(fake.log().len(), 3);
+}
+
+#[test]
+fn native_only_refuses_a_hold_on_a_fixed_timing_click_and_sends_nothing() {
     let capabilities = mouse().set(
         Action::Click,
         Capability::native().with(Quirk::FixedClickTiming),
     );
     let (device, fake) = fake::open(capabilities, ClickTiming::Makcu);
     let error = device
-        .click_with(Button::Left, Click::hold(Duration::from_millis(40)))
+        .click_with(
+            Button::Left,
+            Click::hold(Duration::from_millis(40)).native_only(),
+        )
         .unwrap_err();
     assert!(matches!(error, Error::Unsupported { .. }));
+    assert!(error.to_string().contains("can't take a hold"), "{error}");
     assert!(fake.log().is_empty());
-    device.click(Button::Left).unwrap();
-    assert_eq!(fake.log().len(), 1);
 }
 
 #[test]

@@ -540,13 +540,6 @@ impl Core {
             } => {
                 for quirk in &capability.quirks {
                     match quirk {
-                        Quirk::FixedClickTiming => {
-                            return Err(Self::unsupported(
-                                snapshot,
-                                action,
-                                "it has its own timing and doesn't take a hold, so press and release it yourself if you need one",
-                            ));
-                        }
                         Quirk::MaxHold(max) if hold > *max => {
                             return Err(Error::InvalidArgument {
                                 action,
@@ -760,7 +753,11 @@ impl Core {
     fn tap(&self, usage: Usage, tap: Click) -> Result<()> {
         let (action, press, release) = tap_actions(usage);
         let (mut output, snapshot) = self.open_output()?;
-        if snapshot.capabilities.get(action).execution != Execution::Host {
+        let capability = snapshot.capabilities.get(action);
+        // a box whose own click has fixed timing can't take a hold, so a hold gets timed from the PC with a press and a
+        // release, the way Ferrum's docs say to do it
+        let fixed = tap.hold.is_some() && capability.quirks.contains(&Quirk::FixedClickTiming);
+        if capability.execution != Execution::Host && !fixed {
             return self.send_locked(
                 &mut output,
                 &snapshot,
@@ -770,11 +767,12 @@ impl Core {
             );
         }
         if tap.timing == Timing::NativeOnly {
-            return Err(Self::unsupported(
-                &snapshot,
-                action,
-                "the box can't time it by itself and you asked for native timing only",
-            ));
+            let reason = if fixed {
+                "the box's own click can't take a hold and you asked for native timing only"
+            } else {
+                "the box can't time it by itself and you asked for native timing only"
+            };
+            return Err(Self::unsupported(&snapshot, action, reason));
         }
         let hold = match tap.hold {
             Some(hold) => hold,
