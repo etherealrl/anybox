@@ -1563,6 +1563,52 @@ fn a_stream_that_doesnt_come_on_is_rejected_to_the_receivers_that_wanted_it() {
 }
 
 #[test]
+fn a_receiver_made_right_after_a_refused_one_still_hears_its_own_refusal() {
+    let (device, fake) = fake::open(streamer(), ClickTiming::Makcu);
+    fake.fail_streams(
+        kinds(true, false, false),
+        Error::Io(std::io::Error::other("no")),
+    );
+    let refused = Ok(Event::Rejected {
+        action: Action::ButtonEvents,
+        count: 1,
+    });
+    let first = device.events_of(EventKinds::BUTTONS);
+    device.settle();
+    assert_eq!(first.try_recv(), refused);
+    drop(first);
+    // the box refuses again, like a Medius with its catch table still full
+    fake.fail_streams(
+        kinds(true, false, false),
+        Error::Io(std::io::Error::other("no")),
+    );
+    let second = device.events_of(EventKinds::BUTTONS);
+    device.settle();
+    assert_eq!(second.try_recv(), refused);
+    assert!(second.try_recv().is_err());
+}
+
+#[test]
+fn a_refusal_the_box_reports_before_the_switch_returns_reaches_the_receiver_once() {
+    let (device, fake) = fake::open(streamer(), ClickTiming::Makcu);
+    fake.fail_streams(
+        kinds(true, false, false),
+        Error::Io(std::io::Error::other("no")),
+    );
+    fake.refuse_before_the_switch_returns(Action::ButtonEvents);
+    let buttons = device.events_of(EventKinds::BUTTONS);
+    device.settle();
+    assert_eq!(
+        buttons.try_recv(),
+        Ok(Event::Rejected {
+            action: Action::ButtonEvents,
+            count: 1
+        })
+    );
+    assert!(buttons.try_recv().is_err());
+}
+
+#[test]
 fn a_stream_that_failed_on_a_lost_link_isnt_rejected() {
     let (device, fake) = fake::open(streamer(), ClickTiming::Makcu);
     fake.fail_streams(kinds(true, false, false), Error::Disconnected);
@@ -1700,5 +1746,23 @@ fn a_change_that_adds_a_kind_streams_it_to_whoever_wants_it() {
             keys: true,
             ..InputKinds::default()
         })
+    );
+}
+
+#[test]
+fn a_timeout_too_long_for_the_clock_waits_like_recv() {
+    let (device, fake) = fake::open(mouse(), ClickTiming::Makcu);
+    let events = device.events();
+    fake.motion(1);
+    device.settle();
+    device.close().unwrap();
+    // what was queued before the close still comes out first
+    assert!(matches!(
+        events.recv_timeout(Duration::MAX),
+        Ok(Event::Motion { .. })
+    ));
+    assert_eq!(
+        events.recv_timeout(Duration::MAX),
+        Err(crate::event::RecvTimeoutError::Closed)
     );
 }

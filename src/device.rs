@@ -19,6 +19,8 @@ use crate::key::{Key, MediaKey};
 
 /// how long drop waits for the backend and the link thread before it gives up on them
 const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(1);
+/// how close two refusals of one stream have to be to count as the same one, see `publish`
+const MERGE: Duration = Duration::from_secs(1);
 
 /// one connected box. every call checks what the box can do first, so nothing is faked and nothing is
 /// silently dropped. dropping it lets go of every button and key you were holding and closes the port
@@ -40,7 +42,22 @@ struct Core {
     signals: Sender<Signal>,
     port: String,
     /// when each stream action was last refused, see `publish`
-    refused: Mutex<HashMap<Action, Instant>>,
+    refused: Mutex<Refusals>,
+}
+
+/// when each stream action was last refused, and a number that goes up every time a refusal actually went out, so
+/// a new receiver can tell whether one reached it since it was registered
+#[derive(Default)]
+struct Refusals {
+    last: HashMap<Action, (Instant, u64)>,
+    sent: u64,
+}
+
+impl Refusals {
+    fn note(&mut self, action: Action, at: Instant) {
+        self.sent += 1;
+        self.last.insert(action, (at, self.sent));
+    }
 }
 
 /// what was sent to the box, kept under one lock with the sending so the record never disagrees with the box
@@ -114,7 +131,7 @@ impl Device {
             opened: Instant::now(),
             signals: start.signals,
             port: start.port.clone(),
-            refused: Mutex::new(HashMap::new()),
+            refused: Mutex::new(Refusals::default()),
         });
         let link = spawn_link(Arc::downgrade(&core), start.incoming)?;
         Ok(Self {
@@ -276,7 +293,8 @@ impl Device {
 
     /// a receiver for only these kinds of input, plus the connection events. the box streams what any receiver
     /// wants, so a receiver for buttons alone doesn't make it send motion. a kind this box can't stream gets one
-    /// `Rejected` for it right away. on Medius each kind is its own subscription, so the order between two kinds
+    /// `Rejected` for it right away, and so does a kind the box refuses to switch on, even when an older receiver
+    /// was just told the same thing. on Medius each kind is its own subscription, so the order between two kinds
     /// is only as good as their box time
     pub fn events_of(&self, kinds: EventKinds) -> Events {
         // `ALL` means everything this box has, so it never gets refusals for what it doesn't
@@ -819,7 +837,9 @@ impl Core {
     fn add_receiver(&self, kinds: EventKinds, report_unsupported: bool) -> (Arc<Queue>, u64) {
         let output = lock(&self.output);
         let queue = Arc::new(Queue::new(QUEUE_CAPACITY));
-        let id = {
+        let (id, seen) = {
+            // registered under the merge lock, so a refusal published after this reaches it
+            let refused = lock(&self.refused);
             let mut receivers = lock(&self.receivers);
             let id = receivers.next_id;
             receivers.next_id += 1;
@@ -832,7 +852,7 @@ impl Core {
                 kinds,
                 queue: Arc::downgrade(&queue),
             });
-            id
+            (id, refused.last.clone())
         };
         let snapshot = self.snapshot();
         if report_unsupported {
@@ -843,7 +863,30 @@ impl Core {
         }
         let refused = self.apply_streams(&output, &snapshot);
         drop(output);
-        self.publish_all(refused);
+        // the merge in publish is for the box saying the same refusal twice. this receiver just asked, so it hears
+        // its answer once, otherwise a receiver made right after a refused one would wait forever for a stream
+        // that never came on
+        for action in refused {
+            let event = Event::Rejected { action, count: 1 };
+            let mut merge = lock(&self.refused);
+            let last = merge.last.get(&action).copied();
+            // a MAKCU's reader can publish the refusal before the switch returns, and then this receiver has it
+            let heard = last.map(|(_, n)| n) != seen.get(&action).map(|(_, n)| *n);
+            if !heard && EventKinds::of(&event).is_some_and(|kind| !(kinds & kind).is_empty()) {
+                queue.push(event.clone());
+            }
+            let now = Instant::now();
+            match last {
+                Some((at, n)) if now.duration_since(at) < MERGE => {
+                    // counted from this answer, so the box's second report of it merges for this receiver too
+                    merge.last.insert(action, (now, n));
+                }
+                _ => {
+                    merge.note(action, now);
+                    self.deliver(&event, Some(id));
+                }
+            }
+        }
         (queue, id)
     }
 
@@ -856,22 +899,32 @@ impl Core {
             && EventKinds::of_action(*action).is_some()
         {
             let now = Instant::now();
-            let mut refused = lock(&self.refused);
-            if refused
+            // held while it goes out, so add_receiver can tell whether a refusal reached its new receiver
+            let mut merge = lock(&self.refused);
+            if merge
+                .last
                 .get(action)
-                .is_some_and(|at| now.duration_since(*at) < Duration::from_secs(1))
+                .is_some_and(|(at, _)| now.duration_since(*at) < MERGE)
             {
                 return;
             }
-            refused.insert(*action, now);
+            merge.note(*action, now);
+            self.deliver(&event, None);
+            return;
         }
-        let kind = EventKinds::of(&event);
+        self.deliver(&event, None);
+    }
+
+    fn deliver(&self, event: &Event, skip: Option<u64>) {
+        let kind = EventKinds::of(event);
         let mut receivers = lock(&self.receivers);
         receivers
             .entries
             .retain(|entry| match entry.queue.upgrade() {
                 Some(queue) => {
-                    if kind.is_none_or(|kind| !(entry.kinds & kind).is_empty()) {
+                    if Some(entry.id) != skip
+                        && kind.is_none_or(|kind| !(entry.kinds & kind).is_empty())
+                    {
                         queue.push(event.clone());
                     }
                     true
@@ -880,9 +933,9 @@ impl Core {
             });
     }
 
-    fn publish_all(&self, events: Vec<Event>) {
-        for event in events {
-            self.publish(event);
+    fn publish_refused(&self, actions: Vec<Action>) {
+        for action in actions {
+            self.publish(Event::Rejected { action, count: 1 });
         }
     }
 
@@ -910,7 +963,7 @@ impl Core {
     /// called with the output lock held, which is what orders it against reconnects and the other receivers. it
     /// returns the refusals to publish once the output lock is let go, `Disconnected` isn't one because the
     /// reconnect asks again
-    fn apply_streams(&self, output: &Output, snapshot: &Snapshot) -> Vec<Event> {
+    fn apply_streams(&self, output: &Output, snapshot: &Snapshot) -> Vec<Action> {
         if output.closing || !output.link_up {
             return Vec::new();
         }
@@ -920,7 +973,7 @@ impl Core {
             Err(failure) if !matches!(failure.error, Error::Disconnected) => {
                 (EventKinds::from_input(failure.failed) & wanted)
                     .each()
-                    .map(|(_, action)| Event::Rejected { action, count: 1 })
+                    .map(|(_, action)| action)
                     .collect()
             }
             _ => Vec::new(),
@@ -1097,7 +1150,7 @@ impl Core {
                 let refused = self.apply_streams(&output, &snapshot);
                 drop(output);
                 self.publish(Event::Reconnected);
-                self.publish_all(refused);
+                self.publish_refused(refused);
             }
             Signal::Changed(snapshot) => {
                 let output = lock(&self.output);
@@ -1121,7 +1174,7 @@ impl Core {
                 if changed {
                     self.publish(Event::Changed);
                 }
-                self.publish_all(refused);
+                self.publish_refused(refused);
             }
             Signal::SessionReset => {
                 let mut output = lock(&self.output);
@@ -1135,7 +1188,7 @@ impl Core {
                 let refused = self.apply_streams(&output, &snapshot);
                 drop(output);
                 self.publish(Event::SessionReset);
-                self.publish_all(refused);
+                self.publish_refused(refused);
             }
             #[cfg(test)]
             Signal::Barrier(done) => {
@@ -1152,7 +1205,7 @@ impl Listeners for Core {
         lock(&self.receivers).entries.retain(|entry| entry.id != id);
         let refused = self.apply_streams(&output, &self.snapshot());
         drop(output);
-        self.publish_all(refused);
+        self.publish_refused(refused);
     }
 }
 

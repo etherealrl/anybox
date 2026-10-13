@@ -296,7 +296,8 @@ impl Stamp {
     pub fn with_received(mut self, received: Instant, qpc: Option<i64>) -> Self {
         self.received = received;
         self.received_since_open = if received >= self.arrived {
-            self.since_open + received.duration_since(self.arrived)
+            self.since_open
+                .saturating_add(received.duration_since(self.arrived))
         } else {
             self.since_open
                 .saturating_sub(self.arrived.duration_since(received))
@@ -557,7 +558,10 @@ impl Events {
     }
 
     pub fn recv_timeout(&self, timeout: Duration) -> Result<Event, RecvTimeoutError> {
-        let deadline = Instant::now() + timeout;
+        // a timeout too long for the clock to add is the same as waiting forever
+        let Some(deadline) = Instant::now().checked_add(timeout) else {
+            return self.recv().map_err(|Closed| RecvTimeoutError::Closed);
+        };
         let mut state = self.queue.lock();
         loop {
             match Queue::try_pop(&mut state) {
