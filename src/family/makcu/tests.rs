@@ -2652,3 +2652,30 @@ fn a_refused_stream_switch_is_one_rejected() {
     }
     assert_eq!(count, 1);
 }
+
+#[test]
+fn a_receiver_made_right_after_a_refused_one_gets_its_own_single_rejected() {
+    let rig = rig(State::makcu(4094));
+    let (device, _poller) = rig.device();
+    rig.set(|state| {
+        state.refuse.insert(0x52);
+    });
+    let rejected = |events: &crate::event::Events| {
+        let mut count = 0;
+        while let Ok(event) = events.recv_timeout(Duration::from_millis(300)) {
+            if let Event::Rejected {
+                action: Action::ButtonEvents,
+                count: n,
+            } = event
+            {
+                count += n;
+            }
+        }
+        count
+    };
+    let first = device.events_of(crate::event::EventKinds::BUTTONS);
+    assert_eq!(rejected(&first), 1);
+    drop(first);
+    let second = device.events_of(crate::event::EventKinds::BUTTONS);
+    assert_eq!(rejected(&second), 1);
+}

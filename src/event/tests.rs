@@ -1,7 +1,7 @@
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use super::{DropSource, Event, Queue};
+use super::{DropSource, Event, Queue, Stamp};
 
 fn reset() -> Event {
     Event::SessionReset
@@ -193,4 +193,12 @@ fn new_motion_on_a_queue_full_of_edges_is_what_goes() {
             .iter()
             .all(|event| matches!(event, Event::Key { .. }))
     );
+}
+
+#[test]
+fn a_stamp_built_with_a_huge_since_open_saturates_instead_of_panicking() {
+    let arrived = Instant::now();
+    let stamp =
+        Stamp::new(arrived, Duration::MAX).with_received(arrived + Duration::from_millis(1), None);
+    assert_eq!(stamp.received_since_open, Duration::MAX);
 }

@@ -25,6 +25,8 @@ struct State {
     fail_next: Option<Error>,
     /// the next stream switch fails for these kinds with this error
     fail_streams: Option<(InputKinds, Error)>,
+    /// runs when that failing switch is about to return
+    before_failing: Option<Box<dyn FnOnce() + Send>>,
     /// the next restart of a stream fails with this error
     fail_restart: Option<Error>,
     shutdowns: usize,
@@ -235,6 +237,18 @@ impl Handle {
         self.sink.refused(action);
     }
 
+    /// the next failing stream switch first reports this refusal on its own and waits until the core published it,
+    /// the order a MAKCU's reader can give
+    pub(crate) fn refuse_before_the_switch_returns(&self, action: Action) {
+        let sink = self.sink.clone();
+        self.state.lock().unwrap().before_failing = Some(Box::new(move || {
+            sink.refused(action);
+            let (done, published) = mpsc::channel();
+            let _ = sink.0.send(crate::backend::Signal::Barrier(done));
+            let _ = published.recv();
+        }));
+    }
+
     pub(crate) fn session_reset(&self) {
         self.state.lock().unwrap().streaming = None;
         self.sink.session_reset();
@@ -278,6 +292,11 @@ impl Backend for Fake {
     ) -> std::result::Result<(), crate::backend::StreamFailure> {
         let mut state = self.0.lock().unwrap();
         if let Some((failed, error)) = state.fail_streams.take() {
+            let before = state.before_failing.take();
+            drop(state);
+            if let Some(before) = before {
+                before();
+            }
             return Err(crate::backend::StreamFailure { failed, error });
         }
         if state.streaming != Some(kinds) {

@@ -4,7 +4,7 @@ every method of `Device`, and what each box does with it. "on your PC" means the
 
 what you get also depends on what's plugged into the box. a mouse without horizontal scroll means no `pan`, and a device with no keyboard interface at all means no keys. `device.snapshot().capabilities` tells you what the box in front of you can do right now, and why when it can't
 
-Ferrum and YSC8K (V1 and V2) are written from vendor docs and reference code, nobody has run these backends on real ones yet. "app" means only on the Ferrum app's virtual port, the box's own legacy port doesn't have it. YSC keys start as available but need a keyboard behind the box, `no_keyboard` disables them until you reconnect. anybox can't tell yet whether a mouse is behind a YSC, so its snapshot says moves, presses and button events work even when nothing is plugged in
+Ferrum and YSC8K (the V1 that's sold and the V2 that isn't out yet) are written from vendor docs and reference code, nobody has run these backends on real ones yet. "app" means only on the Ferrum app's virtual port, the box's own legacy port doesn't have it. YSC keys start as available but need a keyboard behind the box, `no_keyboard` disables them until you reconnect. anybox can't tell yet whether a mouse is behind a YSC, so its snapshot says moves, presses and button events work even when nothing is plugged in
 
 ## mouse
 
