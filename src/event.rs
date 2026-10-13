@@ -64,10 +64,14 @@ pub enum Event {
     },
     Disconnected,
     /// the box is back, the buttons and keys you were holding got released (on a box with `Quirk::KeepsHeld`
-    /// they stay held), and the snapshot may have changed. you also get this when a mouse or keyboard gets plugged
-    /// into the box or pulled out. what you knew about which physical buttons and keys were held is out of date,
-    /// same as after `SessionReset`
+    /// they stay held), and the snapshot may have changed. on a MAKCU you also get this when a mouse or keyboard
+    /// gets plugged into the box or pulled out, and on a Medius when the device it clones gets swapped. what you
+    /// knew about which physical buttons and keys were held is out of date, same as after `SessionReset`
     Reconnected,
+    /// the snapshot changed with no reconnect, so read `snapshot()` again. a mouse or keyboard set or pulled on a
+    /// Ferrum, a YSC turning its keys off, or a Medius clone whose details changed come this way. a MAKCU gets a
+    /// `Reconnected` for those instead, so watch both. two of these never wait unread in the same receiver
+    Changed,
 }
 
 /// for tests and for code that builds events itself. the variants stay `#[non_exhaustive]` so a field added
@@ -414,6 +418,10 @@ impl Queue {
             return;
         }
         let events = &mut state.events;
+        // the snapshot is read live, so one unread is as good as many, and these never get evicted
+        if matches!(event, Event::Changed) && events.iter().any(|e| matches!(e, Event::Changed)) {
+            return;
+        }
         if let Event::Rejected { action, count } = event {
             // an unread refusal of the same action just gets its count bumped, so refusals take a few slots at most
             let unread = events.iter_mut().find_map(|queued| match queued {

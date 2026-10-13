@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use serialport::SerialPortType;
 
-use super::{Candidate, Port, System, UsbId, open_error, trustworthy_serial};
+use super::{Candidate, Port, PortUsb, System, open_error, trustworthy_serial};
 use crate::error::Result;
 
 /// the real serial ports of this machine
@@ -18,7 +18,7 @@ impl System for OsSystem {
             .map(|port| Candidate {
                 path: PathBuf::from(port.port_name),
                 usb: match port.port_type {
-                    SerialPortType::UsbPort(usb) => Some(UsbId {
+                    SerialPortType::UsbPort(usb) => Some(PortUsb {
                         vid: usb.vid,
                         pid: usb.pid,
                         serial: usb.serial_number.filter(|s| trustworthy_serial(s)),

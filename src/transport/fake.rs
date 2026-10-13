@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use super::{Candidate, Port, READ_SLICE, System, UsbId, open_error};
+use super::{Candidate, Port, PortUsb, READ_SLICE, System, open_error};
 use crate::error::Result;
 
 type Responder = Box<dyn FnMut(u32, &[u8]) -> Vec<Vec<u8>> + Send>;
@@ -74,7 +74,7 @@ impl FakeBox {
 
 #[derive(Default)]
 struct State {
-    boxes: HashMap<PathBuf, (Option<UsbId>, Arc<FakeBox>)>,
+    boxes: HashMap<PathBuf, (Option<PortUsb>, Arc<FakeBox>)>,
     refuse: Option<i32>,
     opened_at: Vec<u32>,
 }
@@ -87,7 +87,7 @@ pub(crate) struct FakeSystem {
 }
 
 impl FakeSystem {
-    pub(crate) fn plug(&self, path: &str, usb: Option<UsbId>, fake: Arc<FakeBox>) {
+    pub(crate) fn plug(&self, path: &str, usb: Option<PortUsb>, fake: Arc<FakeBox>) {
         self.state
             .lock()
             .unwrap()

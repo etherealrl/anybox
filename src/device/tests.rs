@@ -1230,7 +1230,34 @@ fn a_quiet_change_swaps_the_snapshot_and_nothing_else() {
     assert_eq!(device.held(), HashSet::from([Usage::Key(Key::A)]));
     assert!(!fake.log().contains(&Command::KeyRelease(Key::A)));
     assert_eq!(fake.streams().len(), streams);
+    assert_eq!(events.try_recv(), Ok(Event::Changed));
     assert!(events.try_recv().is_err());
+}
+
+#[test]
+fn the_same_snapshot_again_is_no_change() {
+    let (device, fake) = fake::open(with_keyboard(Some(6)), ClickTiming::Makcu);
+    let events = device.events();
+    fake.changed(with_keyboard(Some(6)));
+    device.settle();
+    assert!(events.try_recv().is_err());
+}
+
+#[test]
+fn unread_changes_wait_as_one_and_a_later_one_still_comes() {
+    let (device, fake) = fake::open(with_keyboard(Some(6)), ClickTiming::Makcu);
+    let events = device.events();
+    let buttons = device.events_of(EventKinds::BUTTONS);
+    fake.changed(with_keyboard(Some(232)));
+    fake.changed(with_keyboard(Some(6)));
+    device.settle();
+    assert_eq!(events.try_recv(), Ok(Event::Changed));
+    assert!(events.try_recv().is_err());
+    // this box has no button stream, so that receiver also hears it refused
+    assert!(std::iter::from_fn(|| buttons.try_recv().ok()).any(|event| event == Event::Changed));
+    fake.changed(with_keyboard(Some(232)));
+    device.settle();
+    assert_eq!(events.try_recv(), Ok(Event::Changed));
 }
 
 fn with_locks() -> Capabilities {

@@ -14,7 +14,7 @@ use crate::backend::{
 };
 use crate::capability::{
     Action, Axis, Button, Capabilities, Capability, Family, Firmware, Info, Quirk, Snapshot,
-    StableId,
+    StableId, UsbIds,
 };
 use crate::error::{Error, Result};
 use crate::event::{BoxTime, Clock, DropSource};
@@ -281,6 +281,11 @@ pub(crate) fn snapshot(device: &medius::Device) -> Result<(Snapshot, CloneState)
         patch: u16::from(version.fw_patch),
     });
     info.id = Some(StableId::Mac(version.mac));
+    info.peripheral = device
+        .device_info()
+        .ok()
+        .filter(medius::DeviceInfo::is_cloned)
+        .map(|clone| UsbIds::new(clone.vid, clone.pid));
     Ok((
         Snapshot::new(info, capabilities),
         (

@@ -11,7 +11,7 @@ use crate::transport::Candidate;
 use crate::transport::codec::{Codec, Frame, Incoming};
 use crate::transport::fake::{FakeBox, FakeSystem};
 use crate::transport::probe::Probe;
-use crate::transport::{System, UsbId};
+use crate::transport::{PortUsb, System};
 
 #[test]
 fn targets_without_a_unique_id_require_the_original_path_and_exact_usb_tuple() {
@@ -19,7 +19,7 @@ fn targets_without_a_unique_id_require_the_original_path_and_exact_usb_tuple() {
         for original in [
             None,
             usb("SERIAL01"),
-            Some(UsbId {
+            Some(PortUsb {
                 vid: 0x1a86,
                 pid: 0xfe0c,
                 serial: None,
@@ -49,12 +49,12 @@ fn targets_without_a_unique_id_require_the_original_path_and_exact_usb_tuple() {
             for changed in [
                 None,
                 usb("OTHER0001"),
-                Some(UsbId {
+                Some(PortUsb {
                     vid: 0x1234,
                     pid: 0xfe0c,
                     serial: None,
                 }),
-                Some(UsbId {
+                Some(PortUsb {
                     vid: 0x1a86,
                     pid: 0x1234,
                     serial: Some("SERIAL01".into()),
@@ -143,8 +143,8 @@ fn echo(bytes: &[u8]) -> Vec<Vec<u8>> {
     }
 }
 
-fn usb(serial: &str) -> Option<UsbId> {
-    Some(UsbId {
+fn usb(serial: &str) -> Option<PortUsb> {
+    Some(PortUsb {
         vid: 0x1A86,
         pid: 0x55D3,
         serial: Some(serial.into()),

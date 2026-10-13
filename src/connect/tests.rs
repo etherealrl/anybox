@@ -10,7 +10,7 @@ use crate::capability::{
 };
 use crate::error::{Error, Result};
 use crate::family::Open;
-use crate::transport::{Candidate, UsbId};
+use crate::transport::{Candidate, PortUsb};
 
 const A: StableId = StableId::Mac([1, 2, 3, 4, 5, 6]);
 const B: StableId = StableId::Mac([6, 5, 4, 3, 2, 1]);
@@ -138,7 +138,7 @@ const PROBES: &[(Family, Open)] = &[(Family::Medius, medius), (Family::MakcuV4, 
 fn usb(path: &str, vid: u16, pid: u16, serial: Option<&str>) -> Candidate {
     Candidate {
         path: path.into(),
-        usb: Some(UsbId {
+        usb: Some(PortUsb {
             vid,
             pid,
             serial: serial.map(String::from),
@@ -1353,4 +1353,34 @@ fn a_ferrum_search_never_lists_a_ysc_port() {
         .unwrap();
     assert!(seen.is_empty());
     assert!(log().is_empty());
+}
+
+#[test]
+fn candidates_are_the_ports_a_search_would_look_at_in_port_order() {
+    let listed = vec![
+        ch343_serial("COM11", "5C68244673"),
+        ftdi("COM4"),
+        usb("COM5", 0x1A86, 0xFE0C, Some("TOWMCULEFT")),
+        usb("COM6", 0x1A86, 0xFE0C, Some("TOWMCURIGHT")),
+        bare("COM7"),
+        ch343("COM3"),
+    ];
+    let candidates = |connect: Connect| connect.candidates_in(&|| listed.clone());
+    assert_eq!(candidates(Connect::auto()), ["COM3", "COM5", "COM11"]);
+    assert_eq!(candidates(Connect::auto().family(Family::Ysc)), ["COM5"]);
+    assert_eq!(
+        candidates(Connect::auto().family(Family::MakcuV4)),
+        ["COM3", "COM11"]
+    );
+    let ferrum: &[&str] = if cfg!(windows) {
+        &["COM4", "COM7"]
+    } else {
+        &["COM4"]
+    };
+    assert_eq!(candidates(Connect::auto().family(Family::Ferrum)), ferrum);
+    assert_eq!(
+        candidates(Connect::auto().id(StableId::UsbSerial("5C68244673".into()))),
+        ["COM11"]
+    );
+    assert_eq!(candidates(Connect::port("COM9")), ["COM9"]);
 }

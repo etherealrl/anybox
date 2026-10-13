@@ -83,8 +83,8 @@ fn respond(state: &mut BoxState, bytes: &[u8]) -> Vec<Vec<u8>> {
     vec![[bytes, b">>> "].concat()]
 }
 
-fn usb(role: Option<&str>) -> Option<crate::transport::UsbId> {
-    Some(crate::transport::UsbId {
+fn usb(role: Option<&str>) -> Option<crate::transport::PortUsb> {
+    Some(crate::transport::PortUsb {
         vid: 0x1a86,
         pid: 0xfe0c,
         serial: role.map(str::to_owned),
@@ -726,7 +726,7 @@ fn an_error_that_beats_write_return_disables_the_core_tap_snapshot() {
     rig.state.lock().unwrap().key_error = true;
     device.press_key(Key::A).unwrap();
     assert!(matches!(
-        events.recv_timeout(WAIT).unwrap(),
+        past_changed(&events),
         Event::Rejected {
             action: Action::KeyPress,
             count: 1
@@ -853,7 +853,7 @@ fn real_port_failure_rebuilds_firmware_keys_history_locks_and_streams_on_the_ori
     rig.fake
         .send(&wire(r#"{"code":404,"message":"no_keyboard"}"#));
     assert!(matches!(
-        events.recv_timeout(WAIT).unwrap(),
+        past_changed(&events),
         Event::Rejected {
             action: Action::KeyPress,
             ..
@@ -898,7 +898,7 @@ fn real_port_failure_rebuilds_firmware_keys_history_locks_and_streams_on_the_ori
     assert!(written.contains(&wire(r#"{"cmd":34,"status":1}"#)));
     replacement.send(&wire(r#"{"code":404,"message":"no_keyboard"}"#));
     assert!(matches!(
-        events.recv_timeout(WAIT).unwrap(),
+        past_changed(&events),
         Event::Rejected {
             action: Action::KeyRelease,
             ..
@@ -919,7 +919,7 @@ fn a_role_serial_on_another_path_or_a_wrong_tuple_on_the_original_path_is_never_
         usb(Some("TOWMCURIGHT")),
         usb(Some("TOWMCUIAP")),
         None,
-        Some(crate::transport::UsbId {
+        Some(crate::transport::PortUsb {
             vid: 0x1234,
             pid: 0xfe0c,
             serial: Some("TOWMCULEFT".into()),
@@ -1357,6 +1357,8 @@ fn a_taps_press_and_release_cannot_be_guessed_from_a_delayed_404() {
             .get(Action::KeyTap)
             .is_supported()
     });
+    // the keys turning off is a change of the snapshot, nothing else
+    assert_eq!(events.recv_timeout(WAIT), Ok(Event::Changed));
     assert!(events.recv_timeout(Duration::from_millis(40)).is_err());
 }
 
@@ -1545,12 +1547,12 @@ fn wrong_vid_pid_or_no_usb_tuple_is_refused_by_the_backend_before_any_open() {
     let rig = Rig::new();
     for identity in [
         None,
-        Some(crate::transport::UsbId {
+        Some(crate::transport::PortUsb {
             vid: 0x1234,
             pid: 0xfe0c,
             serial: Some("TOWMCULEFT".into()),
         }),
-        Some(crate::transport::UsbId {
+        Some(crate::transport::PortUsb {
             vid: 0x1a86,
             pid: 0x55d3,
             serial: Some("TOWMCULEFT".into()),
@@ -1623,4 +1625,14 @@ fn a_404_during_reconnect_cleanup_does_not_block_other_keys_held_by_the_session(
     let written = fake.written();
     assert!(written.contains(&wire(r#"{"cmd":45,"kc":4,"down":0}"#)));
     assert!(written.contains(&wire(r#"{"cmd":45,"kc":5,"down":0}"#)));
+}
+
+/// keys turning off after a 404 also changes the snapshot, which comes as its own event before the refusal
+fn past_changed(events: &crate::event::Events) -> Event {
+    loop {
+        match events.recv_timeout(WAIT).unwrap() {
+            Event::Changed => continue,
+            event => return event,
+        }
+    }
 }

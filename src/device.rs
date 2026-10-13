@@ -1107,13 +1107,22 @@ impl Core {
                     return;
                 }
                 let snapshot = prepare(*snapshot, self.click_timing, &self.port);
-                *self
-                    .snapshot
-                    .write()
-                    .unwrap_or_else(PoisonError::into_inner) = snapshot.clone();
+                let changed = {
+                    let mut current = self
+                        .snapshot
+                        .write()
+                        .unwrap_or_else(PoisonError::into_inner);
+                    // compared after `prepare`, the backend's own snapshot has no port and no host taps
+                    let changed = *current != snapshot;
+                    *current = snapshot.clone();
+                    changed
+                };
                 // a device that came or went can change which kinds the box streams
                 let refused = self.apply_streams(&output, &snapshot);
                 drop(output);
+                if changed {
+                    self.publish(Event::Changed);
+                }
                 self.publish_all(refused);
             }
             Signal::SessionReset => {
