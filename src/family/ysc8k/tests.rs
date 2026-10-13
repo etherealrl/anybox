@@ -1729,3 +1729,17 @@ fn a_rate_the_bridge_cant_take_is_skipped_and_the_next_one_still_finds_the_v1() 
     assert_eq!(system.opened_at(), [115_200]);
     backend.shutdown(WRITE_DEADLINE);
 }
+
+#[test]
+fn a_port_that_opens_at_no_rate_gives_the_driver_error_and_one_rate_short_is_still_not_found() {
+    let system = FakeSystem::default();
+    system.plug("COM3", ch343(), FakeBox::new(|_| Vec::new()));
+    system.refuse(Some(87));
+    assert!(matches!(attach_at(&system, "COM3"), Err(Error::Io(_))));
+    system.refuse(None);
+    system.refuse_baud(4_000_000);
+    assert!(matches!(
+        attach_at(&system, "COM3"),
+        Err(Error::NotFound { .. })
+    ));
+}

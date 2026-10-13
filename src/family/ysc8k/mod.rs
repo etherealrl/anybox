@@ -157,11 +157,20 @@ pub(crate) fn attach(
             sink,
         );
     }
+    // only when no rate opens at all, the driver's error says more than NotFound
+    let mut opened = false;
+    let mut refused = None;
     for &baud in &V1_BAUDS {
         let port = match system.open(&candidate.path, baud) {
-            Ok(port) => port,
+            Ok(port) => {
+                opened = true;
+                port
+            }
             // a bridge whose driver doesn't take this rate can still take the next one
-            Err(Error::Io(_)) => continue,
+            Err(error @ Error::Io(_)) => {
+                refused.get_or_insert(error);
+                continue;
+            }
             Err(error) => return Err(error),
         };
         match describe(&Probe::new(&*port, &stop), false, Variant::V1) {
@@ -175,6 +184,9 @@ pub(crate) fn attach(
             Err(Error::NotFound { .. }) => {}
             Err(error) => return Err(error),
         }
+    }
+    if !opened && let Some(error) = refused {
+        return Err(error);
     }
     Err(Error::NotFound {
         tried: vec![candidate.path.display().to_string()],
