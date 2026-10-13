@@ -84,10 +84,10 @@ impl Poller {
             peripheral: None,
         };
         if self.shared.api == FerrumApi::Software {
-            let Ok(peripheral) = super::peripheral(&roles, |command| self.result(command)) else {
-                return;
-            };
-            roles.peripheral = peripheral;
+            // the roles are news on their own, so a failed id query only leaves the ids out
+            if let Ok(peripheral) = super::peripheral(&roles, |command| self.result(command)) {
+                roles.peripheral = peripheral;
+            }
         }
         let fresh = snapshot(self.shared.api, roles);
         // a reprobe only runs while the port is down, so holding it up here means none can slip in between
