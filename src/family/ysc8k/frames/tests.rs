@@ -73,6 +73,39 @@ fn identity_accepts_only_the_left_application_at_a_token_boundary() {
 }
 
 #[test]
+fn the_v1_identity_is_the_build_date_and_nothing_else() {
+    assert_eq!(
+        v1_version(&wire(
+            r#"{"code":200,"message":"version","data":"Jul 23 2026"}"#
+        ))
+        .as_deref(),
+        Some("Jul 23 2026")
+    );
+    for text in [
+        r#"{"code":200,"message":"ysc-towmcu-L v1.0","data":""}"#,
+        r#"{"code":200,"message":"version","data":"ysc-towmcu-L v1.0"}"#,
+        r#"{"code":200,"message":"version","data":"YSC-IAP"}"#,
+        r#"{"code":200,"message":"version","data":""}"#,
+        r#"{"code":200,"message":"version"}"#,
+        r#"{"code":200,"message":"ok","data":"Jul 23 2026"}"#,
+        r#"{"code":404,"message":"version","data":"Jul 23 2026"}"#,
+        r#"{"message":"version","data":"Jul 23 2026"}"#,
+        r#"{"cmd":132}"#,
+    ] {
+        assert_eq!(v1_version(&wire(text)), None, "{text}");
+    }
+    assert!(bootloader(&wire(
+        r#"{"code":200,"message":"version","data":"YSC-IAP"}"#
+    )));
+    assert!(!bootloader(&wire(
+        r#"{"code":200,"message":"version","data":"Jul 23 2026"}"#
+    )));
+    assert!(!bootloader(&wire(
+        r#"{"code":404,"message":"version","data":"YSC-IAP"}"#
+    )));
+}
+
+#[test]
 fn debug_requires_its_own_code_and_a_boolean_in_an_object() {
     assert_eq!(
         debug(&wire(r#"{"code":702,"data":{"debug":true}}"#)),

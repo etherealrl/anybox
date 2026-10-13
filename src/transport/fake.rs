@@ -6,7 +6,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use super::{Candidate, Port, PortUsb, READ_SLICE, System, open_error};
-use crate::error::Result;
+use crate::error::{Error, Result};
 
 type Responder = Box<dyn FnMut(u32, &[u8]) -> Vec<Vec<u8>> + Send>;
 
@@ -76,6 +76,8 @@ impl FakeBox {
 struct State {
     boxes: HashMap<PathBuf, (Option<PortUsb>, Arc<FakeBox>)>,
     refuse: Option<i32>,
+    /// a rate the port can't be set to, like a bridge whose driver doesn't take it
+    bad_baud: Option<u32>,
     opened_at: Vec<u32>,
 }
 
@@ -104,6 +106,10 @@ impl FakeSystem {
     /// every open after this fails with this raw OS error code
     pub(crate) fn refuse(&self, code: Option<i32>) {
         self.state.lock().unwrap().refuse = code;
+    }
+
+    pub(crate) fn refuse_baud(&self, baud: u32) {
+        self.state.lock().unwrap().bad_baud = Some(baud);
     }
 
     /// how many times a reading thread said it was done with its port
@@ -139,6 +145,11 @@ impl System for FakeSystem {
         let mut state = self.state.lock().unwrap();
         if let Some(code) = state.refuse {
             return Err(open_error(path, io::Error::from_raw_os_error(code)));
+        }
+        if state.bad_baud == Some(baud) {
+            return Err(Error::Io(io::Error::other(
+                "the driver doesn't take that rate",
+            )));
         }
         let missing = || open_error(path, io::Error::from_raw_os_error(2));
         let (_, fake) = state.boxes.get(path).ok_or_else(missing)?;

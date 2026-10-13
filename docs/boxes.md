@@ -4,26 +4,26 @@ every method of `Device`, and what each box does with it. "on your PC" means the
 
 what you get also depends on what's plugged into the box. a mouse without horizontal scroll means no `pan`, and a device with no keyboard interface at all means no keys. `device.snapshot().capabilities` tells you what the box in front of you can do right now, and why when it can't
 
-Ferrum and YSC8K V2 are written from vendor docs and reference code, nobody has run these backends on real ones yet. "app" means only on the Ferrum app's virtual port, the box's own legacy port doesn't have it. YSC keys start as available but need a keyboard behind the box, `no_keyboard` disables them until you reconnect. anybox can't tell yet whether a mouse is behind a YSC, so its snapshot says moves, presses and button events work even when nothing is plugged in
+Ferrum and YSC8K (V1 and V2) are written from vendor docs and reference code, nobody has run these backends on real ones yet. "app" means only on the Ferrum app's virtual port, the box's own legacy port doesn't have it. YSC keys start as available but need a keyboard behind the box, `no_keyboard` disables them until you reconnect. anybox can't tell yet whether a mouse is behind a YSC, so its snapshot says moves, presses and button events work even when nothing is plugged in
 
 ## mouse
 
-| method                   | Medius        | MAKCU            | Ferrum           | YSC8K V2        |
+| method                   | Medius        | MAKCU            | Ferrum           | YSC8K           |
 | ------------------------ | ------------- | ---------------- | ---------------- | --------------- |
 | `move_by`                | ✓             | ✓                | ✓                | ✓               |
 | `move_now`               | ✓             | V4.086 and up    | ✗                | ✗               |
 | `press`, `release`       | ✓             | ✓                | ✓                | ✓               |
-| `click`, `click_with`    | on your PC    | ✓                | ✓, no hold       | on your PC      |
+| `click`, `click_with`    | on your PC    | ✓                | ✓, a hold on PC  | on your PC      |
 | `wheel`                  | ✓             | ✓                | ✓                | one notch       |
 | `pan`                    | ✓             | ✗                | ✗                | ✗               |
 | `discard_pending_moves`  | ✓             | ✗                | ✗                | ✗               |
 
 ## keyboard
 
-| method                         | Medius        | MAKCU            | Ferrum           | YSC8K V2        |
+| method                         | Medius        | MAKCU            | Ferrum           | YSC8K           |
 | ------------------------------ | ------------- | ---------------- | ---------------- | --------------- |
 | `press_key`, `release_key`     | ✓             | ✓                | app              | ✓               |
-| `tap_key`, `tap_key_with`      | on your PC    | ✓                | app, no hold     | on your PC      |
+| `tap_key`, `tap_key_with`      | on your PC    | ✓                | app, hold on PC  | on your PC      |
 | `press_media`, `release_media` | ✓             | ✗                | ✗                | ✗               |
 | `tap_media`, `tap_media_with`  | on your PC    | ✗                | ✗                | ✗               |
 
@@ -31,7 +31,7 @@ a Medius holds as many keys at once as the keyboard behind it can report, six on
 
 ## locks
 
-| method                           | Medius        | MAKCU            | Ferrum           | YSC8K V2        |
+| method                           | Medius        | MAKCU            | Ferrum           | YSC8K           |
 | -------------------------------- | ------------- | ---------------- | ---------------- | --------------- |
 | `lock_button`, `unlock_button`   | ✓             | ✓                | ✓                | ✓               |
 | `lock_key`, `unlock_key`         | ✓             | ✓                | app              | ✗               |
@@ -40,7 +40,7 @@ a Medius holds as many keys at once as the keyboard behind it can report, six on
 
 ## events
 
-| event                 | Medius        | MAKCU            | Ferrum           | YSC8K V2        |
+| event                 | Medius        | MAKCU            | Ferrum           | YSC8K           |
 | --------------------- | ------------- | ---------------- | ---------------- | --------------- |
 | buttons               | ✓             | ✓                | ✓                | ✓               |
 | motion                | ✓             | ✗                | app              | ✓               |

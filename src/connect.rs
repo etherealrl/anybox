@@ -27,7 +27,8 @@ pub fn find() -> Result<Vec<Found>> {
 
 /// the ports a search would look at, in port order, without opening any of them or sending them a byte. it can't
 /// tell whether a box is on one, only where one could be, so it's cheap enough to call every second and run `find`
-/// when the list changes. a Ferrum has no USB id anybox knows, so its port is never listed here
+/// when the list changes. a Ferrum has no USB id anybox knows, so its port is never listed here. a YSC V1 sits behind the same
+/// chip as a Medius or a MAKCU, so its port shows up here, but only `.family(Family::Ysc)` ever looks for a V1 on it
 pub fn candidates() -> Vec<String> {
     Connect::auto().candidates()
 }
@@ -54,7 +55,8 @@ pub struct Connect {
 
 impl Connect {
     /// asks CH343 (1A86:55D3) ports and YSC V2 left ports (1A86:FE0C with serial TOWMCULEFT). a Ferrum is only
-    /// asked with `.family(Family::Ferrum)` (the other ports then) or `Connect::port`
+    /// asked with `.family(Family::Ferrum)` (the other ports then) or `Connect::port`, and a YSC V1 only with
+    /// `.family(Family::Ysc)`, which then asks every CH343 port at up to 9 rates
     pub fn auto() -> Self {
         Self::default()
     }
@@ -140,6 +142,10 @@ impl Connect {
                 .collect(),
         };
         candidates.sort_by(|a, b| port_order(&a.path, &b.path));
+        if self.family == Some(Family::Ysc) {
+            // a V2 port answers at once, so it goes before the CH343 ports that each take a whole rate sweep
+            candidates.sort_by_key(|candidate| !candidate.usb.as_ref().is_some_and(is_ysc));
+        }
         candidates
     }
 
@@ -240,8 +246,8 @@ impl Connect {
     fn lists(&self, candidate: &Candidate) -> bool {
         let ferrum = self.family == Some(Family::Ferrum);
         match &candidate.usb {
-            // anybox only opens a YSC on its TOWMCULEFT port, so a CH343 port is no use to a YSC search
-            Some(usb) if is_ch343(usb) => !ferrum && self.family != Some(Family::Ysc),
+            // a YSC V1 sits behind a CH343 too
+            Some(usb) if is_ch343(usb) => !ferrum,
             Some(usb) if is_ysc(usb) => {
                 self.family.is_none_or(|family| family == Family::Ysc)
                     && usb.serial.as_deref() == Some("TOWMCULEFT")
@@ -259,9 +265,17 @@ impl Connect {
             .or_else(|| (cfg!(windows) && self.port.is_none()).then_some(FerrumApi::Software))
     }
 
-    fn wants(&self, family: Family) -> bool {
+    fn wants(&self, family: Family, candidate: &Candidate) -> bool {
         // a Ferrum gets no USB id we know of yet, so it's only asked when someone asked for one
         if family == Family::Ferrum && self.port.is_none() && self.family != Some(family) {
+            return false;
+        }
+        // a YSC V1 has no USB id of its own (the one we've seen sits behind a CH343 like a Medius or a MAKCU), so a port
+        // that isn't a V2 one only gets the YSC rate sweep when someone asked for a YSC
+        if family == Family::Ysc
+            && self.family != Some(family)
+            && !candidate.usb.as_ref().is_some_and(is_ysc)
+        {
             return false;
         }
         // every family asks a named port, so another box there comes back as WrongBox and not NotFound
@@ -284,7 +298,7 @@ impl Connect {
     ) -> Option<Opened> {
         let port = candidate.path.display().to_string();
         for (family, open) in probes {
-            if !self.wants(*family) {
+            if !self.wants(*family, candidate) {
                 continue;
             }
             let (signals, incoming) = mpsc::channel();

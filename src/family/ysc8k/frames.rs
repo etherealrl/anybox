@@ -70,6 +70,36 @@ pub(super) fn version(frame: &[u8]) -> Option<String> {
     left(version).then(|| version.to_owned())
 }
 
+/// the V1 app's cmd 132 answer, `{"code":200,"message":"version","data":"<build date>"}`. a V2 or bootloader answer
+/// isn't one
+pub(super) fn v1_version(frame: &[u8]) -> Option<String> {
+    let value = object(frame)?;
+    if value.get("code")?.as_u64()? != 200
+        || conflicting(&value)
+        || value.get("message")?.as_str()? != "version"
+    {
+        return None;
+    }
+    let date = value.get("data")?.as_str()?;
+    (!date.is_empty() && !date.starts_with("ysc-towmcu")).then(|| date.to_owned())
+}
+
+/// the bootloader answers cmd 132 with `YSC-IAP` on V1 and V2
+pub(super) fn bootloader(frame: &[u8]) -> bool {
+    object(frame).is_some_and(|value| {
+        value.get("code").and_then(Value::as_u64) == Some(200) && names_iap(&value)
+    })
+}
+
+fn names_iap(value: &Value) -> bool {
+    match value {
+        Value::String(text) => text.contains("-IAP"),
+        Value::Array(values) => values.iter().any(names_iap),
+        Value::Object(values) => values.values().any(names_iap),
+        _ => false,
+    }
+}
+
 fn data(value: &Value) -> Option<Value> {
     match value.get("data")? {
         Value::Object(_) => Some(value["data"].clone()),
@@ -127,7 +157,13 @@ impl YscFrames {
     }
 
     pub(super) fn probe() -> Self {
-        Self::new(Arc::new(Shared::new(super::snapshot(String::new()))), None)
+        Self::new(
+            Arc::new(Shared::new(super::snapshot(
+                String::new(),
+                super::Variant::V2,
+            ))),
+            None,
+        )
     }
 
     /// malformed input proves at least one report got lost on the PC side, not how many the box sent

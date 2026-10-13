@@ -33,7 +33,7 @@ some boxes can do things the others can't, and anybox doesn't hide those. you ge
 | **Medius** | 3.4.2+       |   ✓   |   ✓   |  ✓  |  ✓   |     ✓      |   ✓   |   ✓   | all           |
 | **MAKCU**  | V4.085+      |   ✓   |   ✓   |  ✗  |  ✓   |     ✗      |   ✓   |   ✗   | buttons, keys |
 | Ferrum     | docs only    |   ✓   |   ✓   |  ✗  | app  |     ✗      |   ✓   |   ✗   | all but media |
-| YSC8K V2   | docs only    |   ✓   |   ✓   |  ✗  |  ✓   |     ✗      |   ✓   |   ✗   | buttons, motion |
+| YSC8K      | docs only    |   ✓   |   ✓   |  ✗  |  ✓   |     ✗      |   ✓   |   ✗   | buttons, motion |
 
 Ferrum and YSC8K are written from the vendor docs and reference code, nobody has run these backends on real ones yet, so expect surprises and tell me about them. "app" means only through the Ferrum app's port
 
@@ -75,7 +75,7 @@ fn main() -> anybox::Result<()> {
 
 `connect()` takes the first box it finds. `anybox::find()` lists every box on the machine with what each one can do, `Connect::port("COM18")` or `Connect::auto().family(Family::Medius)` opens the one you want, and `Connect::auto().can(Action::Move)` opens the first one that can move, so a keyboard box plugged in next to it gets skipped. a Ferrum isn't found on its own yet, open it with `Connect::port` or `.family(Family::Ferrum)`
 
-a YSC8K V2 is found on its own like a Medius or a MAKCU. a YSC or a Ferrum only comes back on the same port after a reconnect, so if its port name changes, connect again
+a YSC8K V2 is found on its own like a Medius or a MAKCU. a V1 sits behind the same USB chip as a Medius and a MAKCU, so it only gets asked with `.family(Family::Ysc)`, and that asks every one of those ports at up to 9 rates (about 2 s each when nothing YSC is there). a YSC or a Ferrum only comes back on the same port after a reconnect, so if its port name changes, connect again
 
 to notice a box getting plugged in, `anybox::candidates()` lists the ports a search would look at without opening any of them, so you can call it every second and only run `find()` when the list changes. `snapshot().info.peripheral` has the USB ids of the device plugged into the box, which is what the box shows the PC, on a Medius and on a Ferrum's app port. a MAKCU has no way to say it
 
@@ -195,8 +195,10 @@ Then:
 
 ### YSC8K
 
-- only the V2, and none of this was checked on a real one yet, it all comes from the vendor docs and the vendor's own app
-- anybox talks to its TOWMCULEFT port, the other two ports of the box never get a single byte
+- the V2 (two chips, its own USB ports) and the V1 (one chip behind a USB serial chip), and none of this was checked on a real one yet, it all comes from the vendor docs and the vendor's own app
+- on a V2 anybox talks to its TOWMCULEFT port, the other two ports of the box never get a single byte
+- a V1 can sit at any of 9 rates, so anybox looks for it the way the vendor's app does, 4M first, and never changes the rate. its firmware is the build date it gives back, and if it's in its bootloader you get told to finish the firmware update first
+- the vendor says V1 and V2 take the same commands, though keys aren't in their V1 list, so i don't know yet if keys work on a V1
 - clicks and key taps are timed on your PC, and the wheel takes one notch at a time
 - keys need a keyboard behind the box. if the box says there's none, keys turn off until you connect again
 - anybox can't tell yet whether a mouse is behind the box, so moves, presses and button events say they work even when nothing is plugged in
@@ -215,11 +217,12 @@ Then:
 - by default a release, and the end of a click or a tap, forces it up for 125 to 175 ms before the physical button counts again. the app's No Button Release setting drops the software press right away instead, and anybox can't read that setting
 - a click on a button that's still in its press or forced release takes over from it, i don't know yet what two quick clicks in a row look like
 - the box lets the physical button win, so pressing and letting go of a button anybox holds really lets it go
-- clicks and taps hold for a random 75 to 125 ms and don't take a hold, press and release yourself if you need one
+- clicks and taps hold for a random 75 to 125 ms, the box has no way to take a hold, so a click or a tap with one is a press and a release timed from your PC, which is what the vendor tells you to do too
 - the vendor says to scroll one notch at a time, bigger scrolls can look emulated
 - the app's Move Multiplier scales every move and anybox can't read it, so leave it at 1 if your moves have to be exact
 - the box never says no, so a command it doesn't take just does nothing. anybox only sends what the box says it has
 - a mouse or keyboard you set in the app after connecting shows up within a second
+- unplugging the box from this PC doesn't disconnect anybox, because it talks to the app's port and that stays open. the app just loses the mouse and keyboard, so they go away from the snapshot with an `Event::Changed` and come back the same way when you plug it back in (the app doing that was seen on a real box)
 - `info.peripheral` comes from the app's `device.VID()` and `device.PID()`, which name the first device plugged into the box, not always the mouse. with nothing plugged in the app answers a default pair that's also a real Logitech receiver, so anybox leaves it empty then
 - the legacy port answers exactly like a KMBox B+, so a B+ opens as a legacy Ferrum too. anybox only promises the legacy commands there, and nobody tried it on a B+
 - locking one way of an axis needs an app that has directional locks, otherwise (and on the legacy port) you can only lock a whole axis

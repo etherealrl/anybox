@@ -1367,7 +1367,10 @@ fn candidates_are_the_ports_a_search_would_look_at_in_port_order() {
     ];
     let candidates = |connect: Connect| connect.candidates_in(&|| listed.clone());
     assert_eq!(candidates(Connect::auto()), ["COM3", "COM5", "COM11"]);
-    assert_eq!(candidates(Connect::auto().family(Family::Ysc)), ["COM5"]);
+    assert_eq!(
+        candidates(Connect::auto().family(Family::Ysc)),
+        ["COM5", "COM3", "COM11"]
+    );
     assert_eq!(
         candidates(Connect::auto().family(Family::MakcuV4)),
         ["COM3", "COM11"]
@@ -1383,4 +1386,41 @@ fn candidates_are_the_ports_a_search_would_look_at_in_port_order() {
         ["COM11"]
     );
     assert_eq!(candidates(Connect::port("COM9")), ["COM9"]);
+}
+
+fn ysc(candidate: &Candidate, _: Sink) -> Result<(Box<dyn Backend>, Snapshot)> {
+    answer(Family::Ysc, candidate)
+}
+
+const WITH_YSC: &[(Family, Open)] = &[
+    (Family::Medius, medius),
+    (Family::MakcuV4, makcu),
+    (Family::Ysc, ysc),
+];
+
+#[test]
+fn only_a_ysc_search_sweeps_a_port_that_isnt_a_v2_one() {
+    let listed = vec![
+        ch343("COM3"),
+        usb("COM5", 0x1A86, 0xFE0C, Some("TOWMCULEFT")),
+    ];
+    let asked = |connect: Connect| {
+        script(&[]);
+        let _ = connect.find_in(&|| listed.clone(), WITH_YSC);
+        log()
+            .into_iter()
+            .filter(|line| line.starts_with("Ysc"))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(asked(Connect::auto()), ["Ysc COM5"]);
+    assert!(asked(Connect::port("COM3")).is_empty());
+    assert!(asked(Connect::port("COM9")).is_empty());
+    assert_eq!(
+        asked(Connect::auto().family(Family::Ysc)),
+        ["Ysc COM5", "Ysc COM3"]
+    );
+    assert_eq!(
+        asked(Connect::port("COM9").family(Family::Ysc)),
+        ["Ysc COM9"]
+    );
 }
