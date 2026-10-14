@@ -129,7 +129,28 @@ fn describe(probe: &Probe<'_>, reconnect: bool, variant: Variant) -> Result<Snap
         return Err(Error::Rejected { action: Action::Connect, detail: "the YSC box is in debug mode, leave debug mode in the vendor tool and connect again".into() });
     }
     probe.say(&packet("{\"cmd\":34,\"status\":0}")?)?;
-    probe.say(&line("km.echo(1)"))?;
+    // no echo means every text command after it would time out. it's asked twice because the vendor tool can turn
+    // echo off, and then only the second one comes back
+    let mut echoed = false;
+    for _ in 0..2 {
+        echoed = probe
+            .ask(
+                &line("km.echo(1)"),
+                &mut YscFrames::probe(),
+                |frame| frame.starts_with(b"km.echo(1)\r\n"),
+                WRITE_DEADLINE,
+            )?
+            .is_some();
+        if echoed {
+            break;
+        }
+    }
+    if !echoed {
+        return Err(Error::Rejected {
+            action: Action::Connect,
+            detail: "the YSC box answers but ignores its text commands, which it's been seen doing after a replug. turning debug mode on and off in the vendor tool fixed it once, so try that and connect again".into(),
+        });
+    }
     Ok(snapshot(version, variant))
 }
 
@@ -396,8 +417,7 @@ impl YscBackend {
                 if !state.keys && (down || !state.held_keys.contains(&key)) {
                     return Err(self.unsupported(action, KEYBOARD));
                 }
-                // the box never says a key write worked, so even a cleanup release could be what a later refusal
-                // is about
+                // a refusal doesn't say which key it's for, so even a cleanup release could be what it's about
                 if down {
                     state.pressed_keys = true;
                 } else {
@@ -415,10 +435,22 @@ impl YscBackend {
                         key.0,
                         u8::from(down)
                     ))?,
-                    None,
+                    // the box chokes on writes that come right after one another, so each key waits for its answer
+                    Some(frames::key_reply()),
                     until,
                 )
-                .map(|_| ());
+                .and_then(|reply| match reply.as_deref().and_then(frames::object) {
+                    Some(value)
+                        if value.get("code").and_then(serde_json::Value::as_u64) == Some(400) =>
+                    {
+                        Err(Error::Rejected {
+                            action,
+                            detail: "the YSC box couldn't read the key command, try it again"
+                                .into(),
+                        })
+                    }
+                    _ => Ok(()),
+                });
             if sent.is_ok() && !down {
                 lock(&self.shared.state).held_keys.remove(&key);
             }

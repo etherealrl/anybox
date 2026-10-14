@@ -4,7 +4,7 @@ every method of `Device`, and what each box does with it. "on your PC" means the
 
 what you get also depends on what's plugged into the box. a mouse without horizontal scroll means no `pan`, and a device with no keyboard interface at all means no keys. `device.snapshot().capabilities` tells you what the box in front of you can do right now, and why when it can't
 
-Ferrum and YSC8K (the V1 that's sold and the V2 that isn't out yet) are written from vendor docs and reference code, nobody has run these backends on real ones yet. "app" means only on the Ferrum app's virtual port, the box's own legacy port doesn't have it. YSC keys start as available but need a keyboard behind the box, `no_keyboard` disables them until you reconnect. anybox can't tell yet whether a mouse is behind a YSC, so its snapshot says moves, presses and button events work even when nothing is plugged in
+Ferrum and YSC8K (the V1 that's sold and the V2 that isn't out yet) are written from vendor docs and reference code, and so far only one community tester ran them on real ones. "app" means only on the Ferrum app's virtual port, the box's own legacy port doesn't have it. YSC keys start as available and worked on a V1 with only a mouse behind it, though a `no_keyboard` from the box disables them until you reconnect. anybox can't tell yet whether a mouse is behind a YSC, so its snapshot says moves, presses and button events work even when nothing is plugged in
 
 ## mouse
 
@@ -55,4 +55,4 @@ on Medius each kind of event is its own subscription, so asking for buttons only
 
 Ferrum sends the whole state on every change, so anybox works out what changed. when you start listening it doesn't know what was already held, so a button or key you were holding shows up as a press with the next change
 
-YSC buttons and motion come in one stream. anybox takes the buttons in the first report as already held, so a button that was down before it never shows its press, only its release. what exactly the box puts in those reports still needs checking on a real one, and a report anybox can't read counts as at least one lost event, it doesn't tell how many the box sent
+YSC buttons and motion come in one stream. anybox takes the buttons in the first report as already held, so a button that was down before it never shows its press, only its release. what a V1 puts in those reports was read off a real one, though anybox reading them hasn't run on one yet, and a report anybox can't read counts as at least one lost event, it doesn't tell how many the box sent

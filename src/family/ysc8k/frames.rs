@@ -120,13 +120,18 @@ pub(super) fn debug(frame: &[u8]) -> Option<bool> {
 }
 
 /// every reply code the vendor documents or its app reads, and anything with a `cmd`, which is a command going to
-/// the box. an upload is never one of these even when it carries x and y
+/// the box
 fn known_reply(value: &Value) -> bool {
     value.get("cmd").is_some()
         || value
             .get("code")
             .and_then(Value::as_u64)
             .is_some_and(|code| matches!(code, 200 | 404 | 100..=104 | 700..=715))
+}
+
+/// what a cmd 45 waits for. the answer doesn't name the key, which is fine because only one goes out at a time
+pub(super) fn key_reply() -> codec::Key {
+    key(b"cmd 45")
 }
 
 pub(super) fn key(command: &[u8]) -> codec::Key {
@@ -173,38 +178,32 @@ impl YscFrames {
         }
     }
 
+    /// the box streams `{"code":200,"message":null,"data":"{\"b\":0,\"x\":1,\"y\":0,\"wh\":0}"}`, every field always
+    /// there, the data a json string and the wheel called `wh` (seen on a V1, the vendor's app guessed other names)
     fn upload(&self, value: &Value) -> Option<Vec<Input>> {
-        let value = value.get("data").unwrap_or(value);
-        if !value.is_object() {
+        if value.get("code")?.as_u64()? != 200 || !value.get("message")?.is_null() {
             return None;
         }
+        let value = data(value)?;
         let signed = |name| i32::try_from(value.get(name)?.as_i64()?).ok();
         let dx = signed("x")?;
         let dy = signed("y")?;
-        let wheel = if value.get("wheel").is_some() {
-            signed("wheel")?
-        } else {
-            0
-        };
-        let buttons = match value.get("b") {
-            Some(value) => Some(u8::try_from(value.as_u64()?).ok()? & 0x1f),
-            None => None,
-        };
+        let wheel = signed("wh")?;
+        let buttons = u8::try_from(value.get("b")?.as_u64()?).ok()? & 0x1f;
         let mut inputs = Vec::new();
-        if let Some(buttons) = buttons {
-            let mut state = lock(&self.shared.state);
-            if let Some(previous) = state.seen.buttons {
-                let changed = previous ^ buttons;
-                for pressed in [false, true] {
-                    for (bit, &button) in super::BUTTONS.iter().enumerate() {
-                        if changed & (1 << bit) != 0 && (buttons & (1 << bit) != 0) == pressed {
-                            inputs.push(Input::Button { button, pressed });
-                        }
+        let mut state = lock(&self.shared.state);
+        if let Some(previous) = state.seen.buttons {
+            let changed = previous ^ buttons;
+            for pressed in [false, true] {
+                for (bit, &button) in super::BUTTONS.iter().enumerate() {
+                    if changed & (1 << bit) != 0 && (buttons & (1 << bit) != 0) == pressed {
+                        inputs.push(Input::Button { button, pressed });
                     }
                 }
             }
-            state.seen.buttons = Some(buttons);
         }
+        state.seen.buttons = Some(buttons);
+        drop(state);
         inputs.push(Input::Motion {
             dx,
             dy,
@@ -316,20 +315,30 @@ impl Codec for YscFrames {
                         sink.refused(action);
                     }
                 }
-                return Incoming::Noise;
+                return Incoming::Reply(key_reply());
             }
-            if known_reply(&value) {
-                return Incoming::Noise;
+            let code = value.get("code").and_then(Value::as_u64);
+            // a 400 is the box failing to read the last command. requests go out one at a time, so while a key
+            // waits it's that key's, and a text command waiting for its echo never takes this key
+            if code == Some(400)
+                || (code == Some(200)
+                    && matches!(
+                        value.get("message").and_then(Value::as_str),
+                        Some("key_down" | "key_up")
+                    ))
+            {
+                return Incoming::Reply(key_reply());
             }
-            // the vendor's own parser looks for x and y before anything else, flat or under data, so an upload
-            // wrapped in an envelope still counts, and anything else nobody can read is a lost report
-            return match self.upload(&value) {
-                Some(inputs) => Incoming::Inputs(inputs),
-                None => {
-                    self.lost();
-                    Incoming::Noise
-                }
-            };
+            if let Some(inputs) = self.upload(&value) {
+                return Incoming::Inputs(inputs);
+            }
+            // a 200 reply always names itself in its message, so one without is an upload nobody could read
+            if !known_reply(&value)
+                || (code == Some(200) && value.get("message").is_none_or(Value::is_null))
+            {
+                self.lost();
+            }
+            return Incoming::Noise;
         }
         if frame.starts_with(b"km.")
             && frame.ends_with(PROMPT)

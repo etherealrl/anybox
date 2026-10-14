@@ -1049,6 +1049,83 @@ fn a_keyboard_set_in_the_app_later_shows_up_and_starts_streaming() {
     device.press_key(Key::A).unwrap();
 }
 
+fn resets(events: &crate::event::Events) -> usize {
+    std::iter::from_fn(|| events.try_recv().ok())
+        .filter(|event| *event == Event::SessionReset)
+        .count()
+}
+
+#[test]
+fn a_box_that_comes_back_through_the_app_gets_its_locks_back_and_lets_go_of_what_was_held() {
+    let rig = rig(State::software());
+    let (device, poller) = rig.device();
+    let poller = poller.unwrap();
+    let events = device.events_of(EventKinds::BUTTONS);
+    device.lock_button(Button::Left).unwrap();
+    device.press(Button::Right).unwrap();
+    poller.tick();
+    // only the mouse going and coming back is a device behind the box, not the box
+    rig.set(|state| state.mouse = false);
+    poller.tick();
+    rig.set(|state| state.mouse = true);
+    poller.tick();
+    device.settle();
+    assert_eq!(resets(&events), 0);
+    assert!(!rig.lines().iter().any(|line| line == "km.right(0)"));
+    rig.clear();
+    rig.set(|state| {
+        state.mouse = false;
+        state.keyboard = false;
+    });
+    poller.tick();
+    // the keyboard coming back first isn't enough, the mouse locks need the mouse
+    rig.set(|state| state.keyboard = true);
+    poller.tick();
+    device.settle();
+    assert_eq!(resets(&events), 0);
+    assert!(!rig.lines().iter().any(|line| line == "km.lock_ml(1)"));
+    rig.set(|state| state.mouse = true);
+    poller.tick();
+    device.settle();
+    assert_eq!(resets(&events), 1);
+    let lines = rig.lines();
+    assert!(lines.iter().any(|line| line == "km.lock_ml(1)"));
+    assert!(lines.iter().any(|line| line == "km.right(0)"));
+}
+
+#[test]
+fn roles_that_left_before_a_reconnect_dont_reset_later() {
+    let rig = rig(State::software());
+    let (device, poller) = rig.device();
+    let poller = poller.unwrap();
+    let events = device.events_of(EventKinds::BUTTONS);
+    rig.set(|state| {
+        state.mouse = false;
+        state.keyboard = false;
+    });
+    poller.tick();
+    rig.system.unplug(PORT);
+    until(|| {
+        std::iter::from_fn(|| events.try_recv().ok()).any(|event| event == Event::Disconnected)
+    });
+    rig.set(|state| {
+        state.mouse = true;
+        state.keyboard = true;
+    });
+    let state = rig.state.clone();
+    let fake = FakeBox::by_baud(move |baud, bytes| respond(&state, baud, bytes));
+    rig.system.plug(PORT, cp210x(), fake);
+    until(|| {
+        std::iter::from_fn(|| events.try_recv().ok()).any(|event| event == Event::Reconnected)
+    });
+    rig.set(|state| state.mouse = false);
+    poller.tick();
+    rig.set(|state| state.mouse = true);
+    poller.tick();
+    device.settle();
+    assert_eq!(resets(&events), 0);
+}
+
 #[test]
 fn a_reconnect_asks_the_box_again_and_turns_the_streams_back_on() {
     let rig = rig(State::software());

@@ -70,8 +70,9 @@ pub enum Event {
     Reconnected,
     /// the snapshot changed with no reconnect, so read `snapshot()` again. a mouse or keyboard set or pulled on a
     /// Ferrum, a YSC turning its keys off, or a Medius clone whose details changed come this way. so does a Ferrum
-    /// unplugged from this PC, because the app's port stays open and the app just loses its devices. a MAKCU gets a
-    /// `Reconnected` for those instead, so watch both. two of these never wait unread in the same receiver
+    /// unplugged from this PC, because the app's port stays open and the app just loses its devices, and once it's
+    /// back you get a `SessionReset` after this one, since the box forgot its locks. a MAKCU gets a `Reconnected`
+    /// for those instead, so watch both. two of these never wait unread in the same receiver
     Changed,
 }
 

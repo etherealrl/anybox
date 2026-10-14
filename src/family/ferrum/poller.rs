@@ -1,10 +1,11 @@
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::Ordering;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use super::frames;
-use super::{Roles, Shared, line, snapshot};
+use super::{Roles, Shared, line, lock, snapshot};
 use crate::backend::Sink;
 use crate::capability::{Action, FerrumApi};
 use crate::error::Result;
@@ -19,11 +20,26 @@ pub(crate) struct Poller {
     shared: Arc<Shared>,
     link: Arc<Link>,
     sink: Sink,
+    /// every role went away, which is what the app shows when the box itself gets unplugged
+    gone: Mutex<Option<Gone>>,
+}
+
+/// the roles the box had before they all went, and on which connection, since a reconnect does its own reset
+#[derive(Clone, Copy)]
+struct Gone {
+    generation: u64,
+    mouse: bool,
+    keyboard: bool,
 }
 
 impl Poller {
     pub(crate) fn new(shared: Arc<Shared>, link: Arc<Link>, sink: Sink) -> Self {
-        Self { shared, link, sink }
+        Self {
+            shared,
+            link,
+            sink,
+            gone: Mutex::new(None),
+        }
     }
 
     pub(crate) fn spawn(self) -> std::io::Result<JoinHandle<()>> {
@@ -69,12 +85,11 @@ impl Poller {
         };
         let current = self.shared.snapshot();
         let capabilities = &current.capabilities;
-        if (mouse, keyboard)
-            == (
-                capabilities.get(Action::Move).is_supported(),
-                capabilities.get(Action::KeyPress).is_supported(),
-            )
-        {
+        let had = (
+            capabilities.get(Action::Move).is_supported(),
+            capabilities.get(Action::KeyPress).is_supported(),
+        );
+        if (mouse, keyboard) == had {
             return;
         }
         let mut roles = Roles {
@@ -101,6 +116,25 @@ impl Poller {
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = fresh.clone();
             self.sink.changed(fresh);
+            // a box that comes back through the app has forgotten its locks, so once every role it had is back
+            // the core treats it like a reset, which also lets go of what was held. ponytail: a replug quicker
+            // than one round never shows up here, nothing on the app's port says so
+            let mut gone = lock(&self.gone);
+            if gone.is_some_and(|gone| gone.generation != generation) {
+                *gone = None;
+            }
+            if !mouse && !keyboard {
+                gone.get_or_insert(Gone {
+                    generation,
+                    mouse: had.0,
+                    keyboard: had.1,
+                });
+            } else if gone
+                .is_some_and(|gone| (mouse || !gone.mouse) && (keyboard || !gone.keyboard))
+            {
+                *gone = None;
+                self.sink.session_reset();
+            }
         });
     }
 }
