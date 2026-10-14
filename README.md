@@ -28,14 +28,14 @@ some boxes can do things the others can't, and anybox doesn't hide those. you ge
 
 > KMBox B Pro and Net might get added if enough people ask for it, otherwise i won't spend time on it
 
-|            | firmware     | mouse | wheel | pan | keys | media keys | locks | scale | events        |
-| ---------- | ------------ | :---: | :---: | :-: | :--: | :--------: | :---: | :---: | ------------- |
-| **Medius** | 3.4.2+       |   ✓   |   ✓   |  ✓  |  ✓   |     ✓      |   ✓   |   ✓   | all           |
-| **MAKCU**  | V4.085+      |   ✓   |   ✓   |  ✗  |  ✓   |     ✗      |   ✓   |   ✗   | buttons, keys |
-| Ferrum     | docs only    |   ✓   |   ✓   |  ✗  | app  |     ✗      |   ✓   |   ✗   | all but media |
-| YSC8K      | docs only    |   ✓   |   ✓   |  ✗  |  ✓   |     ✗      |   ✓   |   ✗   | buttons, motion |
+|            | firmware       | mouse | wheel | pan | keys | media keys | locks | scale | events        |
+| ---------- | -------------- | :---: | :---: | :-: | :--: | :--------: | :---: | :---: | ------------- |
+| **Medius** | 3.4.2+         |   ✓   |   ✓   |  ✓  |  ✓   |     ✓      |   ✓   |   ✓   | all           |
+| **MAKCU**  | V4.085+        |   ✓   |   ✓   |  ✗  |  ✓   |     ✗      |   ✓   |   ✗   | buttons, keys |
+| Ferrum     | docs only      |   ✓   |   ✓   |  ✗  | app  |     ✗      |   ✓   |   ✗   | all but media |
+| YSC8K      | V1 Oct 10 2026 |   ✓   |   ✓   |  ✗  |  ✓   |     ✗      |   ✓   |   ✗   | buttons, motion |
 
-Ferrum and YSC8K are written from the vendor docs and reference code, nobody has run these backends on real ones yet, so expect surprises and tell me about them. "app" means only through the Ferrum app's port
+Ferrum and YSC8K were written from the vendor docs and reference code, and so far only one community tester ran them on real ones, so expect surprises and tell me about them. "app" means only through the Ferrum app's port
 
 not every box can do everything, and [what each box can do](docs/boxes.md) has every method with the small differences. what you actually get also depends on what's plugged into the box, a mouse without horizontal scroll means no `pan` for example, so `device.snapshot().capabilities` is what tells you for sure, at runtime
 
@@ -75,7 +75,7 @@ fn main() -> anybox::Result<()> {
 
 `connect()` takes the first box it finds. `anybox::scan()` gives every port it looks at with what's on it, the box and what it can do or why you can't use it (busy, not allowed, too old, nothing there etc), which is what a box picker wants. `Connect::port("COM18")` or `Connect::auto().family(Family::Medius)` opens the one you want, and `Connect::auto().can(Action::Move)` opens the first one that can move, so a box with only a keyboard behind it gets skipped. a scan opens every box, so don't run it every second, `candidates()` below is the cheap one. a Ferrum isn't found on its own yet, open it with `Connect::port` or `.family(Family::Ferrum)`
 
-a YSC8K (the V1, the only one sold so far) sits behind the same USB chip as a Medius and a MAKCU, so it only gets asked with `.family(Family::Ysc)`, and that asks every one of those ports at up to 9 rates (about 2 s each when nothing YSC is there). a YSC or a Ferrum only comes back on the same port after a reconnect, so if its port name changes, connect again
+a YSC8K (the V1, the only one sold so far) sits behind the same USB chip as a Medius and a MAKCU, so it only gets asked with `.family(Family::Ysc)`, and that asks every one of those ports at up to 9 rates, so a port with no YSC on it takes about 2 s. a YSC or a Ferrum only comes back on the same port after a reconnect, so if its port name changes, connect again
 
 to notice a box getting plugged in, `anybox::candidates()` lists the ports a search would look at without opening any of them, so you can call it every second and only run `scan()` when the list changes. `snapshot().info.peripheral` has the USB ids of the device plugged into the box, which is what the box shows the PC, on a Medius and on a Ferrum's app port. a MAKCU has no way to say it
 
@@ -195,14 +195,14 @@ Then:
 
 ### YSC8K
 
-- the YSC8K you can buy is the V1, one chip behind a USB serial chip. none of this was checked on a real one yet, it all comes from the vendor docs and the vendor's own app
+- the YSC8K you can buy is the V1, one chip behind a USB serial chip. a community tester ran anybox on one, so moves, buttons, the wheel and keys were seen working there. anybox read the box's events wrong in that run, and the fix for it isn't checked on a real one yet, the rest still comes from the vendor docs and the vendor's own app
 - the vendor also documents a V2 with two chips and its own USB ports. it isn't out yet, so its support only comes from their docs, and a V2 gets found on its own like a Medius. on a V2 anybox talks to its TOWMCULEFT port, the other two ports of the box never get a single byte
 - a V1 can sit at any of 9 rates, so anybox looks for it the way the vendor's app does, 4M first, and never changes the rate. its firmware is the build date it gives back, and if it's in its bootloader you get told to finish the firmware update first
-- the vendor says V1 and V2 take the same commands, though keys aren't in their V1 list, so i don't know yet if keys work on a V1
 - clicks and key taps are timed on your PC, and the wheel takes one notch at a time
-- keys need a keyboard behind the box. if the box says there's none, keys turn off until you connect again
+- keys worked on that V1 with only a mouse behind it, though if the box ever says there's no keyboard, keys turn off until you connect again
 - anybox can't tell yet whether a mouse is behind the box, so moves, presses and button events say they work even when nothing is plugged in
 - if the box is in debug mode, leave it in the vendor tool first, anybox won't connect otherwise
+- after being unplugged and plugged back in, that V1 kept answering but ignored every text command (moves, clicks, locks) and i don't know why yet. when you connect, anybox checks for that and tells you (a reconnect just keeps trying), turning debug mode on and off in the vendor tool brought it back once
 - locks cover the five buttons and a whole X or Y axis, not one direction of it
 - buttons and motion come in one stream, and anybox doesn't know what was already held when you start listening, so a button that's already down when the first report comes in never shows its press, only its release
 - the box's curve and interpolation settings can shape your moves, anybox leaves them alone
@@ -210,7 +210,9 @@ Then:
 
 ### Ferrum
 
-- none of this was checked on a real Ferrum yet, it all comes from the vendor docs
+- a community tester ran anybox on one through the app's port (app 2.0.5), so moves, clicks, the wheel, keys and locks were seen working there, the rest comes from the vendor docs
+- in that run keys anybox sent only reached Windows once a key got pressed on the real keyboard, i don't know why yet and it was seen just once
+- with the app installed, Windows refused to open the box's own port on that PC even with the app closed, and i don't know what holds it
 - anybox does the most on the Ferrum app's virtual port, which needs the app running on Windows. the box's own port (the legacy one, and the only way in from Linux) only moves, clicks, scrolls, locks buttons and whole axes, and reports buttons. Mouse Proxy, controllers and the app's network APIs aren't in anybox yet
 - `connect()` doesn't find it by itself since we don't know its USB ids yet, so use `Connect::port` or `.family(Family::Ferrum)`. on Windows that search only takes the app's port, add `.ferrum_api(FerrumApi::Legacy)` if you really want the box's own one. `device.snapshot().info.ferrum_api` says which one you're on
 - the app has to answer `km.has_mouse()`, otherwise anybox can't tell what's plugged in and asks you to update it
@@ -222,7 +224,7 @@ Then:
 - the app's Move Multiplier scales every move and anybox can't read it, so leave it at 1 if your moves have to be exact
 - the box never says no, so a command it doesn't take just does nothing. anybox only sends what the box says it has
 - a mouse or keyboard you set in the app after connecting shows up within a second
-- unplugging the box from this PC doesn't disconnect anybox, because it talks to the app's port and that stays open. the app just loses the mouse and keyboard, so they go away from the snapshot with an `Event::Changed` and come back the same way when you plug it back in (the app doing that was seen on a real box)
+- unplugging the box from this PC doesn't disconnect anybox, because it talks to the app's port and that stays open. the app just loses the mouse and keyboard, so they go away from the snapshot with an `Event::Changed` and come back the same way when you plug it back in (the app doing that was seen on a real box). the box forgets its locks over that, so when it's back you also get an `Event::SessionReset`, and anybox puts your locks back and lets go of what you held. a replug quicker than a second can slip past that though
 - `info.peripheral` comes from the app's `device.VID()` and `device.PID()`, which name the first device plugged into the box, not always the mouse. with nothing plugged in the app answers a default pair that's also a real Logitech receiver, so anybox leaves it empty then
 - the legacy port answers exactly like a KMBox B+, so a B+ opens as a legacy Ferrum too. anybox only promises the legacy commands there, and nobody tried it on a B+
 - locking one way of an axis needs an app that has directional locks, otherwise (and on the legacy port) you can only lock a whole axis

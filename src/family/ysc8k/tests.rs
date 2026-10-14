@@ -28,6 +28,12 @@ fn wire(text: &str) -> Vec<u8> {
     .concat()
 }
 
+fn upload(b: i64, x: i64, y: i64, wh: i64) -> Vec<u8> {
+    wire(&format!(
+        r#"{{"code":200,"message":null,"data":"{{\"b\":{b},\"x\":{x},\"y\":{y},\"wh\":{wh}}}"}}"#
+    ))
+}
+
 struct BoxState {
     version: String,
     debug: Option<String>,
@@ -36,6 +42,10 @@ struct BoxState {
     partial: bool,
     partial_text: bool,
     key_error: bool,
+    key_silent: bool,
+    key_unreadable: bool,
+    /// echo is off, and `km.echo(1)` turns it on without echoing itself
+    echo_switch: bool,
 }
 
 impl Default for BoxState {
@@ -48,6 +58,9 @@ impl Default for BoxState {
             partial: false,
             partial_text: false,
             key_error: false,
+            key_silent: false,
+            key_unreadable: false,
+            echo_switch: false,
         }
     }
 }
@@ -63,13 +76,33 @@ fn respond(state: &mut BoxState, bytes: &[u8]) -> Vec<Vec<u8>> {
         return state.debug.as_deref().map(wire).into_iter().collect();
     }
     if bytes.starts_with(b"<START>") {
-        if state.key_error && bytes.windows(8).any(|bytes| bytes == b"\"cmd\":45") {
-            return vec![wire(r#"{"code":404,"message":"no_keyboard","data":""}"#)];
+        if bytes.windows(8).any(|bytes| bytes == b"\"cmd\":45") {
+            if state.key_silent {
+                return Vec::new();
+            }
+            if state.key_unreadable {
+                return vec![wire(r#"{"code":400,"message":"2","data":null}"#)];
+            }
+            if state.key_error {
+                return vec![wire(r#"{"code":404,"message":"no_keyboard","data":""}"#)];
+            }
+            let message = if bytes.ends_with(b"\"down\":1}<END>") {
+                "key_down"
+            } else {
+                "key_up"
+            };
+            return vec![wire(&format!(
+                "{{\"code\":200,\"message\":\"{message}\",\"data\":null}}"
+            ))];
         }
         return Vec::new();
     }
-    if bytes == b"km.echo(1)\r\n" || !state.echo {
+    if !state.echo {
+        state.echo = state.echo_switch && bytes == b"km.echo(1)\r\n";
         return Vec::new();
+    }
+    if bytes == b"km.echo(1)\r\n" {
+        return vec![b"km.echo(1)\r\n>>> ".to_vec()];
     }
     if state.partial {
         return vec![b"<START>\x00\x80{".to_vec()];
@@ -177,7 +210,7 @@ fn signal(rx: &Receiver<Signal>, accept: impl Fn(&Signal) -> bool) -> Signal {
 }
 
 #[test]
-fn open_writes_one_identity_one_optional_status_upload_off_and_write_only_echo() {
+fn open_writes_one_identity_one_optional_status_upload_off_and_waits_for_the_echo() {
     let rig = Rig::new();
     let (backend, snapshot, _) = rig.attach().unwrap();
     assert_eq!(
@@ -494,14 +527,13 @@ fn uploads_have_no_box_clock_seed_buttons_and_filter_receivers() {
     let device = rig.device();
     let buttons = device.events_of(EventKinds::BUTTONS);
     let motion = device.events_of(EventKinds::MOTION);
-    rig.fake.send(&wire(r#"{"x":1,"y":2,"b":1}"#));
+    rig.fake.send(&upload(1, 1, 2, 0));
     assert!(
         matches!(motion.recv_timeout(WAIT).unwrap(), Event::Motion { dx: 1, dy: 2, at, .. } if at.box_time.is_none())
     );
     device.settle();
     assert!(buttons.try_recv().is_err());
-    rig.fake
-        .send(&wire(r#"{"data":{"x":-3,"y":4,"b":2,"wheel":-1}}"#));
+    rig.fake.send(&upload(2, -3, 4, -1));
     assert!(matches!(
         buttons.recv_timeout(WAIT).unwrap(),
         Event::Button {
@@ -536,14 +568,14 @@ fn disabling_the_stream_forgets_the_button_baseline() {
     let rig = Rig::new();
     let device = rig.device();
     let events = device.events_of(EventKinds::BUTTONS | EventKinds::MOTION);
-    rig.fake.send(&wire(r#"{"x":1,"y":0,"b":1}"#));
+    rig.fake.send(&upload(1, 1, 0, 0));
     assert!(matches!(
         events.recv_timeout(WAIT).unwrap(),
         Event::Motion { .. }
     ));
     drop(events);
     let events = device.events_of(EventKinds::BUTTONS | EventKinds::MOTION);
-    rig.fake.send(&wire(r#"{"x":1,"y":0,"b":0}"#));
+    rig.fake.send(&upload(0, 1, 0, 0));
     assert!(matches!(
         events.recv_timeout(WAIT).unwrap(),
         Event::Motion { .. }
@@ -599,13 +631,62 @@ fn absent_malformed_or_unrelated_debug_replies_carry_on_once() {
 }
 
 #[test]
-fn a_late_debug_reply_cannot_answer_text_output() {
+fn a_key_waits_for_the_box_to_answer_it() {
+    let rig = Rig::new();
+    let (backend, _, _) = rig.attach().unwrap();
+    backend.send(Command::KeyPress(Key::A)).unwrap();
+    rig.state.lock().unwrap().key_silent = true;
+    assert!(matches!(
+        backend.send(Command::KeyRelease(Key::A)),
+        Err(Error::Disconnected)
+    ));
+}
+
+#[test]
+fn a_key_the_box_couldnt_read_is_refused_and_the_link_stays_up() {
+    let rig = Rig::new();
+    let (backend, _, _) = rig.attach().unwrap();
+    backend.send(Command::KeyPress(Key::A)).unwrap();
+    rig.state.lock().unwrap().key_unreadable = true;
+    assert!(matches!(
+        backend.send(Command::KeyRelease(Key::A)),
+        Err(Error::Rejected { .. })
+    ));
+    rig.state.lock().unwrap().key_unreadable = false;
+    backend.send(Command::KeyRelease(Key::A)).unwrap();
+    backend.send(Command::Move(1, 2)).unwrap();
+}
+
+#[test]
+fn a_box_with_echo_turned_off_still_opens() {
     let rig = Rig::with(BoxState {
-        debug: None,
         echo: false,
+        echo_switch: true,
         ..BoxState::default()
     });
     let (backend, _, _) = rig.attach().unwrap();
+    backend.send(Command::Move(1, 2)).unwrap();
+}
+
+#[test]
+fn a_box_that_ignores_text_at_open_is_refused_with_what_to_do() {
+    let rig = Rig::with(BoxState {
+        echo: false,
+        ..BoxState::default()
+    });
+    assert!(
+        matches!(rig.attach(), Err(Error::Rejected { action: Action::Connect, detail }) if detail.contains("text commands"))
+    );
+}
+
+#[test]
+fn a_late_debug_reply_cannot_answer_text_output() {
+    let rig = Rig::with(BoxState {
+        debug: None,
+        ..BoxState::default()
+    });
+    let (backend, _, _) = rig.attach().unwrap();
+    rig.state.lock().unwrap().echo = false;
     rig.fake
         .send(&wire(r#"{"code":702,"data":{"debug":true}}"#));
     rig.fake.send(b">>> ");
@@ -1214,7 +1295,7 @@ fn stream_restart_is_write_only_and_reseeds_buttons() {
     let rig = Rig::new();
     let (backend, _, rx) = rig.attach().unwrap();
     backend.set_streams(InputKind::Buttons.kinds()).unwrap();
-    rig.fake.send(&wire(r#"{"x":1,"y":2,"b":1}"#));
+    rig.fake.send(&upload(1, 1, 2, 0));
     signal(&rx, |s| {
         matches!(
             s,
@@ -1227,7 +1308,7 @@ fn stream_restart_is_write_only_and_reseeds_buttons() {
     rig.fake.clear_written();
     backend.restart_stream(InputKind::Buttons).unwrap();
     assert_eq!(rig.fake.written(), [wire(r#"{"cmd":34,"status":1}"#)]);
-    rig.fake.send(&wire(r#"{"x":1,"y":2,"b":0}"#));
+    rig.fake.send(&upload(0, 1, 2, 0));
     assert!(matches!(
         rx.recv_timeout(WAIT).unwrap(),
         Signal::Input {
@@ -1451,7 +1532,7 @@ fn repeated_same_path_reopens_run_one_debug_check_per_attempt_and_reseed_events(
     let rig = Rig::new();
     let (backend, _, rx) = rig.attach().unwrap();
     backend.set_streams(InputKind::Buttons.kinds()).unwrap();
-    rig.fake.send(&wire(r#"{"x":0,"y":0,"b":1}"#));
+    rig.fake.send(&upload(1, 0, 0, 0));
     signal(&rx, |s| matches!(s, Signal::Input { .. }));
     for _ in 0..3 {
         rig.fake
@@ -1466,7 +1547,7 @@ fn repeated_same_path_reopens_run_one_debug_check_per_attempt_and_reseed_events(
         rig.state.lock().unwrap().wrong_echo = false;
         signal(&rx, |s| matches!(s, Signal::Reconnected(_)));
         backend.set_streams(InputKind::Buttons.kinds()).unwrap();
-        rig.fake.send(&wire(r#"{"x":0,"y":0,"b":0}"#));
+        rig.fake.send(&upload(0, 0, 0, 0));
         assert!(matches!(
             rx.recv_timeout(WAIT).unwrap(),
             Signal::Input {

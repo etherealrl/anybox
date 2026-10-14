@@ -15,6 +15,13 @@ fn wire(text: &str) -> Vec<u8> {
     .concat()
 }
 
+/// the frame a V1 streams for physical input, the shape and field names are what the box sent on hardware
+fn upload(b: i64, x: i64, y: i64, wh: i64) -> Vec<u8> {
+    wire(&format!(
+        r#"{{"code":200,"message":null,"data":"{{\"b\":{b},\"x\":{x},\"y\":{y},\"wh\":{wh}}}"}}"#
+    ))
+}
+
 fn drain(codec: &mut YscFrames, buffer: &mut Vec<u8>) -> Vec<Incoming> {
     let mut incoming = Vec::new();
     while let Some(frame) = codec.split(buffer) {
@@ -129,7 +136,7 @@ fn debug_requires_its_own_code_and_a_boolean_in_an_object() {
 fn every_split_keeps_json_uploads_separate_from_echo_results_and_prompts() {
     let stream = [
         b"km.move(100,50)\r\n".as_slice(),
-        &wire(r#"{"x":3,"y":-4}"#),
+        &upload(0, 3, -4, 0),
         b"result\r\n>>> km.left(1)\r\n>>>",
     ]
     .concat();
@@ -180,7 +187,7 @@ fn bad_lengths_and_end_markers_resynchronize_overlapping_starts() {
         b"<START>\xff\xff",
         b"<START>\x00\x10{}WRONG",
     ] {
-        let expected = wire(r#"{"x":1,"y":2}"#);
+        let expected = upload(0, 1, 2, 0);
         let mut buffer = [bad, &expected].concat();
         let mut codec = YscFrames::probe();
         let frames = drain(&mut codec, &mut buffer);
@@ -206,10 +213,14 @@ fn malformed_json_utf8_nested_data_and_numbers_never_become_motion() {
         r#"{"x":1.0,"y":2}"#,
         r#"{"x":1,"y":2147483648}"#,
         r#"{"x":1}"#,
-        r#"{"data":"{\"x\":1,\"y\":2}"}"#,
-        r#"{"data":{"x":1}}"#,
-        r#"{"x":0,"y":0,"wheel":"1"}"#,
-        r#"{"x":0,"y":0,"b":-1}"#,
+        r#"{"x":1,"y":2,"b":0,"wh":0}"#,
+        r#"{"data":{"x":1,"y":2,"b":0,"wh":0}}"#,
+        r#"{"code":200,"message":null,"data":"{\"x\":1,\"y\":2,\"b\":0}"}"#,
+        r#"{"code":200,"message":null,"data":"{\"x\":1,\"y\":2,\"wh\":0}"}"#,
+        r#"{"code":200,"message":null,"data":"{\"x\":0,\"y\":0,\"b\":0,\"wh\":\"1\"}"}"#,
+        r#"{"code":200,"message":null,"data":"{\"x\":0,\"y\":0,\"b\":-1,\"wh\":0}"}"#,
+        r#"{"code":200,"message":null,"data":"{\"x\":1.0,\"y\":0,\"b\":0,\"wh\":0}"}"#,
+        r#"{"code":200,"message":"kbd","data":"{\"x\":1,\"y\":2,\"b\":0,\"wh\":0}"}"#,
     ] {
         assert!(
             matches!(
@@ -222,22 +233,19 @@ fn malformed_json_utf8_nested_data_and_numbers_never_become_motion() {
 }
 
 #[test]
-fn first_mask_is_a_baseline_missing_mask_keeps_it_and_releases_precede_presses() {
+fn first_mask_is_a_baseline_and_releases_precede_presses() {
     let mut codec = YscFrames::probe();
-    let first = drain(&mut codec, &mut wire(r#"{"x":0,"y":0,"b":1}"#));
+    let first = drain(&mut codec, &mut upload(1, 0, 0, 0));
     assert!(matches!(first.as_slice(), [Incoming::Inputs(inputs)] if inputs.len() == 1));
-    let missing = drain(
-        &mut codec,
-        &mut wire(r#"{"data":{"x":-1,"y":2,"wheel":-1}}"#),
-    );
+    let moved = drain(&mut codec, &mut upload(1, -1, 2, -1));
     assert!(
-        matches!(missing.as_slice(), [Incoming::Inputs(inputs)] if matches!(inputs.as_slice(), [Input::Motion { dx: -1, dy: 2, wheel: -1, pan: 0 }]))
+        matches!(moved.as_slice(), [Incoming::Inputs(inputs)] if matches!(inputs.as_slice(), [Input::Motion { dx: -1, dy: 2, wheel: -1, pan: 0 }]))
     );
-    let changed = drain(&mut codec, &mut wire(r#"{"x":0,"y":0,"b":226}"#));
+    let changed = drain(&mut codec, &mut upload(226, 0, 0, 0));
     assert!(
         matches!(changed.as_slice(), [Incoming::Inputs(inputs)] if matches!(inputs.as_slice(), [Input::Button { button: crate::Button::Left, pressed: false }, Input::Button { button: crate::Button::Right, pressed: true }, Input::Motion { .. }]))
     );
-    let duplicate = drain(&mut codec, &mut wire(r#"{"x":0,"y":0,"b":2}"#));
+    let duplicate = drain(&mut codec, &mut upload(2, 0, 0, 0));
     assert!(matches!(duplicate.as_slice(), [Incoming::Inputs(inputs)] if inputs.len() == 1));
 }
 
@@ -398,15 +406,30 @@ fn a_bad_end_marker_counts_as_lost() {
 }
 
 #[test]
-fn an_upload_in_an_envelope_the_vendor_doesnt_document_still_comes_through() {
+fn an_upload_shaped_200_without_a_message_counts_as_lost() {
     let (mut codec, rx) = listening();
-    assert!(matches!(
-        drain(
-            &mut codec,
-            &mut wire(r#"{"code":34,"message":"upload","data":{"x":3,"y":-4}}"#)
-        )
-        .as_slice(),
-        [Incoming::Inputs(inputs)] if matches!(inputs.as_slice(), [Input::Motion { dx: 3, dy: -4, .. }])
-    ));
-    assert!(rx.try_recv().is_err());
+    drain(
+        &mut codec,
+        &mut wire(r#"{"code":200,"data":"{\"b\":0,\"x\":1,\"y\":0,\"wh\":0}"}"#),
+    );
+    assert!(lost(&rx));
+}
+
+#[test]
+fn key_answers_and_a_400_complete_the_waiting_key_and_are_not_lost_reports() {
+    let (mut codec, rx) = listening();
+    for text in [
+        r#"{"code":200,"message":"key_down","data":null}"#,
+        r#"{"code":200,"message":"key_up","data":null}"#,
+        r#"{"code":404,"message":"no_keyboard","data":null}"#,
+        r#"{"code":400,"message":"2","data":null}"#,
+    ] {
+        assert!(
+            matches!(drain(&mut codec, &mut wire(text)).as_slice(), [Incoming::Reply(value)] if *value == key_reply()),
+            "{text}"
+        );
+    }
+    while let Ok(signal) = rx.try_recv() {
+        assert!(!matches!(signal, crate::backend::Signal::Dropped(..)));
+    }
 }
