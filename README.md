@@ -210,7 +210,9 @@ Then:
 
 ### Ferrum
 
-- none of this was checked on a real Ferrum yet, it all comes from the vendor docs
+- a community tester ran anybox on one through the app's port (app 2.0.5), so moves, clicks, the wheel, keys and locks were seen working there, the rest comes from the vendor docs
+- in that run keys anybox sent only reached Windows once a key got pressed on the real keyboard, i don't know why yet and it was seen just once
+- with the app installed, Windows refused to open the box's own port on that PC even with the app closed, and i don't know what holds it
 - anybox does the most on the Ferrum app's virtual port, which needs the app running on Windows. the box's own port (the legacy one, and the only way in from Linux) only moves, clicks, scrolls, locks buttons and whole axes, and reports buttons. Mouse Proxy, controllers and the app's network APIs aren't in anybox yet
 - `connect()` doesn't find it by itself since we don't know its USB ids yet, so use `Connect::port` or `.family(Family::Ferrum)`. on Windows that search only takes the app's port, add `.ferrum_api(FerrumApi::Legacy)` if you really want the box's own one. `device.snapshot().info.ferrum_api` says which one you're on
 - the app has to answer `km.has_mouse()`, otherwise anybox can't tell what's plugged in and asks you to update it
