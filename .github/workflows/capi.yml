@@ -50,7 +50,10 @@ jobs:
           # windows-sys 0.52 links through an import library of its own, which isn't part of Windows
           for lib in $(cat "$NAME/lib/native-static-libs.txt"); do
             case "$lib" in
-              windows.*.lib) cp "$(find ~/.cargo/registry/src -path "*/windows_x86_64_msvc-*/lib/$lib" | head -n 1)" "$NAME/lib/" ;;
+              windows.*.lib)
+                found=$(find ~/.cargo/registry/src -path "*/windows_x86_64_msvc-*/lib/$lib" | head -n 1)
+                [ -n "$found" ] || { echo "no import library $lib in the cargo registry" >&2; exit 1; }
+                cp "$found" "$NAME/lib/" ;;
             esac
           done
           tar -czf "$NAME.tar.gz" "$NAME"

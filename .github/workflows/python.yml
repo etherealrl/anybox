@@ -9,6 +9,10 @@ on:
   release:
     types: [published]
 
+# a pull request runs its own code here, so the token only reads, and publish asks for what it needs itself
+permissions:
+  contents: read
+
 jobs:
   wheels:
     if: github.event_name != 'release' || github.repository == 'etherealrl/anybox'
