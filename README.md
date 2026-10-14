@@ -20,7 +20,7 @@ one API for the most popular passthrough boxes
 
 anybox talks to the passthrough box plugged into your PC, so you write your app once and it works with all the [supported boxes](#boxes) the same way. when you connect, it figures out which box it is, the firmware, and what it can do, so you don't have to
 
-if a box can't do something, you get a clear error telling you so. nothing is faked or changed behind your back, anybox reproduces each box's native behavior as closely as it can, and the differences i found are all written down in [box-specific behavior](#box-specific-behavior)
+if a box can't do something, you get a clear error telling you so. nothing is faked or changed behind your back, anybox reproduces each box's native behavior as closely as it can, and the differences i found are all written down in [box-specific behavior](docs/boxes.md#box-specific-behavior)
 
 some boxes can do things the others can't, and anybox doesn't hide those. you get that box's own API from the device, so you can use them next to everything else
 
@@ -57,21 +57,74 @@ to test your own code without a box plugged in, turn on the `mock` feature. `Dev
 
 if a box acts weird and you want to see what actually goes over the wire, turn on the `trace` feature and set `ANYBOX_TRACE` to a file path. every byte anybox sends and gets back ends up in that file with a timestamp, the Medius is the one exception since it talks through the medius crate
 
+### C and C++
+
+every release has an `anybox-capi-<target>.tar.gz` for Windows and Linux with `anybox.h`, `medius.h`, the library, shared and static (the static one also needs the libraries in `native-static-libs.txt`, and the one that isn't part of Windows is in there too), and the licenses of everything built into it. you can also build it yourself with `cargo build -p anybox-capi --release`
+
+```c
+#include <stdio.h>
+#include "anybox.h"
+
+int main(void) {
+    AnyboxDevice *device;
+    if (anybox_abi_version() != ANYBOX_ABI_VERSION) {
+        printf("this library doesn't go with this anybox.h\n");
+        return 1;
+    }
+    if (anybox_connect(&device) != ANYBOX_STATUS_OK) {
+        printf("%s\n", anybox_last_error_message());
+        return 1;
+    }
+    anybox_device_move_by(device, 100, 0);
+    anybox_device_click(device, ANYBOX_BUTTON_LEFT);
+    anybox_device_free(device);
+    return 0;
+}
+```
+
+it's the same API with C names. every call returns a status, the text is in `anybox_last_error_message()`, and the header explains the rest. on a Medius, `anybox_device_medius` gives you a handle for `medius.h`, so everything only Medius does works from C too. the mock is in there when you build it with `--features mock`
+
+### Python
+
+```sh
+pip install anybox-rs
+```
+
+```python
+import anybox
+
+with anybox.connect() as device:
+    device.move_by(100, 0)
+    device.click(anybox.Button.LEFT)
+```
+
+it's the same API with Python names, on top of the C library, which comes inside the wheel so you don't need Rust. Python 3.11 or newer, and the [package's readme](bindings/python/README.md) has the rest. `pip install anybox-rs[medius]` also gets you `device.medius()`, the medius package's own device
+
+C and Python are only Windows and Linux on x64 for now. if you need another platform or another language, open an issue
+
 ## usage
 
 ```rust,no_run
+use anybox::medius::RenderMode;
 use anybox::{Button, Key};
 
-fn main() -> anybox::Result<()> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let device = anybox::connect()?;
     println!("{:?}", device.snapshot().info);
 
     device.move_by(100, 0)?;
     device.click(Button::Left)?;
     device.tap_key(Key::A)?;
+
+    // how you reach what only one box can do, here the Medius renderer, every other box gives None
+    if let Some(medius) = device.medius() {
+        medius.set_render(RenderMode::Despiked, false)?;
+    }
     Ok(())
 }
 ```
+
+what only one box can do stays reachable through that box's own API, like `device.medius()` above, which gives you the medius crate's device for clips, transforms, rendering and the rest
 
 `connect()` takes the first box it finds. `anybox::scan()` gives every port it looks at with what's on it, the box and what it can do or why you can't use it (busy, not allowed, too old, nothing there etc), which is what a box picker wants. `Connect::port("COM18")` or `Connect::auto().family(Family::Medius)` opens the one you want, and `Connect::auto().can(Action::Move)` opens the first one that can move, so a box with only a keyboard behind it gets skipped. a scan opens every box, so don't run it every second, `candidates()` below is the cheap one. a Ferrum isn't found on its own yet, open it with `Connect::port` or `.family(Family::Ferrum)`
 
@@ -171,8 +224,8 @@ README lists the bindings for other languages (a C ABI for C and C++, Python and
 
 Before changing anything, read:
 - the README at https://github.com/etherealrl/anybox (API overview, which languages are supported and
-  how to install each, box-specific behavior, the pattern for adding things a box can't do)
-- docs/boxes.md in that repo (what each box supports, method by method)
+  how to install each, the pattern for adding things a box can't do)
+- docs/boxes.md in that repo (what each box supports, method by method, and how each one behaves)
 - the API docs for this project's language: https://docs.rs/anybox-rs for Rust, or the docs the README
   links for the binding
 
@@ -193,60 +246,7 @@ Then:
 
 ## box-specific behavior
 
-### YSC8K
-
-- the YSC8K you can buy is the V1, one chip behind a USB serial chip. a community tester ran anybox on one, so moves, buttons, the wheel and keys were seen working there. anybox read the box's events wrong in that run, and the fix for it isn't checked on a real one yet, the rest still comes from the vendor docs and the vendor's own app
-- the vendor also documents a V2 with two chips and its own USB ports. it isn't out yet, so its support only comes from their docs, and a V2 gets found on its own like a Medius. on a V2 anybox talks to its TOWMCULEFT port, the other two ports of the box never get a single byte
-- a V1 can sit at any of 9 rates, so anybox looks for it the way the vendor's app does, 4M first, and never changes the rate. its firmware is the build date it gives back, and if it's in its bootloader you get told to finish the firmware update first
-- clicks and key taps are timed on your PC, and the wheel takes one notch at a time
-- keys worked on that V1 with only a mouse behind it, though if the box ever says there's no keyboard, keys turn off until you connect again
-- anybox can't tell yet whether a mouse is behind the box, so moves, presses and button events say they work even when nothing is plugged in
-- if the box is in debug mode, leave it in the vendor tool first, anybox won't connect otherwise
-- after being unplugged and plugged back in, that V1 kept answering but ignored every text command (moves, clicks, locks) and i don't know why yet. when you connect, anybox checks for that and tells you (a reconnect just keeps trying), turning debug mode on and off in the vendor tool brought it back once
-- locks cover the five buttons and a whole X or Y axis, not one direction of it
-- buttons and motion come in one stream, and anybox doesn't know what was already held when you start listening, so a button that's already down when the first report comes in never shows its press, only its release
-- the box's curve and interpolation settings can shape your moves, anybox leaves them alone
-- i don't know yet whether events keep coming while something is locked, or what stays held when the port closes or the box loses power
-
-### Ferrum
-
-- a community tester ran anybox on one through the app's port (app 2.0.5), so moves, clicks, the wheel, keys and locks were seen working there, the rest comes from the vendor docs
-- in that run keys anybox sent only reached Windows once a key got pressed on the real keyboard, i don't know why yet and it was seen just once
-- with the app installed, Windows refused to open the box's own port on that PC even with the app closed, and i don't know what holds it
-- anybox does the most on the Ferrum app's virtual port, which needs the app running on Windows. the box's own port (the legacy one, and the only way in from Linux) only moves, clicks, scrolls, locks buttons and whole axes, and reports buttons. Mouse Proxy, controllers and the app's network APIs aren't in anybox yet
-- `connect()` doesn't find it by itself since we don't know its USB ids yet, so use `Connect::port` or `.family(Family::Ferrum)`. on Windows that search only takes the app's port, add `.ferrum_api(FerrumApi::Legacy)` if you really want the box's own one. `device.snapshot().info.ferrum_api` says which one you're on
-- the app has to answer `km.has_mouse()`, otherwise anybox can't tell what's plugged in and asks you to update it
-- by default a release, and the end of a click or a tap, forces it up for 125 to 175 ms before the physical button counts again. the app's No Button Release setting drops the software press right away instead, and anybox can't read that setting
-- a click on a button that's still in its press or forced release takes over from it, i don't know yet what two quick clicks in a row look like
-- the box lets the physical button win, so pressing and letting go of a button anybox holds really lets it go
-- clicks and taps hold for a random 75 to 125 ms, the box has no way to take a hold, so a click or a tap with one is a press and a release timed from your PC, which is what the vendor tells you to do too
-- the vendor says to scroll one notch at a time, bigger scrolls can look emulated
-- the app's Move Multiplier scales every move and anybox can't read it, so leave it at 1 if your moves have to be exact
-- the box never says no, so a command it doesn't take just does nothing. anybox only sends what the box says it has
-- a mouse or keyboard you set in the app after connecting shows up within a second
-- unplugging the box from this PC doesn't disconnect anybox, because it talks to the app's port and that stays open. the app just loses the mouse and keyboard, so they go away from the snapshot with an `Event::Changed` and come back the same way when you plug it back in (the app doing that was seen on a real box). the box forgets its locks over that, so when it's back you also get an `Event::SessionReset`, and anybox puts your locks back and lets go of what you held. a replug quicker than a second can slip past that though
-- `info.peripheral` comes from the app's `device.VID()` and `device.PID()`, which name the first device plugged into the box, not always the mouse. with nothing plugged in the app answers a default pair that's also a real Logitech receiver, so anybox leaves it empty then
-- the legacy port answers exactly like a KMBox B+, so a B+ opens as a legacy Ferrum too. anybox only promises the legacy commands there, and nobody tried it on a B+
-- locking one way of an axis needs an app that has directional locks, otherwise (and on the legacy port) you can only lock a whole axis
-- i don't know yet whether the events include what anybox sends or only what you do yourself
-
-### MAKCU
-
-- on a MAKCU on V4.094 (measured with a USB capture, nobody touching the mouse) about 1,400 moves a second got through and the rest were refused, and an `Event::Rejected` counts the ones it dropped. that's one box and one firmware, so take it with a pinch of salt. if you move once per frame at a high frame rate, add up the deltas and send them every millisecond or two instead. moving the real mouse at the same time probably lowers that, i haven't measured it yet
-- a key tap without a hold lasts about one report, so some apps miss it, pass a hold with `tap_key_with` if it has to land. a click is fine, the box holds it 35 to 75 ms by itself
-- a key press right after a tap gets refused
-- a lock on a button that's already held still lets its release through
-- if your app gets killed, its locks stay on the box until something unlocks them
-- after a reconnect anybox lets go of what was held, press again if you still need it
-- right after a reconnect the mouse behind the box can take a second or so to show up again, so until then the snapshot has no mouse and mouse calls come back unsupported. you get a second `Reconnected` once it's there, so wait for that one
-- unplugging the box restarts it, so a button held at that moment stays down in Windows after the reconnect, because the box never sends it the release. anybox can't fix that without clicking for you, a real click on that button clears it
-
-### Medius
-
-- a lock on a button that's already held keeps it down until you unlock it
-- held buttons, keys and locks come back by themselves after the box reconnects or resets
-- `device.medius()` gives you the medius crate's own device, for clips, transforms, rendering, the polling rate (`query_rate()`) and the identity the box shows the PC (`device_info()`)
-- anybox doesn't know what you press or lock through `medius()`, and its `reset()` lets go of and unlocks EVERYTHING, what anybox did too
+each box has its own little differences, and the ones i found are all written down in [box-specific behavior](docs/boxes.md#box-specific-behavior)
 
 ## support
 

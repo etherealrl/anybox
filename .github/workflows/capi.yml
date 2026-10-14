@@ -1,0 +1,57 @@
+name: capi
+
+# every release gets the C library for each platform, built from its tag
+on:
+  release:
+    types: [published]
+
+jobs:
+  build:
+    if: github.repository == 'etherealrl/anybox'
+    strategy:
+      # one platform failing shouldn't cancel the other's upload
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          # the oldest runner there is, so the library runs on every glibc from its one on
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev pkg-config
+      - shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NAME: anybox-capi-${{ matrix.target }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          # the static library needs the system libraries this prints, so they go in the tarball
+          cargo rustc -p anybox-capi --release --locked -- --print native-static-libs 2>&1 | tee build.log
+          mkdir -p "$NAME/include" "$NAME/lib"
+          cp bindings/c/include/anybox.h bindings/c/include/medius.h "$NAME/include/"
+          cp LICENSE NOTICE "$NAME/"
+          # the notices of every dependency built into the library go with it
+          cargo install cargo-about --version 0.9.2 --features cli --locked
+          (cd bindings/c && cargo about generate --locked about.hbs -o "../../$NAME/THIRD-PARTY-LICENSES.txt")
+          if [ "$RUNNER_OS" = Windows ]; then
+            cp target/release/anybox.dll target/release/anybox.dll.lib target/release/anybox.lib "$NAME/lib/"
+          else
+            cp target/release/libanybox.so target/release/libanybox.a "$NAME/lib/"
+          fi
+          sed -n 's/.*native-static-libs: //p' build.log > "$NAME/lib/native-static-libs.txt"
+          [ -s "$NAME/lib/native-static-libs.txt" ]
+          # windows-sys 0.52 links through an import library of its own, which isn't part of Windows
+          for lib in $(cat "$NAME/lib/native-static-libs.txt"); do
+            case "$lib" in
+              windows.*.lib) cp "$(find ~/.cargo/registry/src -path "*/windows_x86_64_msvc-*/lib/$lib" | head -n 1)" "$NAME/lib/" ;;
+            esac
+          done
+          tar -czf "$NAME.tar.gz" "$NAME"
+          gh release upload "$TAG" "$NAME.tar.gz" --clobber

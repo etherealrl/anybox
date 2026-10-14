@@ -8,7 +8,9 @@ https://mozilla.org/MPL/2.0/.
 ---
 
 src/transport/windows.rs is based on the Windows serial reader of the medius crate
-(crates.io/crates/medius, version 3.4.3), which comes under this license:
+(crates.io/crates/medius, version 3.4.3). the C library built from anybox-capi has medius-capi
+(github.com/K4HVH/medius) in it, and bindings/c/include/medius.h is its header copied as it is.
+all of them come under this license:
 
 MIT License
 

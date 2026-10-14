@@ -1,0 +1,53 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "anybox-rs"
+version = "0.8.0"
+description = "one API for the most popular passthrough boxes"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MPL-2.0"
+authors = [{ name = "ethereal" }]
+keywords = ["medius", "makcu", "ferrum", "hid", "serial"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Rust",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Topic :: System :: Hardware",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/etherealrl/anybox"
+
+[project.optional-dependencies]
+test = ["pytest"]
+# the medius package for `device.medius()`, at the medius version this library has inside
+medius = ["medius==3.4.3"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["anybox"]
+
+# the library inside makes the wheel platform specific, but ctypes doesn't link CPython, so the hook tags it
+# py3-none-<platform> and one wheel serves every Python from 3.11 up
+[tool.hatch.build.hooks.custom]
+path = "hatch_build.py"
+
+# run from the repo root as `cibuildwheel bindings/python`, so the Linux container gets the whole workspace
+[tool.cibuildwheel]
+build = "cp311-manylinux_x86_64 cp311-win_amd64"
+build-frontend = "build"
+# the wheels have no mock, so this only checks that the library loads and speaks the right ABI. the CI job runs
+# the tests against a mock build
+test-command = "python -c \"import anybox; print(anybox.version(), anybox.ABI_VERSION, anybox.has_mock())\""
+
+[tool.cibuildwheel.linux]
+# serialport reads USB ids through libudev, which auditwheel then puts in the wheel, and the container has no Rust
+before-all = "dnf install -y systemd-devel pkgconfig && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none"
+environment = { PATH = "$HOME/.cargo/bin:$PATH" }
+
+[tool.ruff]
+line-length = 115

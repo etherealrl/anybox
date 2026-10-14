@@ -3,8 +3,16 @@
 version = 4
 
 [[package]]
+name = "anybox-capi"
+version = "0.8.0"
+dependencies = [
+ "anybox-rs",
+ "medius-capi",
+]
+
+[[package]]
 name = "anybox-rs"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "libc",
  "medius",
@@ -220,8 +228,7 @@ dependencies = [
 [[package]]
 name = "medius"
 version = "3.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbcc4ed2c67e4767cfc6145251d1fa5da11b3be4ea99ef3bf6a733bd4fdf0739"
+source = "git+https://github.com/etherealrl/medius?rev=0d7e773a093993ac95d5b507b498b1455599f4ff#0d7e773a093993ac95d5b507b498b1455599f4ff"
 dependencies = [
  "flume",
  "parking_lot",
@@ -230,6 +237,14 @@ dependencies = [
  "sha2",
  "thiserror",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "medius-capi"
+version = "3.4.3"
+source = "git+https://github.com/etherealrl/medius?rev=0d7e773a093993ac95d5b507b498b1455599f4ff#0d7e773a093993ac95d5b507b498b1455599f4ff"
+dependencies = [
+ "medius",
 ]
 
 [[package]]

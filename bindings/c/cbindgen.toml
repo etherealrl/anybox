@@ -1,0 +1,45 @@
+language = "C"
+pragma_once = true
+include_guard = "ANYBOX_H"
+autogen_warning = "/* made by scripts/gen-header.sh from anybox-capi, don't edit it by hand */"
+header = """/* the C ABI over anybox, https://github.com/etherealrl/anybox. MPL-2.0
+
+   every call that can fail returns an AnyboxStatus, ANYBOX_STATUS_OK (0) or the reason it failed, and
+   anybox_last_error_message() has the text. results come back through the out pointers, which are only
+   written when the call worked
+
+   the rules for every pointer, breaking them is a bug in your code like with any C library:
+   - a non-null pointer has to be aligned for its type and point at a whole value of it, and out pointers
+     can't overlap each other or the inputs
+   - a null where a pointer is needed is ANYBOX_STATUS_INVALID_ARGUMENT and never a crash
+   - strings are NUL-terminated UTF-8, anything else is ANYBOX_STATUS_INVALID_ARGUMENT
+   - every handle gets freed once with its own *_free, never used after, and null frees do nothing
+
+   a panic inside anybox comes back as ANYBOX_STATUS_PANIC and never unwinds into your code, unless the
+   library was built with panic = "abort", then it aborts. compare anybox_abi_version() with
+   ANYBOX_ABI_VERSION once at start and call nothing else when they differ, the same goes for
+   medius_abi_version() and MEDIUS_ABI_VERSION from medius.h, which ships next to this header */"""
+cpp_compat = true
+documentation = true
+documentation_style = "c99"
+tab_width = 4
+sys_includes = ["stdint.h", "stdbool.h", "stddef.h"]
+includes = ["medius.h"]
+no_includes = true
+
+[defines]
+"feature = mock" = "ANYBOX_FEATURE_MOCK"
+
+[parse]
+parse_deps = false
+
+[export]
+# these only show up as uint32_t values in the signatures, so cbindgen would leave them out
+include = ["AnyboxQuirk", "AnyboxEvent"]
+
+[fn]
+sort_by = "None"
+
+[const]
+allow_static_const = true
+allow_constexpr = false

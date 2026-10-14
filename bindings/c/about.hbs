@@ -1,0 +1,12 @@
+the licenses of the code from other projects that's built into the anybox C library
+
+{{#each licenses}}
+================================================================================
+{{{name}}}, used by:
+{{#each used_by}}
+- {{crate.name}} {{crate.version}}
+{{/each}}
+
+{{{text}}}
+
+{{/each}}
