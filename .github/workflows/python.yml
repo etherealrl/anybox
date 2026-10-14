@@ -1,0 +1,62 @@
+name: python
+
+# every release gets a wheel for each platform, built from its tag. a pull request that touches the bindings, or
+# running it by hand, builds and tests the wheels without publishing anything
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: [bindings/**, .github/workflows/python.yml]
+  release:
+    types: [published]
+
+# a pull request runs its own code here, so the token only reads, and publish asks for what it needs itself
+permissions:
+  contents: read
+
+jobs:
+  wheels:
+    if: github.event_name != 'release' || github.repository == 'etherealrl/anybox'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      # the notices of every dependency built into the library go in the wheel, the build hook picks them up there
+      - shell: bash
+        run: |
+          cargo install cargo-about --version 0.9.2 --features cli --locked
+          mkdir -p target
+          (cd bindings/c && cargo about generate --locked about.hbs -o ../../target/THIRD-PARTY-LICENSES.txt)
+      - shell: bash
+        run: |
+          python -m pip install cibuildwheel==4.3.1
+          python -m cibuildwheel bindings/python --output-dir wheelhouse
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.os }}
+          path: wheelhouse/*.whl
+
+  publish:
+    if: github.event_name == 'release' && github.repository == 'etherealrl/anybox'
+    needs: wheels
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      # trusted publishing, PyPI trusts this workflow so there's no token to leak
+      id-token: write
+    environment: pypi
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-*
+          merge-multiple: true
+          path: wheelhouse
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$TAG" wheelhouse/*.whl --clobber --repo "$GITHUB_REPOSITORY"
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: wheelhouse

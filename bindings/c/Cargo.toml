@@ -1,0 +1,28 @@
+[package]
+name = "anybox-capi"
+version = "0.8.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MPL-2.0"
+authors = ["ethereal"]
+description = "the C ABI over anybox"
+repository = "https://github.com/etherealrl/anybox"
+publish = false
+
+[lib]
+name = "anybox"
+crate-type = ["cdylib", "staticlib"]
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+# the header says once, at the top, what every pointer has to be
+missing_safety_doc = "allow"
+
+[features]
+# the Medius mock surface, for testing code that uses anybox without a box
+mock = ["anybox-rs/mock", "medius-capi/mock"]
+trace = ["anybox-rs/trace"]
+
+[dependencies]
+anybox-rs = { path = "../.." }
+medius-capi = { git = "https://github.com/etherealrl/medius", rev = "0d7e773a093993ac95d5b507b498b1455599f4ff" }

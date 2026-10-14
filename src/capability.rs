@@ -313,7 +313,8 @@ pub enum Firmware {
         patch: u16,
     },
     Build(u32),
-    /// for boxes that report a protocol number instead, like Medius
+    /// the protocol number a box speaks, which only shows up in the error of a Medius that's too old or too new.
+    /// its `Info` has the version
     Protocol(u8),
     Text(String),
 }

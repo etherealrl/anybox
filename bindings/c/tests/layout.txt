@@ -1,0 +1,64 @@
+AnyboxClickTiming size 16 align 8
+  kind 0
+  fixed_us 8
+AnyboxClick size 16 align 8
+  hold_us 0
+  has_hold 8
+  native_only 9
+AnyboxConnectOptions size 64 align 8
+  port 0
+  family 8
+  ferrum_api 12
+  can 16
+  id_kind 24
+  id_mac 28
+  id_serial 40
+  click_timing 48
+AnyboxInfo size 88 align 8
+  port 0
+  family 8
+  model 16
+  firmware_kind 24
+  firmware_major 28
+  firmware_minor 30
+  firmware_patch 32
+  firmware_protocol 34
+  firmware_build 36
+  firmware_text 40
+  id_kind 48
+  id_mac 52
+  id_serial 64
+  ferrum_api 72
+  has_peripheral 76
+  peripheral_vid 78
+  peripheral_pid 80
+AnyboxCapability size 24 align 8
+  execution 0
+  reason 8
+  quirk_count 16
+AnyboxQuirk size 48 align 8
+  kind 0
+  min_us 8
+  max_us 16
+  count 24
+  click_timing 32
+AnyboxEvent size 88 align 8
+  kind 0
+  button 4
+  key 8
+  pressed 9
+  media 10
+  dx 12
+  dy 16
+  wheel 20
+  pan 24
+  source 28
+  action 32
+  count 40
+  since_open_ns 48
+  received_since_open_ns 56
+  received_qpc 64
+  has_received_qpc 72
+  has_box_time 73
+  box_clock 76
+  box_time_us 80
