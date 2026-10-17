@@ -5,12 +5,17 @@
 one API for the most popular passthrough boxes
 
 <p>
-  <a href="https://docs.rs/anybox-rs"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/badges/rust.svg" /><img src="docs/badges/rust-light.svg" alt="Rust docs on docs.rs" /></picture></a>
-  <a href="https://crates.io/crates/anybox-rs"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/badges/crates.svg" /><img src="docs/badges/crates-light.svg" alt="anybox-rs on crates.io" /></picture></a>
+  <a href="https://docs.rs/anybox-rs#gh-dark-mode-only"><img src="docs/badges/rust.svg" alt="Rust docs on docs.rs" /></a>
+  <a href="https://docs.rs/anybox-rs#gh-light-mode-only"><img src="docs/badges/rust-light.svg" alt="Rust docs on docs.rs" /></a>
+  <a href="https://crates.io/crates/anybox-rs#gh-dark-mode-only"><img src="docs/badges/crates.svg" alt="anybox-rs on crates.io" /></a>
+  <a href="https://crates.io/crates/anybox-rs#gh-light-mode-only"><img src="docs/badges/crates-light.svg" alt="anybox-rs on crates.io" /></a>
   <br />
-  <a href="https://github.com/etherealrl/anybox/releases/latest"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/badges/windows.svg" /><img src="docs/badges/windows-light.svg" alt="Windows downloads" /></picture></a>
-  <a href="https://github.com/etherealrl/anybox/releases/latest"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/badges/linux.svg" /><img src="docs/badges/linux-light.svg" alt="Linux downloads" /></picture></a>
-  <a href="https://github.com/sponsors/etherealrl"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/badges/support.svg" /><img src="docs/badges/support-light.svg" alt="Support my work" /></picture></a>
+  <a href="https://github.com/etherealrl/anybox/releases/latest#gh-dark-mode-only"><img src="docs/badges/windows.svg" alt="Windows downloads" /></a>
+  <a href="https://github.com/etherealrl/anybox/releases/latest#gh-light-mode-only"><img src="docs/badges/windows-light.svg" alt="Windows downloads" /></a>
+  <a href="https://github.com/etherealrl/anybox/releases/latest#gh-dark-mode-only"><img src="docs/badges/linux.svg" alt="Linux downloads" /></a>
+  <a href="https://github.com/etherealrl/anybox/releases/latest#gh-light-mode-only"><img src="docs/badges/linux-light.svg" alt="Linux downloads" /></a>
+  <a href="https://github.com/sponsors/etherealrl#gh-dark-mode-only"><img src="docs/badges/support.svg" alt="Support my work" /></a>
+  <a href="https://github.com/sponsors/etherealrl#gh-light-mode-only"><img src="docs/badges/support-light.svg" alt="Support my work" /></a>
 </p>
 
 </div>
