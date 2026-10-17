@@ -1,0 +1,138 @@
+name: dotnet
+
+# every release gets the NuGet package, built from its tag. a pull request that touches the C# package, the C ABI or
+# the dependencies, or running it by hand, builds and smoke tests the package without publishing anything
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: [bindings/csharp/**, bindings/c/**, src/**, Cargo.toml, Cargo.lock, rust-toolchain.toml, .github/workflows/dotnet.yml]
+  release:
+    types: [published]
+
+# a pull request runs its own code here, so the token only reads, and publish asks for what it needs itself
+permissions:
+  contents: read
+
+jobs:
+  natives:
+    if: github.event_name != 'release' || github.repository == 'etherealrl/anybox'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            rid: win-x64
+            file: anybox.dll
+          # the oldest runner there is, so the library runs on every glibc from its one on
+          - os: ubuntu-22.04
+            rid: linux-x64
+            file: libanybox.so
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev pkg-config
+      # the target dir and cargo-about between pull request runs, a release always builds from nothing
+      - if: github.event_name != 'release'
+        uses: Swatinem/rust-cache@v2
+      - run: cargo build -p anybox-capi --release --locked
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.rid }}
+          path: target/release/${{ matrix.file }}
+
+  pack:
+    needs: natives
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-win-x64
+          path: bindings/csharp/natives/win-x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-linux-x64
+          path: bindings/csharp/natives/linux-x64
+      # the target dir and cargo-about between pull request runs, a release always builds from nothing
+      - if: github.event_name != 'release'
+        uses: Swatinem/rust-cache@v2
+      # the notices of every dependency built into the library go in the package
+      - shell: bash
+        run: |
+          cargo install cargo-about --version 0.9.2 --features cli --locked
+          mkdir -p target
+          (cd bindings/c && cargo about generate --locked about.hbs -o ../../target/THIRD-PARTY-LICENSES.txt)
+      - shell: bash
+        run: |
+          set -euo pipefail
+          dotnet pack bindings/csharp/src/Anybox -c Release -o bindings/csharp/packages
+          contents=$(unzip -l bindings/csharp/packages/*.nupkg)
+          for file in runtimes/win-x64/native/anybox.dll runtimes/linux-x64/native/libanybox.so THIRD-PARTY-LICENSES.txt; do
+            grep -q " $file$" <<< "$contents" || { echo "the package has no $file" >&2; exit 1; }
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nupkg
+          path: bindings/csharp/packages/*.nupkg
+
+  # the package installed into an app like anyone would get it, on each platform it has a library for
+  smoke:
+    needs: pack
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+      - uses: actions/download-artifact@v4
+        with:
+          name: nupkg
+          path: bindings/csharp/packages
+      - shell: bash
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+          dotnet run --project bindings/csharp/tests/Smoke "-p:AnyboxVersion=$version"
+
+  publish:
+    if: github.event_name == 'release' && github.repository == 'etherealrl/anybox'
+    needs: smoke
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      # trusted publishing, nuget.org trusts this workflow so there's no long lived key to leak
+      id-token: write
+    environment: nuget
+    steps:
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+      - uses: actions/download-artifact@v4
+        with:
+          name: nupkg
+          path: packages
+      - uses: NuGet/login@v1
+        id: login
+        with:
+          user: ${{ vars.NUGET_USER }}
+      - env:
+          NUGET_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
+        # a rerun after the push went through skips it instead of failing on it, like the crates job
+        run: dotnet nuget push packages/*.nupkg --api-key "$NUGET_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$TAG" packages/*.nupkg --clobber --repo "$GITHUB_REPOSITORY"

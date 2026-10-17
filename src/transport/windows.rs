@@ -284,3 +284,14 @@ pub(crate) fn qpc() -> Option<i64> {
         unsafe { windows_sys::Win32::System::Performance::QueryPerformanceCounter(&mut count) };
     (ok != 0).then_some(count)
 }
+
+/// QueryPerformanceCounter in nanoseconds, rounded down the way std turns it into an `Instant`
+pub(crate) fn monotonic_ns() -> u64 {
+    let mut frequency = 0i64;
+    // SAFETY: QueryPerformanceFrequency writes one i64 and can't fail on Windows XP or later
+    unsafe { windows_sys::Win32::System::Performance::QueryPerformanceFrequency(&mut frequency) };
+    let count = qpc().unwrap_or(0) as u64;
+    let frequency = frequency.max(1) as u64;
+    // split like std's mul_div so a counter of months doesn't overflow
+    (count / frequency) * 1_000_000_000 + (count % frequency) * 1_000_000_000 / frequency
+}

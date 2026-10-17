@@ -22,7 +22,7 @@ from ctypes.util import find_library
 from pathlib import Path
 
 # the header's ANYBOX_ABI_VERSION, the tests hold it to the header and import refuses any other library
-ABI_VERSION = 1
+ABI_VERSION = 2
 
 _LIBRARY = {"win32": "anybox.dll", "darwin": "libanybox.dylib"}.get(sys.platform, "libanybox.so")
 
@@ -36,7 +36,8 @@ class ConnectOptions(ctypes.Structure):
         ("port", c_char_p),
         ("family", c_uint32),
         ("ferrum_api", c_uint32),
-        ("can", c_uint64),
+        ("can", POINTER(c_uint32)),
+        ("can_len", c_size_t),
         ("id_kind", c_uint32),
         ("id_mac", c_uint8 * 6),
         ("id_serial", c_char_p),
@@ -69,6 +70,8 @@ class Event(ctypes.Structure):
         ("has_box_time", c_bool),
         ("box_clock", c_uint32),
         ("box_time_us", c_uint32),
+        ("arrived_ns", c_uint64),
+        ("received_ns", c_uint64),
     ]
 
 
@@ -108,6 +111,44 @@ class Quirk(ctypes.Structure):
     ]
 
 
+class ErrorDetail(ctypes.Structure):
+    _fields_ = [
+        ("kind", c_uint32),
+        ("has_action", c_bool),
+        ("action", c_uint32),
+        ("family", c_uint32),
+        ("expected_family", c_uint32),
+        ("found_family", c_uint32),
+        ("port", c_char_p),
+        ("text", c_char_p),
+        ("expected_id_kind", c_uint32),
+        ("expected_id_mac", c_uint8 * 6),
+        ("expected_id_serial", c_char_p),
+        ("found_id_kind", c_uint32),
+        ("found_id_mac", c_uint8 * 6),
+        ("found_id_serial", c_char_p),
+        ("found_firmware_kind", c_uint32),
+        ("found_firmware_major", c_uint16),
+        ("found_firmware_minor", c_uint16),
+        ("found_firmware_patch", c_uint16),
+        ("found_firmware_protocol", c_uint8),
+        ("found_firmware_build", c_uint32),
+        ("found_firmware_text", c_char_p),
+        ("needed_firmware_kind", c_uint32),
+        ("needed_firmware_major", c_uint16),
+        ("needed_firmware_minor", c_uint16),
+        ("needed_firmware_patch", c_uint16),
+        ("needed_firmware_protocol", c_uint8),
+        ("needed_firmware_build", c_uint32),
+        ("needed_firmware_text", c_char_p),
+        ("expected_ferrum_api", c_uint32),
+        ("found_ferrum_api", c_uint32),
+        ("io_kind", c_uint32),
+        ("has_os_error", c_bool),
+        ("os_error", ctypes.c_int32),
+    ]
+
+
 STRUCTS = {
     "AnyboxClickTiming": ClickTiming,
     "AnyboxClick": Click,
@@ -116,6 +157,7 @@ STRUCTS = {
     "AnyboxCapability": Capability,
     "AnyboxQuirk": Quirk,
     "AnyboxEvent": Event,
+    "AnyboxErrorDetail": ErrorDetail,
 }
 
 _status = c_uint32
@@ -127,18 +169,25 @@ _FUNCTIONS = {
     "anybox_abi_version": (c_uint32, []),
     "anybox_version": (c_char_p, []),
     "anybox_has_mock": (c_bool, []),
+    "anybox_monotonic_ns": (c_uint64, []),
     "anybox_last_error_message": (c_char_p, []),
+    "anybox_last_error_detail": (_status, [POINTER(ErrorDetail)]),
+    "anybox_last_error_tried": (_status, [_out]),
+    "anybox_last_error_incapable": (_status, [_out]),
     "anybox_open": (_status, [POINTER(ConnectOptions), _out]),
     "anybox_scan": (_status, [POINTER(ConnectOptions), _out]),
     "anybox_scan_list_count": (c_size_t, [_handle]),
     "anybox_scan_list_port": (c_char_p, [_handle, c_size_t]),
     "anybox_scan_list_result": (_status, [_handle, c_size_t, _out]),
+    "anybox_scan_list_error_detail": (_status, [_handle, c_size_t, POINTER(ErrorDetail)]),
+    "anybox_scan_list_missing": (_status, [_handle, c_size_t, POINTER(c_uint32), c_size_t, POINTER(c_size_t)]),
     "anybox_scan_list_free": (None, [_handle]),
     "anybox_candidates": (_status, [POINTER(ConnectOptions), _out]),
     "anybox_string_list_count": (c_size_t, [_handle]),
     "anybox_string_list_get": (c_char_p, [_handle, c_size_t]),
     "anybox_string_list_free": (None, [_handle]),
     "anybox_device_snapshot": (_status, [_handle, _out]),
+    # made by bindings/gen from its call table (signatures), change the table and run cargo run -p anybox-gen
     "anybox_device_move_by": (_status, [_handle, c_int16, c_int16]),
     "anybox_device_move_now": (_status, [_handle, c_int16, c_int16]),
     "anybox_device_press": (_status, [_handle, c_uint32]),
@@ -160,11 +209,13 @@ _FUNCTIONS = {
     "anybox_device_wheel": (_status, [_handle, c_int16]),
     "anybox_device_pan": (_status, [_handle, c_int16]),
     "anybox_device_discard_pending_moves": (_status, [_handle]),
+    # the end of what bindings/gen makes (signatures)
     "anybox_device_events": (_status, [_handle, c_uint32, _out]),
     "anybox_device_medius": (_status, [_handle, _out]),
     "anybox_device_close": (_status, [_handle]),
     "anybox_device_free": (None, [_handle]),
     "anybox_events_recv": (_status, [_handle, c_int64, POINTER(Event)]),
+    "anybox_events_close": (_status, [_handle]),
     "anybox_events_free": (None, [_handle]),
     "anybox_snapshot_info": (_status, [_handle, POINTER(Info)]),
     "anybox_snapshot_capability": (_status, [_handle, c_uint32, POINTER(Capability)]),
@@ -175,13 +226,27 @@ _FUNCTIONS = {
 }
 
 _MOCK_FUNCTIONS = {
-    "anybox_mock_medius_open": (_status, [POINTER(ClickTiming), _out, _out]),
-    "anybox_mock_subscribed": (c_bool, [_handle]),
+    "anybox_mock_medius_open": (_status, [POINTER(ClickTiming), c_bool, _out, _out]),
+    "anybox_mock_medius_open_manual": (_status, [POINTER(ClickTiming), c_bool, _out, _out]),
+    "anybox_mock_subscribed": (c_bool, [_handle, c_uint32]),
     "anybox_mock_push_motion": (
         _status,
         [_handle, c_uint8, c_uint32, c_int16, c_int16, c_int16, c_int16],
     ),
     "anybox_mock_push_buttons": (_status, [_handle, c_uint8, c_uint32, c_bool, c_uint32]),
+    "anybox_mock_push_keys": (_status, [_handle, c_uint8, c_uint32, c_bool, POINTER(c_uint8), c_size_t]),
+    "anybox_mock_push_media": (_status, [_handle, c_uint8, c_uint32, c_bool, POINTER(c_uint16), c_size_t]),
+    "anybox_mock_link_lost": (_status, [_handle]),
+    "anybox_mock_restart": (_status, [_handle]),
+    "anybox_mock_tick": (_status, [_handle]),
+    "anybox_mock_recorded": (c_size_t, [_handle]),
+    "anybox_mock_recorded_frame": (
+        _status,
+        [_handle, c_size_t, POINTER(c_uint8), POINTER(c_uint8), c_size_t, POINTER(c_size_t)],
+    ),
+    "anybox_mock_clear_recorded": (_status, [_handle]),
+    "anybox_mock_example_events": (_status, [_handle]),
+    "anybox_mock_fail": (_status, [c_uint32]),
     "anybox_mock_free": (None, [_handle]),
 }
 

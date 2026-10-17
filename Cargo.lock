@@ -4,15 +4,22 @@ version = 4
 
 [[package]]
 name = "anybox-capi"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anybox-rs",
+ "medius",
  "medius-capi",
+ "serde_json",
+ "syn",
 ]
 
 [[package]]
+name = "anybox-gen"
+version = "0.9.0"
+
+[[package]]
 name = "anybox-rs"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "libc",
  "medius",
@@ -227,8 +234,9 @@ dependencies = [
 
 [[package]]
 name = "medius"
-version = "3.4.3"
-source = "git+https://github.com/etherealrl/medius?rev=0d7e773a093993ac95d5b507b498b1455599f4ff#0d7e773a093993ac95d5b507b498b1455599f4ff"
+version = "3.4.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "452b309eacd092b23676f0f2cfc55b2e8efd5a48867d251f70a81f8cd669ff5a"
 dependencies = [
  "flume",
  "parking_lot",
@@ -241,8 +249,9 @@ dependencies = [
 
 [[package]]
 name = "medius-capi"
-version = "3.4.3"
-source = "git+https://github.com/etherealrl/medius?rev=0d7e773a093993ac95d5b507b498b1455599f4ff#0d7e773a093993ac95d5b507b498b1455599f4ff"
+version = "3.4.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a17333a86c501354ec2fcbafd20171485a1eaa71dcaa6b381d90ab6908cedccf"
 dependencies = [
  "medius",
 ]

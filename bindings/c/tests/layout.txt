@@ -5,15 +5,16 @@ AnyboxClick size 16 align 8
   hold_us 0
   has_hold 8
   native_only 9
-AnyboxConnectOptions size 64 align 8
+AnyboxConnectOptions size 72 align 8
   port 0
   family 8
   ferrum_api 12
   can 16
-  id_kind 24
-  id_mac 28
-  id_serial 40
-  click_timing 48
+  can_len 24
+  id_kind 32
+  id_mac 36
+  id_serial 48
+  click_timing 56
 AnyboxInfo size 88 align 8
   port 0
   family 8
@@ -42,7 +43,7 @@ AnyboxQuirk size 48 align 8
   max_us 16
   count 24
   click_timing 32
-AnyboxEvent size 88 align 8
+AnyboxEvent size 104 align 8
   kind 0
   button 4
   key 8
@@ -62,3 +63,39 @@ AnyboxEvent size 88 align 8
   has_box_time 73
   box_clock 76
   box_time_us 80
+  arrived_ns 88
+  received_ns 96
+AnyboxErrorDetail size 160 align 8
+  kind 0
+  has_action 4
+  action 8
+  family 12
+  expected_family 16
+  found_family 20
+  port 24
+  text 32
+  expected_id_kind 40
+  expected_id_mac 44
+  expected_id_serial 56
+  found_id_kind 64
+  found_id_mac 68
+  found_id_serial 80
+  found_firmware_kind 88
+  found_firmware_major 92
+  found_firmware_minor 94
+  found_firmware_patch 96
+  found_firmware_protocol 98
+  found_firmware_build 100
+  found_firmware_text 104
+  needed_firmware_kind 112
+  needed_firmware_major 116
+  needed_firmware_minor 118
+  needed_firmware_patch 120
+  needed_firmware_protocol 122
+  needed_firmware_build 124
+  needed_firmware_text 128
+  expected_ferrum_api 136
+  found_ferrum_api 140
+  io_kind 144
+  has_os_error 148
+  os_error 152

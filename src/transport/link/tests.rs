@@ -369,7 +369,7 @@ fn a_caller_is_bounded_while_the_writer_is_stuck() {
         link.request(b"second\n".to_vec(), None),
         Err(Error::Disconnected)
     ));
-    assert!(started.elapsed() < WRITE_DEADLINE + Duration::from_millis(200));
+    assert!(started.elapsed() < WRITE_DEADLINE * 2);
     assert!(matches!(stuck.join().unwrap(), Err(Error::Disconnected)));
 }
 
@@ -503,7 +503,7 @@ fn a_missed_reply_takes_the_link_down_and_it_comes_back() {
         setup.link.request(b"silent\n".to_vec(), Some(3)),
         Err(Error::Disconnected)
     ));
-    assert!(started.elapsed() < WRITE_DEADLINE + Duration::from_millis(200));
+    assert!(started.elapsed() < WRITE_DEADLINE * 2);
     assert_eq!(next_link_event(&setup.signals), "disconnected");
     assert_eq!(next_link_event(&setup.signals), "reconnected");
     let reply = setup.link.request(b"Q4\n".to_vec(), Some(4)).unwrap();

@@ -366,9 +366,8 @@ pub struct Info {
     pub ferrum_api: Option<FerrumApi>,
     /// the USB ids of the device plugged into the box, which is the identity the box shows the PC, so you can
     /// tell which device on the PC goes through the box. a Ferrum on its Software API and a Medius report it, a
-    /// MAKCU can't and a YSC isn't read yet. on a Ferrum it's the first device plugged into the box, not always the
-    /// mouse. it's read when you connect and again when what's plugged in changes, so swapping one mouse for
-    /// another within a second can leave the old ids here until the next reconnect
+    /// MAKCU can't and a YSC isn't read yet. it's read when you connect and again when what's plugged in changes,
+    /// so swapping one mouse for another within a second can leave the old ids here until the next reconnect
     pub peripheral: Option<UsbIds>,
 }
 

@@ -4,7 +4,7 @@ use anybox::{
     Action, Axis, Button, Click, ClickTiming, Direction, EventKinds, Execution, Family, FerrumApi,
 };
 
-use crate::status::{AnyboxStatus, invalid};
+use crate::status::{AnyboxStatus, invalid, slice};
 
 // every value is fixed here by hand, never taken from a Rust discriminant, so reordering an enum in anybox can't
 // change what C sees
@@ -73,6 +73,7 @@ pub const ANYBOX_CLICK_TIMING_FIXED: u32 = 2;
 pub const ANYBOX_CLICK_TIMING_OFF: u32 = 3;
 
 /// combined with `|` for `anybox_device_events`
+pub const ANYBOX_EVENTS_NONE: u32 = 0;
 pub const ANYBOX_EVENTS_BUTTONS: u32 = 1;
 pub const ANYBOX_EVENTS_MOTION: u32 = 2;
 pub const ANYBOX_EVENTS_KEYS: u32 = 4;
@@ -175,7 +176,7 @@ fn from_table<T: Copy>(table: &[(u32, T)], value: u32, what: &str) -> Result<T, 
         .iter()
         .find(|(number, _)| *number == value)
         .map(|(_, item)| *item)
-        .ok_or_else(|| invalid(format!("{value} isn't a {what} anybox knows")))
+        .ok_or_else(|| invalid(format!("{value} isn't {what} anybox knows")))
 }
 
 /// a value anybox added after this table was written. the tests walk every value there is, so this only fires
@@ -192,7 +193,7 @@ pub(crate) fn family_filter(value: u32) -> Result<Option<Family>, AnyboxStatus> 
     if value == ANYBOX_FAMILY_ANY {
         return Ok(None);
     }
-    from_table(&FAMILIES, value, "family").map(Some)
+    from_table(&FAMILIES, value, "a family").map(Some)
 }
 
 pub(crate) fn family_number(family: Family) -> u32 {
@@ -203,7 +204,7 @@ pub(crate) fn ferrum_api_filter(value: u32) -> Result<Option<FerrumApi>, AnyboxS
     if value == ANYBOX_FERRUM_API_NONE {
         return Ok(None);
     }
-    from_table(&FERRUM_APIS, value, "Ferrum API").map(Some)
+    from_table(&FERRUM_APIS, value, "a Ferrum API").map(Some)
 }
 
 pub(crate) fn ferrum_api_number(api: Option<FerrumApi>) -> u32 {
@@ -215,7 +216,7 @@ pub(crate) fn button(value: u32) -> Result<Button, AnyboxStatus> {
         Some(extra) => u8::try_from(extra)
             .map(Button::Extra)
             .map_err(|_| invalid(format!("{value} isn't a button anybox knows"))),
-        None => from_table(&BUTTONS, value, "button"),
+        None => from_table(&BUTTONS, value, "a button"),
     }
 }
 
@@ -227,7 +228,7 @@ pub(crate) fn button_number(button: Button) -> u32 {
 }
 
 pub(crate) fn axis(value: u32) -> Result<Axis, AnyboxStatus> {
-    from_table(&AXES, value, "axis")
+    from_table(&AXES, value, "an axis")
 }
 
 pub(crate) fn axis_number(axis: Axis) -> u32 {
@@ -235,30 +236,27 @@ pub(crate) fn axis_number(axis: Axis) -> u32 {
 }
 
 pub(crate) fn direction(value: u32) -> Result<Direction, AnyboxStatus> {
-    from_table(&DIRECTIONS, value, "direction")
+    from_table(&DIRECTIONS, value, "a direction")
 }
 
 pub(crate) fn action(value: u32) -> Result<Action, AnyboxStatus> {
-    from_table(&ACTIONS, value, "action")
+    from_table(&ACTIONS, value, "an action")
 }
 
 pub(crate) fn action_number(action: Action) -> u32 {
     to_table(&ACTIONS, action)
 }
 
-/// a mask with one bit per action, bit n for action n
-pub(crate) fn actions(mask: u64) -> Result<Vec<Action>, AnyboxStatus> {
-    let known = (1u64 << ACTIONS.len()) - 1;
-    if mask & !known != 0 {
-        return Err(invalid(format!(
-            "the action mask {mask:#x} has bits for actions anybox doesn't know"
-        )));
-    }
-    Ok(ACTIONS
+/// the actions a caller passed as a list of `ANYBOX_ACTION_*`
+pub(crate) unsafe fn actions(
+    list: *const u32,
+    len: usize,
+    name: &str,
+) -> Result<Vec<Action>, AnyboxStatus> {
+    unsafe { slice(list, len, name) }?
         .iter()
-        .filter(|(number, _)| mask & (1 << number) != 0)
-        .map(|(_, action)| *action)
-        .collect())
+        .map(|number| action(*number))
+        .collect()
 }
 
 pub(crate) fn event_kinds(mask: u32) -> Result<EventKinds, AnyboxStatus> {

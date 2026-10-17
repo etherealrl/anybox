@@ -1,0 +1,161 @@
+# every public thing of the anybox crate, and what the C ABI, Python, C# and C++ have for it. the capi test that reads
+# the crate's source fails on a row that's missing or left over, so something new in Rust stops check.sh until it's
+# mapped here. the C name has to be in anybox.h, the Python and C# tests find theirs by name, and the C++ name has to
+# be in anybox.hpp
+#
+# a row is the Rust name | the C name | the Python name | the C# name | the C++ name | why, when it isn't just the
+# same thing
+#
+# the C name is a function, a constant (`ANYBOX_KEY_*` is a whole group of them), a type or a struct's field. an empty
+# one is a value each binding builds itself, or something the language does, and the note says which.
+# `Type::CONSTANTS` is every uppercase constant of the type, each binding's tests hold every one of them to the header
+
+Action | ANYBOX_ACTION_* | Action | BoxAction | Action | C# calls it BoxAction, its Action is a delegate
+Action: Display | | Action.__str__ | BoxAction.Text | to_string(Action) | the text is Rust's, held by the conformance suite
+Axis | ANYBOX_AXIS_* | Axis | Axis | Axis
+Axis: Display | | Axis.__str__ | Axis.Text | to_string(Axis) | the text is Rust's, held by the conformance suite
+BoxTime | AnyboxEvent.box_time_us | BoxTime | BoxTime | BoxTime | the C event carries it as box_clock and box_time_us
+BoxTime::new | | BoxTime | BoxTime.ctor | BoxTime | built from its two fields
+Button | ANYBOX_BUTTON_* | Button | Button | Button
+Button: Display | | Button.__str__ | Button.Text | to_string(Button) | the text is Rust's, held by the conformance suite
+Capabilities | anybox_snapshot_capability | Capabilities | Capabilities | Capabilities
+Capabilities::axes | anybox_snapshot_axes | Capabilities.axes | Capabilities.Axes | Capabilities::axes
+Capabilities::buttons | anybox_snapshot_buttons | Capabilities.buttons | Capabilities.Buttons | Capabilities::buttons
+Capabilities::get | anybox_snapshot_capability | Capabilities.__getitem__ | Capabilities.Item | Capabilities::get | Python and C# index it
+Capabilities::iter | anybox_snapshot_capability | Capabilities.items | Capabilities.GetEnumerator | Capabilities::actions | each action with its capability
+Capability | AnyboxCapability | Capability | Capability | Capability
+Capability::is_supported | AnyboxCapability.execution | Capability.supported | Capability.Supported | Capability::is_supported | anything but unsupported
+Click | AnyboxClick | Device.click | Device.Click | Click | Python and C# take the hold and native_only as arguments of click and the taps
+Click: Default | AnyboxClick | Device.click | Device.Click | Click | no hold and any timing, what click and the taps do when Python and C# leave the arguments out
+Click::hold | AnyboxClick.hold_us | Device.click | Device.Click | Click::hold | the hold argument in Python and C#
+Click::native_only | AnyboxClick.native_only | Device.click | Device.Click | Click::native_only | the native_only argument in Python and C#
+ClickTiming | AnyboxClickTiming | ClickTiming | ClickTiming | ClickTiming
+ClickTiming: Default | AnyboxClickTiming | ClickTiming.MAKCU | ClickTiming.Makcu | ClickTiming::makcu | the MAKCU timing, which Connect starts with, the zeros of the options
+Clock | ANYBOX_CLOCK_* | Clock | Clock | Clock
+Clock::wraps_after | ANYBOX_BOX_CLOCK_WRAP_US | Clock.wraps_after | Clock.WrapsAfter | wraps_after
+Closed | ANYBOX_STATUS_RECV_CLOSED | RecvClosedError | RecvClosedException | RecvClosedError
+Closed: Display | anybox_last_error_message | RecvClosedError | RecvClosedException | RecvClosedError | the error's text is Rust's, through the C ABI
+Closed: Error | ANYBOX_STATUS_RECV_CLOSED | RecvClosedError | RecvClosedException | RecvClosedError | an exception in each
+Connect | AnyboxConnectOptions | Connect | Connect | Connect
+Connect: Default | anybox_connect_options_default | Connect | Connect.ctor | Connect | the same as Connect::auto. each binding's Connect with nothing set builds options of zeros, which a capi test holds to Rust's
+Connect::auto | anybox_connect_options_default | Connect | Connect.ctor | Connect | a Connect with nothing set
+Connect::can | AnyboxConnectOptions.can | Connect.can | Connect.Can | Connect::can
+Connect::candidates | anybox_candidates | Connect.candidates | Connect.Candidates | Connect::candidates
+Connect::click_timing | AnyboxConnectOptions.click_timing | Connect.click_timing | Connect.ClickTiming | Connect::click_timing
+Connect::family | AnyboxConnectOptions.family | Connect.family | Connect.Family | Connect::family
+Connect::ferrum_api | AnyboxConnectOptions.ferrum_api | Connect.ferrum_api | Connect.FerrumApi | Connect::ferrum_api
+Connect::id | AnyboxConnectOptions.id_kind | Connect.id | Connect.Id | Connect::id
+Connect::open | anybox_open | Connect.open | Connect.Open | Connect::open
+Connect::port | AnyboxConnectOptions.port | Connect.port | Connect.Port | Connect::port
+Connect::scan | anybox_scan | Connect.scan | Connect.Scan | Connect::scan
+Device | AnyboxDevice | Device | Device | Device
+Device::click | anybox_device_click | Device.click | Device.Click | Device::click
+Device::click_with | anybox_device_click_with | Device.click | Device.Click | Device::click | the Click is an argument of click
+Device::close | anybox_device_close | Device.close | Device.Close | Device::close
+Device::discard_pending_moves | anybox_device_discard_pending_moves | Device.discard_pending_moves | Device.DiscardPendingMoves | Device::discard_pending_moves
+Device::events | anybox_device_events | Device.events | Device.Events | Device::events
+Device::events_of | anybox_device_events | Device.events | Device.Events | Device::events | the kinds are an argument of events
+Device::lock_axis | anybox_device_lock_axis | Device.lock_axis | Device.LockAxis | Device::lock_axis
+Device::lock_button | anybox_device_lock_button | Device.lock_button | Device.LockButton | Device::lock_button
+Device::lock_key | anybox_device_lock_key | Device.lock_key | Device.LockKey | Device::lock_key
+Device::medius (medius) | anybox_device_medius | Device.medius | Device.Medius | Device::medius
+Device::mock_example_events (mock) | anybox_mock_example_events | example_events | Mock.ExampleEvents | example_events
+Device::mock_medius (mock) | anybox_mock_medius_open | mock_medius | Mock.Medius | Mock::medius
+Device::mock_medius_manual (mock) | anybox_mock_medius_open_manual | mock_medius_manual | Mock.MediusManual | Mock::medius_manual
+Device::move_by | anybox_device_move_by | Device.move_by | Device.MoveBy | Device::move_by
+Device::move_now | anybox_device_move_now | Device.move_now | Device.MoveNow | Device::move_now
+Device::pan | anybox_device_pan | Device.pan | Device.Pan | Device::pan
+Device::press | anybox_device_press | Device.press | Device.Press | Device::press
+Device::press_key | anybox_device_press_key | Device.press_key | Device.PressKey | Device::press_key
+Device::press_media | anybox_device_press_media | Device.press_media | Device.PressMedia | Device::press_media
+Device::release | anybox_device_release | Device.release | Device.Release | Device::release
+Device::release_key | anybox_device_release_key | Device.release_key | Device.ReleaseKey | Device::release_key
+Device::release_media | anybox_device_release_media | Device.release_media | Device.ReleaseMedia | Device::release_media
+Device::scale_axis | anybox_device_scale_axis | Device.scale_axis | Device.ScaleAxis | Device::scale_axis
+Device::snapshot | anybox_device_snapshot | Device.snapshot | Device.Snapshot | Device::snapshot
+Device::tap_key | anybox_device_tap_key | Device.tap_key | Device.TapKey | Device::tap_key
+Device::tap_key_with | anybox_device_tap_key_with | Device.tap_key | Device.TapKey | Device::tap_key | the Click is an argument of tap_key
+Device::tap_media | anybox_device_tap_media | Device.tap_media | Device.TapMedia | Device::tap_media
+Device::tap_media_with | anybox_device_tap_media_with | Device.tap_media | Device.TapMedia | Device::tap_media | the Click is an argument of tap_media
+Device::unlock_axis | anybox_device_unlock_axis | Device.unlock_axis | Device.UnlockAxis | Device::unlock_axis
+Device::unlock_button | anybox_device_unlock_button | Device.unlock_button | Device.UnlockButton | Device::unlock_button
+Device::unlock_key | anybox_device_unlock_key | Device.unlock_key | Device.UnlockKey | Device::unlock_key
+Device::wheel | anybox_device_wheel | Device.wheel | Device.Wheel | Device::wheel
+Direction | ANYBOX_DIRECTION_* | Direction | Direction | Direction
+DropSource | ANYBOX_DROP_SOURCE_* | DropSource | DropSource | DropSource
+Error | AnyboxErrorDetail | Error | AnyboxException | Error | C# calls it AnyboxException, like .NET names its exceptions
+Error: Display | anybox_last_error_message | Error | AnyboxException | Error | the error's text is Rust's, through the C ABI, and the conformance suite compares it
+Error: Error | AnyboxErrorDetail | Error | AnyboxException | Error | the exception each binding throws
+Error: From<std::io::Error> | ANYBOX_STATUS_IO | IoError | IoException | IoError | an I/O error is its own exception in each, with its kind and the OS error
+Error::examples (mock) | anybox_mock_fail | example_error | Mock.ExampleError | example_error | one error of a kind at a time
+Event | AnyboxEvent | Event | Event | Event
+Event::button | ANYBOX_EVENT_BUTTON | ButtonEvent | ButtonEvent | ButtonEvent | each kind of event is its own type
+Event::dropped | ANYBOX_EVENT_DROPPED | Dropped | Dropped | Dropped | each kind of event is its own type
+Event::examples (mock) | anybox_mock_example_events | example_events | Mock.ExampleEvents | example_events | sent to a device's receivers, like Device::mock_example_events
+Event::key | ANYBOX_EVENT_KEY | KeyEvent | KeyEvent | KeyEvent | each kind of event is its own type
+Event::media | ANYBOX_EVENT_MEDIA | MediaEvent | MediaEvent | MediaEvent | each kind of event is its own type
+Event::motion | ANYBOX_EVENT_MOTION | MotionEvent | MotionEvent | MotionEvent | each kind of event is its own type
+Event::rejected | ANYBOX_EVENT_REJECTED | Rejected | Rejected | Rejected | each kind of event is its own type
+EventKinds | ANYBOX_EVENTS_* | EventKinds | EventKinds | EventKinds
+EventKinds: Default | ANYBOX_EVENTS_NONE | EventKinds.NONE | EventKinds.None | EventKinds::NONE | no kinds
+EventKinds: BitAnd | | EventKinds | EventKinds | EventKinds | a flag enum in each, Python's IntFlag, C#'s [Flags] and C++'s operators
+EventKinds: BitOr | | EventKinds | EventKinds | EventKinds | a flag enum in each, Python's IntFlag, C#'s [Flags] and C++'s operators
+EventKinds: Not | | EventKinds | EventKinds | EventKinds | a flag enum in each, Python's IntFlag, C#'s [Flags] and C++'s operators
+EventKinds::ALL | ANYBOX_EVENTS_ALL | EventKinds.ALL | EventKinds.All | EventKinds::ALL
+EventKinds::BUTTONS | ANYBOX_EVENTS_BUTTONS | EventKinds.BUTTONS | EventKinds.Buttons | EventKinds::BUTTONS
+EventKinds::KEYS | ANYBOX_EVENTS_KEYS | EventKinds.KEYS | EventKinds.Keys | EventKinds::KEYS
+EventKinds::MEDIA | ANYBOX_EVENTS_MEDIA | EventKinds.MEDIA | EventKinds.Media | EventKinds::MEDIA
+EventKinds::MOTION | ANYBOX_EVENTS_MOTION | EventKinds.MOTION | EventKinds.Motion | EventKinds::MOTION
+EventKinds::NONE | ANYBOX_EVENTS_NONE | EventKinds.NONE | EventKinds.None | EventKinds::NONE
+EventKinds::contains | | EventKinds | EventKinds.HasFlag | EventKinds | Python's `in`, C#'s HasFlag, C++'s operator&
+EventKinds::is_empty | | EventKinds | EventKinds | EventKinds | comparing with none in each
+Events | AnyboxEvents | Events | Events | Events
+Events: Iterator | anybox_events_recv | Events.__iter__ | Events.GetEnumerator | Events::begin | a loop over the receiver in each
+Events::close | anybox_events_close | Events.close | Events.Dispose | Events::close | C# disposes it
+Events::recv | anybox_events_recv | Events.recv | Events.Recv | Events::recv
+Events::recv_timeout | anybox_events_recv | Events.recv | Events.Recv | Events::recv | the timeout is an argument of recv
+Events::try_recv | anybox_events_recv | Events.try_recv | Events.TryRecv | Events::try_recv
+Execution | ANYBOX_EXECUTION_* | Execution | Execution | Execution
+Family | ANYBOX_FAMILY_* | Family | Family | Family
+Family: Display | | Family.__str__ | Family.Text | to_string(Family) | the text is Rust's, held by the conformance suite
+FerrumApi | ANYBOX_FERRUM_API_* | FerrumApi | FerrumApi | FerrumApi
+FerrumApi: Display | | FerrumApi.__str__ | FerrumApi.Text | to_string(FerrumApi) | the text is Rust's, held by the conformance suite
+Firmware | AnyboxInfo.firmware_kind | Firmware | Firmware | Firmware
+Firmware: Display | | Firmware.__str__ | Firmware.ToString | to_string(Firmware) | the text is Rust's, held by the conformance suite
+Found | anybox_scan_list_result | Scanned.found | Scanned.Found | Scanned::found | what a scan found on a port
+Info | AnyboxInfo | Info | Info | Info
+Key | ANYBOX_KEY_* | Key | Key | Key
+Key: Display | | Key.__str__ | Key.Text | to_string(Key) | the text is Rust's, held by the conformance suite
+Key::CONSTANTS | ANYBOX_KEY_* | Key | Key | Key | C# names them in PascalCase
+Key::is_modifier | ANYBOX_KEY_MODIFIER_FIRST | Key.is_modifier | Key.IsModifier | Key::is_modifier
+MediaKey | ANYBOX_MEDIA_* | MediaKey | MediaKey | MediaKey
+MediaKey: Display | | MediaKey.__str__ | MediaKey.Text | to_string(MediaKey) | the text is Rust's, held by the conformance suite
+MediaKey::CONSTANTS | ANYBOX_MEDIA_* | MediaKey | MediaKey | MediaKey | C# names them in PascalCase
+MockPoller (mock) | anybox_mock_medius_open_manual | Mock | Mock | Mock | the mock holds the poller
+MockPoller::tick (mock) | anybox_mock_tick | Mock.tick | Mock.Tick | Mock::tick
+Quirk | AnyboxQuirk | Quirk | Quirk | Quirk
+RecvTimeoutError | anybox_events_recv | Events.recv | Events.Recv | Events::recv | a recv that times out gives no event, and a closed receiver raises RecvClosedError
+RecvTimeoutError: Display | | Events.recv | Events.Recv | Events::recv | a timeout is no event, not an error, so it has no text
+RecvTimeoutError: Error | | Events.recv | Events.Recv | Events::recv | a timeout is no event, not an error
+Result | | | | | each binding raises or throws its error instead
+Scanned | anybox_scan_list_result | Scanned | Scanned | Scanned
+Snapshot | AnyboxSnapshot | Snapshot | Snapshot | Snapshot
+StableId | AnyboxInfo.id_kind | StableId | StableId | StableId
+StableId: Display | | StableId.__str__ | StableId.ToString | to_string(StableId) | the text is Rust's, held by the conformance suite
+Stamp | AnyboxEvent.since_open_ns | Stamp | Stamp | Stamp
+Stamp::arrived_ns | AnyboxEvent.arrived_ns | Stamp.arrived_ns | Stamp.ArrivedNs | Stamp::arrived_ns
+Stamp::new | | Stamp | Stamp.ctor | Stamp | built from its fields, there's no Instant outside Rust
+Stamp::received_ns | AnyboxEvent.received_ns | Stamp.received_ns | Stamp.ReceivedNs | Stamp::received_ns
+Stamp::with_box_time | | Stamp | Stamp.ctor | Stamp | the box time is one of its fields
+Stamp::with_received | | Stamp | Stamp.ctor | Stamp | when it was received is one of its fields
+Timing | AnyboxClick.native_only | Device.click | Device.Click | Click::native_only | native only or not, the native_only argument in Python and C#
+Timing: Default | AnyboxClick.native_only | Device.click | Device.Click | Click::native_only | any timing, native_only off
+TryRecvError | anybox_events_recv | Events.try_recv | Events.TryRecv | Events::try_recv | an empty try gives no event, and a closed receiver raises RecvClosedError
+TryRecvError: Display | | Events.try_recv | Events.TryRecv | Events::try_recv | nothing waiting is no event, not an error, so it has no text
+TryRecvError: Error | | Events.try_recv | Events.TryRecv | Events::try_recv | nothing waiting is no event, not an error
+UsbIds | AnyboxInfo.peripheral_vid | UsbIds | UsbIds | UsbIds
+UsbIds::new | | UsbIds | UsbIds.ctor | UsbIds | built from its two fields
+candidates | anybox_candidates | candidates | Device.Candidates | candidates
+connect | anybox_connect | connect | Device.Connect | connect
+monotonic_ns | anybox_monotonic_ns | monotonic_ns | Monotonic.NowNs | monotonic_ns
+scan | anybox_scan | scan | Device.Scan | scan

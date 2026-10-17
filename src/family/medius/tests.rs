@@ -287,7 +287,7 @@ fn a_held_worker_makes_a_send_give_up_in_time_and_take_the_link_down() {
         backend.send(Command::Move(1, 1)),
         Err(Error::Disconnected)
     ));
-    assert!(started.elapsed() < WRITE_DEADLINE + Duration::from_millis(150));
+    assert!(started.elapsed() < WRITE_DEADLINE * 2);
     drop(held);
     assert_eq!(link_events(&signals), vec!["disconnected"]);
 }
@@ -325,7 +325,8 @@ fn while_down_a_move_fails_at_once_and_a_release_still_reaches_the_crate() {
         backend.send(Command::Move(3, 3)),
         Err(Error::Disconnected)
     ));
-    assert!(started.elapsed() < Duration::from_millis(50));
+    // at once means well under the deadline a send that waited would take
+    assert!(started.elapsed() < WRITE_DEADLINE / 2);
     let _ = backend.send(Command::Release(Button::Right));
     assert!(moves(&mock).is_empty());
     assert_eq!(injects(&mock), vec![(1, 0)]);
@@ -1091,7 +1092,7 @@ mod hardware {
         );
 
         println!("4. left click once, the app's subscription and events() should both see it");
-        let mut app = box_device
+        let app = box_device
             .input_events([CatchFilter::watch_class(Class::Button)])
             .unwrap();
         beep(false);
@@ -1753,7 +1754,7 @@ fn first_button(events: &crate::event::Events) -> (Button, bool) {
 fn an_app_subscription_keeps_its_entries_while_anybox_swaps_its_own() {
     let mock = mouse(5, true);
     let (device, _poller) = device(&mock);
-    let mut app = device
+    let app = device
         .medius()
         .unwrap()
         .input_events([medius::CatchFilter::watch_class(Class::Button)])

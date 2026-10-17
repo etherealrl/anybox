@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Version>0.9.0</Version>
+    <PackageId>Anybox</PackageId>
+    <!-- not Anybox.dll, Windows file names ignore case, so it would be the same file as the native anybox.dll and
+         get loaded in its place -->
+    <AssemblyName>Anybox.Net</AssemblyName>
+    <RootNamespace>Anybox</RootNamespace>
+    <Authors>ethereal</Authors>
+    <Description>one API for the most popular passthrough boxes, over the anybox C ABI</Description>
+    <PackageLicenseExpression>MPL-2.0</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageProjectUrl>https://github.com/etherealrl/anybox</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/etherealrl/anybox</RepositoryUrl>
+    <PackageTags>anybox;medius;makcu;ferrum;kmbox;passthrough</PackageTags>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!-- only what needs explaining has a doc comment -->
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <IsAotCompatible>true</IsAotCompatible>
+    <!-- the pack takes the natives and the dependency notices from here, CI puts them there -->
+    <NativeDir>$([System.IO.Path]::GetFullPath($(MSBuildThisFileDirectory)../../natives/))</NativeDir>
+    <ThirdPartyLicenses>$([System.IO.Path]::GetFullPath($(MSBuildThisFileDirectory)../../../../target/THIRD-PARTY-LICENSES.txt))</ThirdPartyLicenses>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Anybox.Tests" />
+    <None Include="../../README.md" Pack="true" PackagePath="/" />
+    <None Include="../../../../LICENSE;../../../../NOTICE;$(ThirdPartyLicenses)" Pack="true" PackagePath="/" />
+    <None Include="$(NativeDir)win-x64/anybox.dll" Pack="true" PackagePath="runtimes/win-x64/native/" />
+    <None Include="$(NativeDir)linux-x64/libanybox.so" Pack="true" PackagePath="runtimes/linux-x64/native/" />
+  </ItemGroup>
+
+  <!-- a package without one of them would install fine and then fail on that platform at the first call -->
+  <Target Name="RequirePackedFiles" BeforeTargets="GenerateNuspec">
+    <Error Condition="!Exists('$(NativeDir)win-x64/anybox.dll')" Text="$(NativeDir)win-x64/anybox.dll is missing, build the capi in release on Windows and put it there" />
+    <Error Condition="!Exists('$(NativeDir)linux-x64/libanybox.so')" Text="$(NativeDir)linux-x64/libanybox.so is missing, build the capi in release on Linux and put it there" />
+    <Error Condition="!Exists('$(ThirdPartyLicenses)')" Text="$(ThirdPartyLicenses) is missing, make it with cargo about like the release workflow does" />
+  </Target>
+
+</Project>

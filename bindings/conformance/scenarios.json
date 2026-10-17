@@ -1,0 +1,212 @@
+[
+  {
+    "name": "every output call",
+    "keyboard": true,
+    "steps": [
+      {"call": "move_by", "args": [{"i16": 3}, {"i16": -4}]},
+      {"call": "move_now", "args": [{"i16": -7}, {"i16": 2}]},
+      {"call": "press", "args": [{"Button": "SIDE1"}]},
+      {"call": "release", "args": [{"Button": "RIGHT"}]},
+      {"call": "click", "args": [{"Button": "MIDDLE"}]},
+      {"call": "click_with", "args": [{"Button": "SIDE2"}, {"Click": {"hold_us": 7000}}]},
+      {"call": "press_key", "args": [{"Key": "B"}]},
+      {"call": "release_key", "args": [{"Key": "C"}]},
+      {"call": "tap_key", "args": [{"Key": "D"}]},
+      {"call": "tap_key_with", "args": [{"Key": "E"}, {"Click": {"hold_us": 7000}}]},
+      {"call": "press_media", "args": [{"MediaKey": "MUTE"}]},
+      {"call": "release_media", "args": [{"MediaKey": 402}]},
+      {"call": "tap_media", "args": [{"MediaKey": "STOP"}]},
+      {"call": "tap_media_with", "args": [{"MediaKey": "VOLUME_UP"}, {"Click": {"hold_us": 7000}}]},
+      {"call": "lock_button", "args": [{"Button": "SIDE1"}]},
+      {"call": "unlock_button", "args": [{"Button": "RIGHT"}]},
+      {"call": "lock_key", "args": [{"Key": "F"}]},
+      {"call": "unlock_key", "args": [{"Key": "G"}]},
+      {"call": "lock_axis", "args": [{"Axis": "Y"}, {"Direction": "NEGATIVE"}]},
+      {"call": "unlock_axis", "args": [{"Axis": "WHEEL"}, {"Direction": "POSITIVE"}]},
+      {"call": "scale_axis", "args": [{"Axis": "X"}, {"Direction": "POSITIVE"}, {"i16": -40}]},
+      {"call": "wheel", "args": [{"i16": -3}]},
+      {"call": "pan", "args": [{"i16": 2}]},
+      {"call": "discard_pending_moves", "args": []}
+    ]
+  },
+  {
+    "name": "the values at their edges",
+    "keyboard": true,
+    "steps": [
+      {"call": "move_by", "args": [{"i16": 32767}, {"i16": -32768}]},
+      {"call": "press", "args": [{"Button": {"Extra": 9}}]},
+      {"call": "release", "args": [{"Button": {"Extra": 9}}]},
+      {"call": "press_key", "args": [{"Key": 104}]},
+      {"call": "release_key", "args": [{"Key": "LEFT_SHIFT"}]},
+      {"call": "click_with", "args": [{"Button": "LEFT"}, {"Click": {"native_only": true}}]},
+      {"call": "click_with", "args": [{"Button": "LEFT"}, {"Click": {"hold_us": 3000, "native_only": true}}]},
+      {"call": "scale_axis", "args": [{"Axis": "Y"}, {"Direction": "BOTH"}, {"i16": 255}]},
+      {"call": "scale_axis", "args": [{"Axis": "X"}, {"Direction": "BOTH"}, {"i16": 900}]},
+      {"call": "scale_axis", "args": [{"Axis": "Y"}, {"Direction": "NEGATIVE"}, {"i16": -255}]},
+      {"call": "scale_axis", "args": [{"Axis": "X"}, {"Direction": "NEGATIVE"}, {"i16": -256}]},
+      {"call": "unlock_axis", "args": [{"Axis": "Y"}, {"Direction": "BOTH"}]}
+    ]
+  },
+  {
+    "name": "a hold is waited out",
+    "keyboard": true,
+    "steps": [
+      {"call": "click_with", "args": [{"Button": "LEFT"}, {"Click": {"hold_us": 150000}}], "takes_at_least_us": 150000},
+      {"call": "tap_key_with", "args": [{"Key": "A"}, {"Click": {"hold_us": 150000}}], "takes_at_least_us": 150000},
+      {"call": "tap_media_with", "args": [{"MediaKey": "MUTE"}, {"Click": {"hold_us": 150000}}], "takes_at_least_us": 150000}
+    ]
+  },
+  {
+    "name": "what a box without a keyboard refuses",
+    "keyboard": false,
+    "steps": [
+      {"call": "press_key", "args": [{"Key": "A"}]},
+      {"call": "tap_key_with", "args": [{"Key": "A"}, {"Click": {"hold_us": 5000}}]},
+      {"call": "press_media", "args": [{"MediaKey": "MUTE"}]},
+      {"call": "lock_key", "args": [{"Key": "A"}]}
+    ]
+  },
+  {
+    "name": "the snapshot of a mouse",
+    "keyboard": false,
+    "steps": [{"snapshot": {}}]
+  },
+  {
+    "name": "the snapshot of a mouse and a keyboard",
+    "keyboard": true,
+    "steps": [{"snapshot": {}}]
+  },
+  {
+    "name": "physical input",
+    "keyboard": true,
+    "events": "ALL",
+    "steps": [
+      {"push": "buttons", "seq": 1, "ts_us": 1000, "pressed": true, "held": 1},
+      {"recv": 1},
+      {"push": "buttons", "seq": 2, "ts_us": 2000, "pressed": false, "held": 0},
+      {"recv": 1},
+      {"push": "keys", "seq": 3, "ts_us": 3000, "pressed": true, "held": ["LEFT_SHIFT", "A"]},
+      {"recv": 2},
+      {"push": "media", "seq": 4, "ts_us": 4000, "pressed": true, "held": ["VOLUME_UP"]},
+      {"recv": 1},
+      {"push": "motion", "seq": 5, "ts_us": 5000, "dx": -12, "dy": 30, "wheel": 1, "pan": -2},
+      {"recv": 1}
+    ]
+  },
+  {
+    "name": "only the kinds a receiver asked for",
+    "keyboard": true,
+    "events": "KEYS",
+    "steps": [
+      {"push": "buttons", "seq": 1, "ts_us": 1000, "pressed": true, "held": 2},
+      {"push": "keys", "seq": 2, "ts_us": 2000, "pressed": true, "held": ["Z"]},
+      {"recv": 1}
+    ]
+  },
+  {
+    "name": "the link drops and the box restarts",
+    "keyboard": false,
+    "events": "ALL",
+    "steps": [
+      {"push": "link_lost"},
+      {"tick_until": 1},
+      {"push": "restart"},
+      {"wait_us": 300000},
+      {"tick_until": 2}
+    ]
+  },
+  {
+    "name": "every kind of event",
+    "keyboard": true,
+    "events": "ALL",
+    "steps": [
+      {"example_events": {}},
+      {"recv": 11}
+    ]
+  },
+  {
+    "name": "every kind of error",
+    "keyboard": false,
+    "steps": [
+      {"example": "NOT_FOUND"},
+      {"example": "CLOSED"},
+      {"example": "PORT_BUSY"},
+      {"example": "PERMISSION_DENIED"},
+      {"example": "NO_BOX_CAN"},
+      {"example": "WRONG_FAMILY"},
+      {"example": "WRONG_BOX"},
+      {"example": "WRONG_FERRUM_API"},
+      {"example": "FIRMWARE_TOO_OLD"},
+      {"example": "LIBRARY_TOO_OLD"},
+      {"example": "UNSUPPORTED"},
+      {"example": "INVALID_ARGUMENT"},
+      {"example": "REJECTED"},
+      {"example": "TIMEOUT"},
+      {"example": "DISCONNECTED"},
+      {"example": "INTERRUPTED"},
+      {"example": "IO"}
+    ]
+  }
+,
+  {
+    "name": "every value's text",
+    "keyboard": false,
+    "steps": [
+      {"text": {"Action": "CONNECT"}},
+      {"text": {"Action": "MOVE"}},
+      {"text": {"Action": "MOVE_NOW"}},
+      {"text": {"Action": "PRESS"}},
+      {"text": {"Action": "RELEASE"}},
+      {"text": {"Action": "CLICK"}},
+      {"text": {"Action": "WHEEL"}},
+      {"text": {"Action": "PAN"}},
+      {"text": {"Action": "DISCARD_PENDING_MOVES"}},
+      {"text": {"Action": "BUTTON_EVENTS"}},
+      {"text": {"Action": "MOTION_EVENTS"}},
+      {"text": {"Action": "KEY_EVENTS"}},
+      {"text": {"Action": "MEDIA_EVENTS"}},
+      {"text": {"Action": "KEY_PRESS"}},
+      {"text": {"Action": "KEY_RELEASE"}},
+      {"text": {"Action": "KEY_TAP"}},
+      {"text": {"Action": "MEDIA_PRESS"}},
+      {"text": {"Action": "MEDIA_RELEASE"}},
+      {"text": {"Action": "MEDIA_TAP"}},
+      {"text": {"Action": "LOCK_BUTTON"}},
+      {"text": {"Action": "LOCK_AXIS"}},
+      {"text": {"Action": "LOCK_KEY"}},
+      {"text": {"Action": "SCALE_AXIS"}},
+      {"text": {"Axis": "X"}},
+      {"text": {"Axis": "Y"}},
+      {"text": {"Axis": "WHEEL"}},
+      {"text": {"Axis": "PAN"}},
+      {"text": {"Button": "LEFT"}},
+      {"text": {"Button": "RIGHT"}},
+      {"text": {"Button": "MIDDLE"}},
+      {"text": {"Button": "SIDE1"}},
+      {"text": {"Button": "SIDE2"}},
+      {"text": {"Button": {"Extra": 5}}},
+      {"text": {"Button": {"Extra": 255}}},
+      {"text": {"Family": "MEDIUS"}},
+      {"text": {"Family": "MAKCU_V4"}},
+      {"text": {"Family": "FERRUM"}},
+      {"text": {"Family": "YSC"}},
+      {"text": {"FerrumApi": "SOFTWARE"}},
+      {"text": {"FerrumApi": "LEGACY"}},
+      {"text": {"Key": "A"}},
+      {"text": {"Key": "LEFT_ALT"}},
+      {"text": {"Key": 255}},
+      {"text": {"Key": 0}},
+      {"text": {"MediaKey": "PLAY_PAUSE"}},
+      {"text": {"MediaKey": "VOLUME_UP"}},
+      {"text": {"MediaKey": 402}},
+      {"text": {"MediaKey": 65535}},
+      {"text": {"Firmware": {"version": [3, 4, 6]}}},
+      {"text": {"Firmware": {"build": 20251017}}},
+      {"text": {"Firmware": {"protocol": 9}}},
+      {"text": {"Firmware": {"text": "v2.0.5 beta"}}},
+      {"text": {"Firmware": {"text": ""}}},
+      {"text": {"StableId": {"mac": "a1b2c3d4e5f6"}}},
+      {"text": {"StableId": {"usb_serial": "A1B2C3"}}}
+    ]
+  }
+]

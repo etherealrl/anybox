@@ -130,11 +130,11 @@ fn known_reply(value: &Value) -> bool {
 }
 
 /// what a cmd 45 waits for. the answer doesn't name the key, which is fine because only one goes out at a time
-pub(super) fn key_reply() -> codec::Key {
+pub(super) fn key_reply() -> codec::ReplyKey {
     key(b"cmd 45")
 }
 
-pub(super) fn key(command: &[u8]) -> codec::Key {
+pub(super) fn key(command: &[u8]) -> codec::ReplyKey {
     // a collision only matters between commands in flight, so the requests are serialized
     command.iter().fold(0x811c_9dc5, |hash: u32, &byte| {
         (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)

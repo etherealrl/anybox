@@ -6,11 +6,11 @@ pub(crate) type Frame = Vec<u8>;
 
 /// what ties a reply to the request waiting for it. when several requests share a key, the replies
 /// complete them in the order they were sent
-pub(crate) type Key = u32;
+pub(crate) type ReplyKey = u32;
 
 #[derive(Debug)]
 pub(crate) enum Incoming {
-    Reply(Key),
+    Reply(ReplyKey),
     Input {
         input: Input,
         box_time: Option<BoxTime>,
@@ -22,7 +22,7 @@ pub(crate) enum Incoming {
     /// the box refused the command with this key. if a request is waiting on the key this completes it,
     /// otherwise the core gets told
     Refused {
-        key: Key,
+        key: ReplyKey,
         /// none for the library's own queries, because the app never sent those
         action: Option<Action>,
     },

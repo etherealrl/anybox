@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- installs the packed Anybox from ../../packages like any app would, the version comes from the command line -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <!-- its own package folder, so a package packed again under the same version never comes from the cache -->
+    <RestorePackagesPath>$(MSBuildThisFileDirectory)obj/packages</RestorePackagesPath>
+    <RestoreAdditionalProjectSources>$(MSBuildThisFileDirectory)../../packages</RestoreAdditionalProjectSources>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Anybox" Version="$(AnyboxVersion)" />
+  </ItemGroup>
+
+</Project>

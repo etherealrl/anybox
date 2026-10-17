@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use super::codec::{Codec, Frame, Incoming, Key};
+use super::codec::{Codec, Frame, Incoming, ReplyKey};
 use super::os::Read;
 use super::probe::Probe;
 use super::{Candidate, Port, PortUsb, System};
@@ -37,7 +37,7 @@ type Reply = Sender<Result<Option<Frame>>>;
 struct Request {
     id: u64,
     bytes: Vec<u8>,
-    expect: Option<Key>,
+    expect: Option<ReplyKey>,
     deadline: Instant,
     given_up: Arc<AtomicBool>,
     reply: Reply,
@@ -45,7 +45,7 @@ struct Request {
 
 struct Pending {
     id: u64,
-    key: Key,
+    key: ReplyKey,
     /// which opening of the port the request went out on, because a reply that comes in on a later one isn't
     /// its reply
     generation: u64,
@@ -117,7 +117,11 @@ impl Link {
 
     /// sends the bytes and, when `expect` is set, waits for the reply with that key. after `WRITE_DEADLINE`
     /// it gives up and returns `Disconnected`, and a missed reply also takes the link down
-    pub(crate) fn request(&self, bytes: Vec<u8>, expect: Option<Key>) -> Result<Option<Frame>> {
+    pub(crate) fn request(
+        &self,
+        bytes: Vec<u8>,
+        expect: Option<ReplyKey>,
+    ) -> Result<Option<Frame>> {
         self.request_until(bytes, expect, Instant::now() + WRITE_DEADLINE)
     }
 
@@ -125,7 +129,7 @@ impl Link {
     pub(crate) fn request_until(
         &self,
         bytes: Vec<u8>,
-        expect: Option<Key>,
+        expect: Option<ReplyKey>,
         until: Instant,
     ) -> Result<Option<Frame>> {
         let (reply, answer) = mpsc::channel();
@@ -228,7 +232,7 @@ impl Shared {
     }
 
     /// returns false when nothing was waiting for this key
-    fn complete(&self, key: Key, generation: u64, frame: Frame) -> bool {
+    fn complete(&self, key: ReplyKey, generation: u64, frame: Frame) -> bool {
         let mut pending = lock(&self.pending);
         let index = pending
             .iter()

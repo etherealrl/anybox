@@ -1,0 +1,627 @@
+# every public thing of the medius crate anybox pins, and what C# and C++ have for it. the capi test that reads the
+# crate's source fails on a row that's missing or left over, so a medius bump with something new stops check.sh
+# until it's mapped here. the C# test finds each C# name by reflection, the C++ name has to be in anybox_medius.hpp,
+# and every row held by the suite gets called by a scenario in medius.json
+#
+# a row is the Rust name | how it's held | the C# name | the C++ name | why, when it isn't just the same thing
+#
+# how it's held:
+#   suite      medius.json replays it in both bindings against the crate
+#   generated  gen-medius makes it from medius.h and checks it there
+#   hand       each binding's own tests have it, it needs a thread, a wait or a callback
+#   hardware   only a real box answers it, so it gets run on one before a release
+#   language   the language does it, the note says how
+#   upstream   medius-capi doesn't export it, so no binding can reach it yet, the docs say not exposed yet
+#
+# `Type::*` is every row of the type, `Type::CONSTANTS` every one of its uppercase constants
+
+Action | generated | InjectAction | Action | C# calls it the inject action, its Action is a delegate
+Action::as_u8 | language | | | a cast, the wire byte is the enum's value
+Action::from_u8 | language | | | a cast, and C# Enum.IsDefined or C++'s checked read says whether it names one
+Axis | generated | Axis | Axis
+Axis::ALL | language | | all_axes | C# has Enum.GetValues<Axis>(), C++ gets the list in Rust's order
+Axis::as_u16 | language | | | a cast
+Axis::from_u16 | language | | | a cast, checked like the other enums
+BEARING_WINDOW_DEFAULT | generated | Constants.BearingWindowDefaultMs | BearingWindowDefaultMs | in milliseconds, medius.h has no Duration
+Bearing | generated | Bearing | Bearing
+Bearing: Default | suite | Bearing.Default | Bearing | a C++ Bearing starts at the default
+Bearing::is_live | suite | Bearing.IsLive | Bearing::is_live
+BearingMode | generated | BearingMode | BearingMode
+BearingMode: Default | suite | BearingMode | BearingMode | its 0 member, which a C# default(BearingMode) and a C++ BearingMode{} are too
+BearingMode::as_u8 | language | | | a cast
+BearingMode::from_u8 | language | | | a cast, checked like the other enums
+Blanket | generated | Blanket | Blanket
+Blanket::ALL | language | | all_blankets | C# has Enum.GetValues<Blanket>(), C++ gets the list in Rust's order
+BoxInfo | generated | BoxInfo | BoxInfo
+BoxInfo::id | hardware | BoxInfo.Id | BoxInfo::id | only a listing makes one
+BoxInfo::name | hardware | BoxInfo.Name | BoxInfo::name | only a listing makes one
+BoxInfo::serial | hardware | BoxInfo.Serial | BoxInfo::serial | only a listing makes one
+BusEvent | generated | BusEvent | BusEvent
+Button | generated | Button | Button
+Button::CONSTANTS | generated | Button | Button
+Button::as_id | language | | | a cast, and an extra button is Usage.Button with its id
+Button::from_id | language | | | a cast
+Button::new | language | | | a cast
+CATCH_MAX_ENTRIES | generated | Constants.MaxCatchEntries | MaxCatchEntries
+CLIP_EDGES_MAX | generated | Constants.ClipEdgesMax | ClipEdgesMax
+CLIP_ENTRY_MAX | generated | Constants.ClipEntryMax | ClipEntryMax
+CLIP_PKT_MATCH_POOL | generated | Constants.ClipPktMatchPool | ClipPktMatchPool
+CLIP_PKT_TRIG_MAX | generated | Constants.ClipPktTrigMax | ClipPktTrigMax
+CLIP_RAW_MAX | generated | Constants.ClipRawMax | ClipRawMax
+Caps | generated | Caps | Caps
+Caps: Default | suite | Caps.Default | Caps | a C++ Caps starts at the default
+Caps::has_keyboard | suite | Caps.HasKeyboard | Caps::has_keyboard
+Caps::has_mouse | suite | Caps.HasMouse | Caps::has_mouse
+Caps::is_composite | suite | Caps.IsComposite | Caps::is_composite
+Capture | language | Capture | Capture | a byte, 0 keeps the whole packet like Rust's Whole
+Capture: Default | suite | Capture | Capture | Whole, the 0 byte, which a capture starts at in C# and C++ too
+Capture::as_u8 | language | | | it's already the byte
+Capture::bytes | suite | Capture.Bytes | Capture::bytes
+Capture::from_u8 | language | | | it's already the byte
+Capture::widest | suite | Capture.Widest | Capture::widest
+CatchClass | generated | CatchClass | CatchClass
+CatchClass: From<Class> | suite | CatchClass.From | to_catch_class
+CatchClass: From<TrafficClass> | suite | CatchClass.From | to_catch_class
+CatchClass::as_u8 | language | | | a cast
+CatchClass::direction_meaning | suite | CatchClass.DirectionMeaning | direction_meaning
+CatchClass::from_u8 | language | | | a cast, checked like the other enums
+CatchClass::is_input | suite | CatchClass.IsInput | is_input
+CatchClass::is_traffic | suite | CatchClass.IsTraffic | is_traffic
+CatchEntry | generated | CatchEntry | CatchEntry
+CatchEvent | hand | CatchEvent | CatchEvent | a record with Kind and the event of that kind, where Rust has an enum
+CatchEvent: Timestamped | language | CatchEvent.TsUs | CatchEvent::ts_us | TsUs and Clock are on the event
+CatchEvent::bytes | suite | CatchEvent.Bytes | CatchEvent::bytes
+CatchEvent::class | suite | CatchEvent.Class | CatchEvent::class_
+CatchEvent::clock | suite | CatchEvent.Clock | CatchEvent::clock
+CatchEvent::direction | suite | CatchEvent.Direction | CatchEvent::direction
+CatchEvent::id | suite | CatchEvent.Id | CatchEvent::id
+CatchEvent::ts_us | suite | CatchEvent.TsUs | CatchEvent::ts_us
+CatchFilter | hand | CatchFilter | CatchFilter
+CatchFilter::all_input | suite | CatchFilter.AllInput | CatchFilter::all_input
+CatchFilter::capture | suite | CatchFilter.Capture | CatchFilter::capture
+CatchFilter::class | suite | CatchFilter.Class | CatchFilter::class_
+CatchFilter::direction | suite | CatchFilter.Direction | CatchFilter::direction
+CatchFilter::everything | suite | CatchFilter.Everything | CatchFilter::everything
+CatchFilter::from_wire | upstream | | | the wire form of a filter, medius-capi keeps the encoding to itself
+CatchFilter::id | suite | CatchFilter.Id | CatchFilter::id
+CatchFilter::inbound | suite | CatchFilter.Inbound | CatchFilter::inbound
+CatchFilter::on_press | suite | CatchFilter.OnPress | CatchFilter::on_press
+CatchFilter::on_release | suite | CatchFilter.OnRelease | CatchFilter::on_release
+CatchFilter::outbound | suite | CatchFilter.Outbound | CatchFilter::outbound
+CatchFilter::same_address | suite | CatchFilter.SameAddress | CatchFilter::same_address
+CatchFilter::traffic | suite | CatchFilter.Traffic | CatchFilter::traffic
+CatchFilter::traffic_class | suite | CatchFilter.TrafficOf | CatchFilter::traffic_of | medius.h calls it traffic_of
+CatchFilter::watch | suite | CatchFilter.Watch | CatchFilter::watch
+CatchFilter::watch_axes | suite | CatchFilter.WatchAxes | CatchFilter::watch_axes
+CatchFilter::watch_axis | suite | CatchFilter.WatchAxis | CatchFilter::watch_axis
+CatchFilter::watch_class | suite | CatchFilter.WatchClass | CatchFilter::watch_class
+CatchFilter::wire | upstream | | | the wire form of a filter, medius-capi keeps the encoding to itself
+CatchFilter::with_capture | suite | CatchFilter.WithCapture | CatchFilter::with_capture
+CatchFilter::with_direction | suite | CatchFilter.WithDirection | CatchFilter::with_direction
+CatchState | generated | CatchState | CatchState
+CatchState::is_empty | suite | CatchState.IsEmpty | CatchState::is_empty
+ChipFirmware | generated | ChipFirmware | ChipFirmware
+ChipFirmware: Display | suite | ChipFirmware.ToString | to_string
+Class | generated | Class | Class
+Class::as_u8 | language | | | a cast
+Class::from_u8 | language | | | a cast, checked like the other enums
+ClipAction | generated | ClipAction | ClipAction
+ClipBuilder | hand | ClipBuilder | ClipBuilder
+ClipBuilder: Default | suite | ClipBuilder.ctor | ClipBuilder::ClipBuilder | the constructor, which gives an empty builder like Rust's
+ClipBuilder::byte_len | suite | ClipBuilder.ByteLen | ClipBuilder::byte_len
+ClipBuilder::clear | suite | ClipBuilder.Clear | ClipBuilder::clear
+ClipBuilder::edge | suite | ClipBuilder.Edge | ClipBuilder::edge
+ClipBuilder::force_release | suite | ClipBuilder.ForceRelease | ClipBuilder::force_release
+ClipBuilder::frame | suite | ClipBuilder.Frame | ClipBuilder::frame
+ClipBuilder::gap | suite | ClipBuilder.Gap | ClipBuilder::gap
+ClipBuilder::is_empty | upstream | | | medius-capi has the byte length but not the frame count
+ClipBuilder::len | upstream | | | medius-capi has the byte length but not the frame count
+ClipBuilder::move_by | suite | ClipBuilder.Move | ClipBuilder::move | medius.h calls it move
+ClipBuilder::new | suite | ClipBuilder.ctor | ClipBuilder::ClipBuilder
+ClipBuilder::pan | suite | ClipBuilder.Pan | ClipBuilder::pan
+ClipBuilder::press | suite | ClipBuilder.Press | ClipBuilder::press
+ClipBuilder::raw | suite | ClipBuilder.Raw | ClipBuilder::raw
+ClipBuilder::release | suite | ClipBuilder.Release | ClipBuilder::release
+ClipBuilder::transfer | suite | ClipBuilder.Transfer | ClipBuilder::transfer
+ClipBuilder::wheel | suite | ClipBuilder.Wheel | ClipBuilder::wheel
+ClipFrame | hand | ClipFrame | ClipFrame
+ClipFrame: Default | suite | ClipFrame.ctor | ClipFrame::ClipFrame | the constructor, which gives an empty frame like Rust's
+ClipFrame::byte_len | suite | ClipFrame.ByteLen | ClipFrame::byte_len
+ClipFrame::edge | suite | ClipFrame.Edge | ClipFrame::edge
+ClipFrame::force_release | suite | ClipFrame.ForceRelease | ClipFrame::force_release
+ClipFrame::move_by | suite | ClipFrame.Move | ClipFrame::move | medius.h calls it move
+ClipFrame::new | suite | ClipFrame.ctor | ClipFrame::ClipFrame
+ClipFrame::pan | suite | ClipFrame.Pan | ClipFrame::pan
+ClipFrame::press | suite | ClipFrame.Press | ClipFrame::press
+ClipFrame::raw | suite | ClipFrame.Raw | ClipFrame::raw
+ClipFrame::release | suite | ClipFrame.Release | ClipFrame::release
+ClipFrame::transfer | suite | ClipFrame.Transfer | ClipFrame::transfer
+ClipFrame::wheel | suite | ClipFrame.Wheel | ClipFrame::wheel
+ClipHandle | hand | ClipHandle | Clip
+ClipHandle::append | suite | ClipHandle.Append | Clip::append
+ClipHandle::bind | suite | ClipHandle.Bind | Clip::bind
+ClipHandle::bind_packet | suite | ClipHandle.BindPacket | Clip::bind_packet
+ClipHandle::clear | suite | ClipHandle.Clear | Clip::clear
+ClipHandle::clear_triggers | suite | ClipHandle.ClearTriggers | Clip::clear_triggers
+ClipHandle::finalize | suite | ClipHandle.FinalizeClip | Clip::finalize | C# keeps Finalize for the runtime
+ClipHandle::lost | suite | ClipHandle.Lost | Clip::lost
+ClipHandle::pause | suite | ClipHandle.Pause | Clip::pause
+ClipHandle::query_config | suite | ClipHandle.QueryConfig | Clip::query_config
+ClipHandle::query_status | suite | ClipHandle.QueryStatus | Clip::query_status
+ClipHandle::restart | suite | ClipHandle.Restart | Clip::restart
+ClipHandle::resume | suite | ClipHandle.Resume | Clip::resume
+ClipHandle::set_autolock | suite | ClipHandle.SetAutolock | Clip::set_autolock
+ClipHandle::set_loop | suite | ClipHandle.SetLoop | Clip::set_loop
+ClipHandle::set_retain | suite | ClipHandle.SetRetain | Clip::set_retain
+ClipHandle::set_ride | suite | ClipHandle.SetRide | Clip::set_ride
+ClipHandle::start | suite | ClipHandle.Start | Clip::start
+ClipHandle::stop | suite | ClipHandle.Stop | Clip::stop
+ClipHandle::toggle | suite | ClipHandle.Toggle | Clip::toggle
+ClipHandle::unbind | suite | ClipHandle.Unbind | Clip::unbind
+ClipHandle::unbind_packet | suite | ClipHandle.UnbindPacket | Clip::unbind_packet
+ClipPacketTrigger | generated | ClipPacketTrigger | ClipPacketTrigger
+ClipPacketTrigger::ANY_ID | generated | ClipPacketTrigger.AnyId | CatchIdAny | it's medius.h's catch id for any
+ClipPacketTrigger::consume | language | ClipPacketTrigger.Consume | ClipPacketTrigger::consume | the field, set with C#'s with or on the C++ struct
+ClipPacketTrigger::matching | language | ClipPacketTrigger.MatchBytes | ClipPacketTrigger::match_bytes | the fields, set with C#'s with or on the C++ struct
+ClipPacketTrigger::new | language | ClipPacketTrigger.ctor | ClipPacketTrigger | the constructor, and a C++ aggregate
+ClipPacketTrigger::once_per_run | language | ClipPacketTrigger.OncePerRun | ClipPacketTrigger::once_per_run | the field, set with C#'s with or on the C++ struct
+ClipPacketTriggerEntry | language | ClipPacketTrigger.Hits | ClipPacketTrigger::hits | medius.h keeps the hits on the trigger itself
+ClipSettings | hand | ClipSettings | ClipSettings
+ClipSettings: Default | suite | ClipSettings.ctor | ClipSettings | a new one in C# and a C++ one start at the default
+ClipState | generated | ClipState | ClipState
+ClipState: Default | suite | ClipState | ClipState | its 0 member, which a C# default(ClipState) and a C++ ClipState{} are too
+ClipStatus | generated | ClipStatus | ClipStatus
+ClipStatus: Default | suite | ClipStatus.Default | ClipStatus | a C++ ClipStatus starts at the default
+ClipStatus::is_held | suite | ClipStatus.IsHeld | ClipStatus::is_held
+ClipTrigger | generated | ClipTrigger | ClipTrigger
+ClipTrigger::consume | language | ClipTrigger.Consume | ClipTrigger::consume | the field, set with C#'s with or on the C++ struct
+ClipTrigger::new | language | ClipTrigger.ctor | ClipTrigger | the constructor, and a C++ aggregate
+ClockDomain | generated | ClockDomain | ClockDomain
+ClockDomain::ALL | language | | all_clock_domains | C# has Enum.GetValues<ClockDomain>(), C++ gets the list in Rust's order
+ClockEstimate | generated | ClockEstimate | ClockEstimate
+ClockEstimate::drift_us_over | suite | ClockEstimate.DriftUsOver | ClockEstimate::drift_us_over
+ClockEstimate::error_bound_us | suite | ClockEstimate.ErrorBoundUs | ClockEstimate::error_bound_us
+ClockEstimate::to_host_domain | suite | ClockEstimate.ToHostDomain | ClockEstimate::to_host_domain
+ControlStatus | generated | ControlStatus | ControlStatus
+CountersSnapshot | generated | Counters | CountersSnapshot
+CountersSnapshot: Default | suite | Counters.Default | CountersSnapshot | a C++ CountersSnapshot starts at the default
+DEFAULT_KEEPALIVE_CADENCE | generated | MediusLibrary.DefaultKeepaliveCadenceMs | default_keepalive_cadence_ms | in milliseconds
+DEFAULT_QUERY_TIMEOUT | generated | MediusLibrary.DefaultQueryTimeoutMs | default_query_timeout_ms | in milliseconds
+DEFAULT_TRANSFER_TIMEOUT | generated | MediusLibrary.DefaultTransferTimeoutMs | default_transfer_timeout_ms | in milliseconds
+DecodedFrame | hand | RecordedFrame | RecordedFrame | what the mock recorded, the only place a binding sees a frame
+Device | hand | Device | Device
+Device::abort_update | suite | Device.AbortUpdate | Device::abort_update
+Device::activate_firmware | suite | Device.ActivateFirmware | Device::activate_firmware
+Device::allow_imperfect_clones | suite | Device.AllowImperfectClones | Device::allow_imperfect_clones
+Device::apply_patch | suite | Device.ApplyPatch | Device::apply_patch
+Device::caps | suite | Device.Caps | Device::caps
+Device::catch_events | suite | Device.CatchEvents | Device::catch_events
+Device::clear_name | suite | Device.ClearName | Device::clear_name
+Device::clear_patch | suite | Device.ClearPatch | Device::clear_patch
+Device::clear_rewrite | suite | Device.ClearRewrite | Device::clear_rewrite
+Device::clear_transforms | suite | Device.ClearTransforms | Device::clear_transforms
+Device::clip | suite | Device.Clip | Device::clip
+Device::counters | suite | Device.Counters | Device::counters
+Device::device_info | suite | Device.DeviceInfo | Device::device_info
+Device::discard_motion | suite | Device.DiscardMotion | Device::discard_motion
+Device::factory_reset | suite | Device.FactoryReset | Device::factory_reset
+Device::find | hardware | Device.Find | Device::find
+Device::find_keyboard_box | hardware | Device.FindKeyboardBox | Device::find_keyboard_box
+Device::find_mouse_box | hardware | Device.FindMouseBox | Device::find_mouse_box
+Device::find_where | hardware | Device.FindWhere | Device::find_where
+Device::firmware_info | suite | Device.FirmwareInfo | Device::firmware_info
+Device::flush_motion | suite | Device.FlushMotion | Device::flush_motion
+Device::force_release | suite | Device.ForceRelease | Device::force_release
+Device::inject | suite | Device.Inject | Device::inject
+Device::input_events | suite | Device.InputEvents | Device::input_events
+Device::into_async (async) | language | | | the async API, C# and C++ run the blocking calls on a thread of their own
+Device::led | suite | Device.Led | Device::led
+Device::list | hardware | Device.List | Device::list
+Device::lock | suite | Device.Lock | Device::lock
+Device::lock_all | suite | Device.LockAll | Device::lock_all
+Device::lock_axis | language | Device.Lock | Device::lock | Lock with the axis as its LockTarget
+Device::logs | suite | Device.Logs | Device::logs
+Device::move_axis | suite | Device.MoveAxis | Device::move_axis
+Device::move_rel | suite | Device.MoveRel | Device::move_rel
+Device::move_rel_now | suite | Device.MoveRelNow | Device::move_rel_now
+Device::open | hardware | Device.Open | Device::open
+Device::open_by_id | hardware | Device.OpenById | Device::open_by_id
+Device::open_mock (mock) | hand | Device.OpenMock | Device::open_mock
+Device::pan | suite | Device.Pan | Device::pan
+Device::pan_now | suite | Device.PanNow | Device::pan_now
+Device::press | suite | Device.Press | Device::press
+Device::query_bearing | suite | Device.QueryBearing | Device::query_bearing
+Device::query_catch | suite | Device.QueryCatch | Device::query_catch
+Device::query_emit_pace | suite | Device.QueryEmitPace | Device::query_emit_pace
+Device::query_health | suite | Device.QueryHealth | Device::query_health
+Device::query_imperfect | suite | Device.QueryImperfect | Device::query_imperfect
+Device::query_locks | suite | Device.QueryLocks | Device::query_locks
+Device::query_movement_riding | suite | Device.QueryMovementRiding | Device::query_movement_riding
+Device::query_patch_entry | suite | Device.QueryPatchEntry | Device::query_patch_entry
+Device::query_patches | suite | Device.QueryPatches | Device::query_patches
+Device::query_rate | suite | Device.QueryRate | Device::query_rate
+Device::query_render | suite | Device.QueryRender | Device::query_render
+Device::query_rewrite | suite | Device.QueryRewrite | Device::query_rewrite
+Device::query_rewrite_entry | suite | Device.QueryRewriteEntry | Device::query_rewrite_entry
+Device::query_spread | suite | Device.QuerySpread | Device::query_spread
+Device::query_stats | suite | Device.QueryStats | Device::query_stats
+Device::query_transforms | suite | Device.QueryTransforms | Device::query_transforms
+Device::query_version | suite | Device.QueryVersion | Device::query_version
+Device::raw | suite | Device.Raw | Device::raw
+Device::reapply | suite | Device.Reapply | Device::reapply
+Device::reboot | suite | Device.Reboot | Device::reboot
+Device::reconnect | hardware | Device.Reconnect | Device::reconnect | on a mock it still rescans the real serial ports and takes the first box that opens
+Device::release | suite | Device.SoftRelease | Device::soft_release | medius.h calls it the soft release
+Device::remove_rewrite | suite | Device.RemoveRewrite | Device::remove_rewrite
+Device::reset | suite | Device.Reset | Device::reset
+Device::scale | suite | Device.Scale | Device::scale
+Device::scale_all | suite | Device.ScaleAll | Device::scale_all
+Device::scale_axis | language | Device.Scale | Device::scale | Scale with the axis as its LockTarget
+Device::set_bearing | suite | Device.SetBearing | Device::set_bearing
+Device::set_emit_pace | suite | Device.SetEmitPace | Device::set_emit_pace
+Device::set_movement_riding | suite | Device.SetMovementRiding | Device::set_movement_riding
+Device::set_name | suite | Device.SetName | Device::set_name
+Device::set_patch | suite | Device.SetPatch | Device::set_patch
+Device::set_render | suite | Device.SetRender | Device::set_render
+Device::set_rewrite | suite | Device.SetRewrite | Device::set_rewrite
+Device::set_spread | suite | Device.SetSpread | Device::set_spread
+Device::stage_firmware | suite | Device.StageFirmware | Device::stage_firmware | medius-capi drops the number it returns, so the bindings give nothing back yet
+Device::transfer | suite | Device.Transfer | Device::transfer
+Device::transfer_timeout | language | Device.Transfer | Device::transfer | Transfer with its timeout
+Device::transform | suite | Device.Transform | Device::transform
+Device::transform_remap | suite | Device.TransformRemap | Device::transform_remap
+Device::transform_swap | suite | Device.TransformSwap | Device::transform_swap
+Device::unlock | suite | Device.Unlock | Device::unlock
+Device::unlock_all | suite | Device.UnlockAll | Device::unlock_all
+Device::unlock_axis | language | Device.Unlock | Device::unlock | Unlock with the axis as its LockTarget
+Device::untransform | suite | Device.Untransform | Device::untransform
+Device::update_firmware | suite | Device.UpdateFirmware | Device::update_firmware
+Device::wait_firmware_confirmed | hand | Device.WaitFirmwareConfirmed | Device::wait_firmware_confirmed | it polls through the reboot
+Device::wheel | suite | Device.Wheel | Device::wheel
+Device::wheel_now | suite | Device.WheelNow | Device::wheel_now
+Device::with_mock (mock) | hand | Device.WithMock | Device::with_mock
+DeviceInfo | generated | DeviceInfo | DeviceInfo
+DeviceInfo: Default | suite | DeviceInfo.Default | DeviceInfo | a C++ DeviceInfo starts at the default
+DeviceInfo: Display | suite | DeviceInfo.ToString | to_string
+DeviceInfo::is_cloned | suite | DeviceInfo.IsCloned | DeviceInfo::is_cloned
+DeviceKind | generated | DeviceKind | DeviceKind
+DeviceKind: Default | suite | DeviceKind | DeviceKind | its 0 member, which a C# default(DeviceKind) and a C++ DeviceKind{} are too
+DeviceKind: Display | suite | DeviceKind.Text | to_string
+Direction | generated | Direction | Direction
+Direction: Default | suite | Direction | Direction | its 0 member, which a C# default(Direction) and a C++ Direction{} are too
+Direction: From<Edge> | suite | Direction.From | to_direction
+Direction::IN | generated | Direction.In | Direction::In
+Direction::OUT | generated | Direction.Out | Direction::Out
+Direction::PRESS | generated | Direction.Press | Direction::Press
+Direction::RELEASE | generated | Direction.Release | Direction::Release
+Direction::admits | suite | Direction.Admits | admits
+Direction::as_u8 | language | | | a cast
+Direction::from_u8 | language | | | a cast, checked like the other enums
+Direction::is_relative | suite | Direction.IsRelative | is_relative
+Direction::of_delta | suite | Direction.OfDelta | of_delta
+DirectionMeaning | hand | DirectionMeaning | DirectionMeaning
+EMIT_MAX_HZ | upstream | | | medius.h doesn't have it
+Edge | generated | Edge | Edge
+EmitPace | hand | EmitPace | EmitPace
+EmitPace: Default | suite | EmitPace.Learned | EmitPace | learned is the default, and a C++ EmitPace starts at it
+EmitPaceStatus | hand | EmitPaceStatus | EmitPaceStatus
+EmitPaceStatus: Default | suite | EmitPaceStatus.Default | EmitPaceStatus | a C++ EmitPaceStatus starts at the default
+Error | hand | MediusException | Error | one exception per status, made from the status and medius' own text
+Error: Display | hand | MediusException | Error | medius' own text through medius-capi, which every error outcome in medius.json compares
+Error: Error | hand | MediusException | Error | the exception each binding throws
+Error: From<std::io::Error> | hand | IoException | IoError | an I/O error is its own exception in each, ErrIo with medius' text
+Error: From<FrameError> | language | | | it only happens inside medius, a binding gets the status it ends in
+EventStream | hand | EventStream | EventStream
+EventStream: Iterator | language | EventStream.GetEnumerator | EventStream::begin | foreach in C#, a range for in C++
+EventStream::close | hand | EventStream.Dispose | EventStream::close
+EventStream::closer | language | EventStream.Dispose | EventStream::close | either one closes it from any thread
+EventStream::dropped | suite | EventStream.Dropped | EventStream::dropped
+EventStream::is_connected | suite | EventStream.IsConnected | EventStream::is_connected
+EventStream::iter | language | EventStream.GetEnumerator | EventStream::begin | foreach in C#, a range for in C++
+EventStream::recv | suite | EventStream.Recv | EventStream::recv
+EventStream::recv_async (async) | language | | | the async API, C# and C++ run the blocking calls on a thread of their own
+EventStream::recv_timeout | suite | EventStream.RecvTimeout | EventStream::recv | C++'s recv takes the timeout
+EventStream::stream (async) | language | | | the async API, C# and C++ run the blocking calls on a thread of their own
+EventStream::try_iter | language | EventStream.TryRecv | EventStream::try_recv | TryRecv until it comes back empty
+EventStream::try_recv | suite | EventStream.TryRecv | EventStream::try_recv
+FirmwareInfo | generated | FirmwareInfo | FirmwareInfo
+FirmwareInfo::PAYLOAD_LEN | upstream | | | the wire form, medius-capi decodes it before a binding sees it
+FirmwareInfo::any_pending | suite | FirmwareInfo.AnyPending | FirmwareInfo::any_pending
+FirmwareInfo::from_payload | upstream | | | the wire form, medius-capi decodes it before a binding sees it
+FrameType | generated | FrameType | FrameType
+FrameType: TryFrom<u8> | language | | | a cast, checked like the other enums
+Health | generated | Health | Health
+Health::from_flags | upstream | | | the wire form, medius-capi decodes it before a binding sees it
+Health::to_flags | upstream | | | the wire form, medius-capi decodes it before a binding sees it
+ImageState | generated | ImageState | ImageState
+ImageState: Display | suite | ImageState.Text | to_string
+ImageState::from_u8 | language | | | a cast, an unknown byte stays its number
+ImageState::is_pending | suite | ImageState.IsPending | is_pending
+ImperfectStatus | generated | ImperfectStatus | ImperfectStatus
+ImperfectStatus: Default | suite | ImperfectStatus.Default | ImperfectStatus | a C++ ImperfectStatus starts at the default
+Input | language | InputEvent | InputEvent | InputEvent carries it flat, Kind with the usage or the deltas
+Input::axes | suite | InputEvent.Axes | InputEvent::axes
+Input::direction | suite | InputEvent.Direction | InputEvent::direction
+Input::is_press | suite | InputEvent.IsPress | InputEvent::is_press
+Input::is_release | suite | InputEvent.IsRelease | InputEvent::is_release
+Input::usage | suite | InputEvent.Usage | InputEvent::usage
+InputEvent | hand | InputEvent | InputEvent
+InputEvent: Timestamped | language | InputEvent.TsUs | InputEvent::ts_us | TsUs and Clock are on the event
+InputStream | hand | InputStream | InputStream
+InputStream: Iterator | language | InputStream.GetEnumerator | InputStream::begin | foreach in C#, a range for in C++
+InputStream::close | hand | InputStream.Dispose | InputStream::close
+InputStream::closer | language | InputStream.Dispose | InputStream::close | either one closes it from any thread
+InputStream::dropped | suite | InputStream.Dropped | InputStream::dropped
+InputStream::held | suite | InputStream.Held | InputStream::held
+InputStream::is_connected | suite | InputStream.IsConnected | InputStream::is_connected
+InputStream::recv | suite | InputStream.Recv | InputStream::recv
+InputStream::recv_async (async) | language | | | the async API, C# and C++ run the blocking calls on a thread of their own
+InputStream::recv_timeout | suite | InputStream.RecvTimeout | InputStream::recv | C++'s recv takes the timeout
+InputStream::try_recv | suite | InputStream.TryRecv | InputStream::try_recv
+KbdCaps | generated | KbdCaps | KbdCaps
+KbdCaps: Default | suite | KbdCaps.Default | KbdCaps | a C++ KbdCaps starts at the default
+Key | generated | Key | Key
+Key::CONSTANTS | generated | Key | Key
+Key::is_modifier | suite | Key.IsModifier | is_modifier
+Key::new | language | | | a cast
+Key::usage | language | | | a cast
+LOCK_SCALE_BLOCK | generated | Constants.LockScaleBlock | LockScaleBlock
+LOCK_SCALE_MAX | generated | Constants.LockScaleMax | LockScaleMax
+LOCK_SCALE_MIN | generated | Constants.LockScaleMin | LockScaleMin
+LOCK_SCALE_PASS | generated | Constants.LockScalePass | LockScalePass
+LedMode | generated | LedMode | LedMode
+LedMode::as_u8 | language | | | a cast
+LedMode::from_u8 | language | | | a cast, checked like the other enums
+LedTarget | generated | LedTarget | LedTarget
+LedTarget::as_u8 | language | | | a cast
+LedTarget::from_u8 | language | | | a cast, checked like the other enums
+LockEntry | generated | LockEntry | LockEntry
+LockEntry::is_block | suite | LockEntry.IsBlock | LockEntry::is_block
+LockScope | language | LockEntry.IsBlanket | LockEntry::is_blanket | IsBlanket says which of the two it is, with the target or the class next to it
+LockTarget | hand | LockTarget | LockTarget
+LockTarget: From<Axis> | language | LockTarget.Axis | LockTarget::axis | made from the axis
+LockTarget: From<T> | language | LockTarget.Usage | LockTarget::usage | made from the usage
+LockTarget::as_axis | suite | LockTarget.AsAxis | LockTarget::as_axis
+LockTarget::class_id | upstream | | | the wire class an axis locks under isn't in medius.h
+LockTarget::from_class_id | upstream | | | the wire class an axis locks under isn't in medius.h
+Locks | generated | Locks | Locks
+Locks::entries | language | Locks.Entries | Locks::entries | the field
+Locks::from_entries | language | Locks.ctor | Locks | the constructor, and a C++ aggregate
+Locks::is_locked | suite | Locks.IsLocked | Locks::is_locked
+Locks::scale_of | suite | Locks.ScaleOf | Locks::scale_of
+LogLevel | generated | LogLevel | LogLevel
+LogLevel::as_u8 | language | | | a cast
+LogLevel::from_u8 | language | | | a cast, checked like the other enums
+LogLine | generated | LogLine | LogLine
+LogStream | hand | LogStream | LogStream
+LogStream: IntoIterator | language | LogStream.GetEnumerator | LogStream::begin | foreach in C#, a range for in C++
+LogStream::close | hand | LogStream.Dispose | LogStream::close
+LogStream::closer | language | LogStream.Dispose | LogStream::close | either one closes it from any thread
+LogStream::is_connected | suite | LogStream.IsConnected | LogStream::is_connected
+LogStream::recv | suite | LogStream.Recv | LogStream::recv
+LogStream::recv_async (async) | language | | | the async API, C# and C++ run the blocking calls on a thread of their own
+LogStream::recv_timeout | suite | LogStream.RecvTimeout | LogStream::recv | C++'s recv takes the timeout
+LogStream::try_iter | language | LogStream.TryRecv | LogStream::try_recv | TryRecv until it comes back empty
+LogStream::try_recv | suite | LogStream.TryRecv | LogStream::try_recv
+MAX_PAYLOAD | upstream | | | medius.h doesn't have it
+MediaKey | generated | MediaKey | MediaKey
+MediaKey::CONSTANTS | generated | MediaKey | MediaKey
+MediaKey::new | language | | | a cast
+MediaKey::usage | language | | | a cast
+MockBox (mock) | hand | MockBox | MockBox
+MockBox: Default (mock) | language | MockBox.ctor | MockBox::MockBox | the constructor
+MockBox::attach (mock) | suite | MockBox.Attach | MockBox::attach
+MockBox::clear_recorded (mock) | suite | MockBox.ClearRecorded | MockBox::clear_recorded
+MockBox::clip_packet (mock) | suite | MockBox.ClipPacket | MockBox::clip_packet
+MockBox::detach (mock) | suite | MockBox.Detach | MockBox::detach
+MockBox::link_lost (mock) | suite | MockBox.LinkLost | MockBox::link_lost
+MockBox::new (mock) | hand | MockBox.ctor | MockBox::MockBox | every scenario makes one in every runner
+MockBox::push_log (mock) | suite | MockBox.PushLog | MockBox::push_log
+MockBox::push_motion (mock) | suite | MockBox.PushMotion | MockBox::push_motion
+MockBox::push_raw (mock) | suite | MockBox.PushRaw | MockBox::push_raw
+MockBox::push_traffic (mock) | suite | MockBox.PushTraffic | MockBox::push_traffic
+MockBox::push_usages (mock) | suite | MockBox.PushUsages | MockBox::push_usages
+MockBox::reboot_after_activate (mock) | suite | MockBox.RebootAfterActivate | MockBox::reboot_after_activate
+MockBox::recorded (mock) | suite | MockBox.Recorded | MockBox::recorded
+MockBox::recorded_frames (mock) | language | MockBox.RecordedFrame | MockBox::recorded_frame | RecordedFrame reads the list one frame at a time
+MockBox::refuse_next_activate (mock) | suite | MockBox.RefuseNextActivate | MockBox::refuse_next_activate
+MockBox::replied_frames (mock) | upstream | | | medius-capi doesn't hand out what the mock replied
+MockBox::restart (mock) | suite | MockBox.Restart | MockBox::restart
+MockBox::saw (mock) | suite | MockBox.Saw | MockBox::saw
+MockBox::set_bearing (mock) | suite | MockBox.SetBearing | MockBox::set_bearing
+MockBox::set_clip_settings (mock) | suite | MockBox.SetClipSettings | MockBox::set_clip_settings
+MockBox::set_clip_status (mock) | suite | MockBox.SetClipStatus | MockBox::set_clip_status
+MockBox::set_emit_pace (mock) | suite | MockBox.SetEmitPace | MockBox::set_emit_pace
+MockBox::set_health (mock) | suite | MockBox.SetHealth | MockBox::set_health
+MockBox::set_imperfect_status (mock) | suite | MockBox.SetImperfectStatus | MockBox::set_imperfect_status
+MockBox::set_locks (mock) | suite | MockBox.SetLocks | MockBox::set_locks
+MockBox::set_movement_riding (mock) | suite | MockBox.SetMovementRiding | MockBox::set_movement_riding
+MockBox::set_rate_force (mock) | upstream | | | medius-capi's mock sets the rate but not a forced one
+MockBox::set_render (mock) | suite | MockBox.SetRender | MockBox::set_render
+MockBox::set_render_ready (mock) | language | MockBox.SetRender | MockBox::set_render | SetRender takes ready with the rest
+MockBox::set_spread_learned (mock) | suite | MockBox.SetSpreadLearned | MockBox::set_spread_learned
+MockBox::set_transfer_reply (mock) | suite | MockBox.SetTransferReply | MockBox::set_transfer_reply
+MockBox::set_version (mock) | suite | MockBox.SetVersion | MockBox::set_version
+MockBox::silent (mock) | suite | MockBox.Silent | MockBox::silent
+MockBox::with_advertised_hz (mock) | language | MockBox.SetAdvertisedHz | MockBox::set_advertised_hz | the builder form of the setter
+MockBox::with_bearing (mock) | language | MockBox.SetBearing | MockBox::set_bearing | the builder form of the setter
+MockBox::with_caps (mock) | language | MockBox.SetCaps | MockBox::set_caps | the builder form of the setter
+MockBox::with_catch_state (mock) | language | MockBox.SetCatchState | MockBox::set_catch_state | the builder form of the setter
+MockBox::with_clip_settings (mock) | language | MockBox.SetClipSettings | MockBox::set_clip_settings | the builder form of the setter
+MockBox::with_clip_status (mock) | language | MockBox.SetClipStatus | MockBox::set_clip_status | the builder form of the setter
+MockBox::with_device_info (mock) | language | MockBox.SetDeviceInfo | MockBox::set_device_info | the builder form of the setter
+MockBox::with_emit_pace (mock) | language | MockBox.SetEmitPace | MockBox::set_emit_pace | the builder form of the setter
+MockBox::with_health (mock) | language | MockBox.SetHealth | MockBox::set_health | the builder form of the setter
+MockBox::with_imperfect (mock) | language | MockBox.SetImperfectStatus | MockBox::set_imperfect_status | the builder form of the setter
+MockBox::with_imperfect_status (mock) | language | MockBox.SetImperfectStatus | MockBox::set_imperfect_status | the builder form of the setter
+MockBox::with_kbd_caps (mock) | language | MockBox.SetKbdCaps | MockBox::set_kbd_caps | the builder form of the setter
+MockBox::with_locks (mock) | language | MockBox.SetLocks | MockBox::set_locks | the builder form of the setter
+MockBox::with_mouse_caps (mock) | language | MockBox.SetMouseCaps | MockBox::set_mouse_caps | the builder form of the setter
+MockBox::with_movement_riding (mock) | language | MockBox.SetMovementRiding | MockBox::set_movement_riding | the builder form of the setter
+MockBox::with_rate (mock) | language | MockBox.SetRate | MockBox::set_rate | the builder form of the setter
+MockBox::with_rate_force (mock) | upstream | | | medius-capi's mock sets the rate but not a forced one
+MockBox::with_render (mock) | language | MockBox.SetRender | MockBox::set_render | the builder form of the setter
+MockBox::with_render_ready (mock) | language | MockBox.SetRender | MockBox::set_render | SetRender takes ready with the rest
+MockBox::with_spread_learned (mock) | language | MockBox.SetSpreadLearned | MockBox::set_spread_learned | the builder form of the setter
+MockBox::with_stats (mock) | language | MockBox.SetStats | MockBox::set_stats | the builder form of the setter
+MockBox::with_transfer_reply (mock) | language | MockBox.SetTransferReply | MockBox::set_transfer_reply | the builder form of the setter
+MockBox::with_version (mock) | language | MockBox.SetVersion | MockBox::set_version | the builder form of the setter
+Motion | hand | Motion | Motion | Kind, with Dx and Dy for the cursor or Delta for the wheel and the pan, where Rust has an enum
+MotionEvent | generated | MotionEvent | MotionEvent
+MotionEvent: Timestamped | language | | | the stamp is on the CatchEvent that carries it
+MotionEvent::all_axes | suite | MotionEvent.AllAxes | MotionEvent::all_axes
+MotionEvent::axes | suite | MotionEvent.Axes | MotionEvent::axes
+MouseCaps | generated | MouseCaps | MouseCaps
+MouseCaps: Default | suite | MouseCaps.Default | MouseCaps | a C++ MouseCaps starts at the default
+MouseCaps::is_composite | suite | MouseCaps.IsComposite | MouseCaps::is_composite
+MoveTiming | generated | MoveTiming | MoveTiming
+MoveTiming: Default | suite | MoveTiming | MoveTiming | its 0 member, which a C# default(MoveTiming) and a C++ MoveTiming{} are too
+MoveTiming::as_u8 | language | | | a cast
+MoveTiming::from_flags | upstream | | | the wire form, medius-capi decodes it before a binding sees it
+NAME_MAX | generated | Constants.MaxName | MaxName
+PATCH_MAX_ENTRIES | generated | Constants.MaxPatchEntries | MaxPatchEntries
+PKT_MATCH_MAX | generated | Constants.MaxPktMatch | MaxPktMatch
+PROTO_VER | upstream | | | medius.h doesn't have it
+Patch | generated | Patch | Patch
+Patch: Default | suite | Patch.Default | Patch | a C++ Patch starts at the default
+Patch::in_config | suite | Patch.InConfig | Patch::in_config
+Patch::in_interface | suite | Patch.InInterface | Patch::in_interface
+Patch::in_string | suite | Patch.InString | Patch::in_string
+Patch::key | suite | Patch.Key | Patch::key
+Patch::new | language | Patch.ctor | Patch | the constructor, and a C++ aggregate
+PatchEntry | generated | PatchEntry | PatchEntry
+PatchKey | hand | PatchKey | PatchKey
+PatchSection | generated | PatchSection | PatchSection
+PatchSection: Default | suite | PatchSection | PatchSection | its 0 member, which a C# default(PatchSection) and a C++ PatchSection{} are too
+PatchSection::as_u8 | language | | | a cast
+PatchSection::from_u8 | language | | | a cast, checked like the other enums
+PatchSet | generated | PatchSet | PatchSet
+PatchSet: Default | suite | PatchSet.Default | PatchSet | a C++ PatchSet starts at the default
+PendingMotion | generated | PendingMotion | PendingMotion
+PendingMotion: Default | suite | PendingMotion | PendingMotion | its 0 member, which a C# default(PendingMotion) and a C++ PendingMotion{} are too
+PendingMotion::as_u8 | language | | | a cast
+PendingMotion::from_flags | upstream | | | the wire form, medius-capi decodes it before a binding sees it
+PortInfo | generated | PortInfo | PortInfo
+REWRITE_MATCH_MAX | generated | Constants.MaxRewriteMatch | MaxRewriteMatch
+REWRITE_MAX_ENTRIES | generated | Constants.MaxRewriteEntries | MaxRewriteEntries
+REWRITE_PAYLOAD_POOL | generated | Constants.RewritePayloadPool | RewritePayloadPool
+Rate | generated | Rate | Rate
+Rate::native_hz | suite | Rate.NativeHz | Rate::native_hz
+RebootTarget | generated | RebootTarget | RebootTarget
+RebootTarget::as_u8 | language | | | a cast
+RebootTarget::from_u8 | language | | | a cast, checked like the other enums
+RenderMode | generated | RenderMode | RenderMode
+RenderMode: Default | suite | RenderStatus.Default | RenderStatus | a status starts at Despiked, which is what the default is for
+RenderMode::from_u8 | language | | | a cast, checked like the other enums
+RenderStatus | generated | RenderStatus | RenderStatus
+RenderStatus: Default | suite | RenderStatus.Default | RenderStatus | a C++ RenderStatus starts at the default
+Result | language | | | C# and C++ throw the error instead
+RewriteAction | generated | RewriteAction | RewriteAction
+RewriteAction: Default | suite | RewriteAction | RewriteAction | its 0 member, which a C# default(RewriteAction) and a C++ RewriteAction{} are too
+RewriteAction::as_u8 | language | | | a cast
+RewriteAction::carries_payload | suite | RewriteAction.CarriesPayload | carries_payload
+RewriteAction::from_u8 | language | | | a cast, checked like the other enums
+RewriteAction::is_valid_for | suite | RewriteAction.IsValidFor | is_valid_for
+RewriteClass | generated | RewriteClass | RewriteClass
+RewriteClass: Default | suite | RewriteRule.Default | RewriteRule | a rule starts at Emit, which is what the default is for
+RewriteClass::as_u8 | language | | | a cast
+RewriteClass::from_u8 | language | | | a cast, checked like the other enums
+RewriteClass::is_control | suite | RewriteClass.IsControl | is_control
+RewriteEntry | generated | RewriteEntry | RewriteEntry
+RewriteKey | hand | RewriteKey | RewriteKey
+RewriteRule | generated | RewriteRule | RewriteRule
+RewriteRule: Default | suite | RewriteRule.Default | RewriteRule | a C++ RewriteRule starts at the default
+RewriteRule::at_offset | language | RewriteRule.Offset | RewriteRule::offset | the field, set with C#'s with or on the C++ struct
+RewriteRule::key | suite | RewriteRule.Key | RewriteRule::key
+RewriteRule::matching | language | RewriteRule.MatchBytes | RewriteRule::match_bytes | the fields, set with C#'s with or on the C++ struct
+RewriteRule::new | language | RewriteRule.ctor | RewriteRule | the constructor, and a C++ aggregate
+RewriteRule::with_payload | language | RewriteRule.Payload | RewriteRule::payload | the field, set with C#'s with or on the C++ struct
+RewriteTable | generated | RewriteTable | RewriteTable
+RewriteTable: Default | suite | RewriteTable.Default | RewriteTable | a C++ RewriteTable starts at the default
+Setup | generated | Setup | Setup
+Setup: Default | suite | Setup.Default | Setup | a C++ Setup starts at the default
+Setup::is_in | suite | Setup.IsIn | Setup::is_in
+Setup::new | language | Setup.ctor | Setup | the constructor, and a C++ aggregate
+Setup::to_bytes | suite | Setup.ToBytes | Setup::to_bytes
+SpreadStatus | generated | SpreadStatus | SpreadStatus
+SpreadStatus: Default | suite | SpreadStatus.Default | SpreadStatus | a C++ SpreadStatus starts at the default
+Stamped | generated | Stamped | Stamped
+Stats | generated | Stats | Stats
+StreamCloser | language | | | a stream closes from any thread, so C# and C++ hand out the stream itself
+StreamCloser::close | language | | | a stream closes from any thread, so C# and C++ hand out the stream itself
+TRANSFORM_MAX_ENTRIES | generated | Constants.MaxTransformEntries | MaxTransformEntries
+Timeline | hand | Timeline | Timeline
+Timeline: Default | language | Timeline.ctor | Timeline::Timeline | the constructor
+Timeline::box_us | upstream | | | medius-capi has no call for it
+Timeline::box_us_of | upstream | | | medius-capi has no call for it
+Timeline::new | suite | Timeline.ctor | Timeline::Timeline
+Timeline::observe | suite | Timeline.Observe | Timeline::observe
+Timeline::observe_at | suite | Timeline.Observe | Timeline::observe | Observe takes the time it arrived
+Timeline::observe_stamp | suite | Timeline.ObserveStamp | Timeline::observe_stamp
+Timeline::reset | suite | Timeline.Reset | Timeline::reset
+Timeline::samples | suite | Timeline.Samples | Timeline::samples
+Timestamped | language | | | TsUs and Clock are on every event a timeline takes
+Timestamped::clock | language | CatchEvent.Clock | CatchEvent::clock | on each event
+Timestamped::ts_us | language | CatchEvent.TsUs | CatchEvent::ts_us | on each event
+TrafficClass | generated | TrafficClass | TrafficClass
+TrafficClass: TryFrom<CatchClass> | suite | TrafficClass.From | to_traffic_class
+TrafficClass::ALL | language | | all_traffic_classes | C# has Enum.GetValues<TrafficClass>(), C++ gets the list in Rust's order
+TrafficClass::as_u8 | language | | | a cast
+TrafficEvent | generated | TrafficEvent | TrafficEvent
+TrafficEvent: Timestamped | language | | | the stamp is on the CatchEvent that carries it
+TrafficEvent::bulk_end_of_transfer | suite | TrafficEvent.BulkEndOfTransfer | TrafficEvent::bulk_end_of_transfer
+TrafficEvent::bus_event | suite | TrafficEvent.Bus | TrafficEvent::bus_event
+TrafficEvent::control_status | suite | TrafficEvent.Control | TrafficEvent::control_status
+TrafficEvent::data | suite | TrafficEvent.Data | TrafficEvent::data
+TrafficEvent::rule_acted | suite | TrafficEvent.RuleActed | TrafficEvent::rule_acted
+TrafficEvent::setup | suite | TrafficEvent.SetupBytes | TrafficEvent::setup_bytes
+TrafficEvent::transfer_status | suite | TrafficEvent.Transfer | TrafficEvent::transfer_status
+TrafficEvent::truncated | suite | TrafficEvent.Truncated | TrafficEvent::truncated
+TrafficEvent::zlp | suite | TrafficEvent.Zlp | TrafficEvent::zlp
+TransferOutcome | generated | TransferOutcome | TransferOutcome
+TransferOutcome::data | language | TransferOutcome.Data | TransferOutcome::data | the field
+TransferOutcome::is_ok | suite | TransferOutcome.IsOk | TransferOutcome::is_ok
+TransferOutcome::ok_data | suite | TransferOutcome.OkData | TransferOutcome::ok_data
+TransferStatus | generated | TransferStatus | TransferStatus
+TransferStatus::as_u8 | language | | | a cast
+TransferStatus::from_u8 | language | | | a cast, checked like the other enums
+TransferStatus::is_ok | suite | TransferStatus.IsOk | is_ok
+Transform | generated | Transform | Transform
+Transform::key | suite | Transform.Key | Transform::key
+Transform::new | language | Transform.ctor | Transform | the constructor, and a C++ aggregate
+Transform::remap | suite | Transform.Remap | Transform::remap
+Transform::swap | suite | Transform.Swap | Transform::swap
+TransformKey | hand | TransformKey | TransformKey
+TransformOp | generated | TransformOp | TransformOp
+TransformOp::admits | suite | TransformOp.Admits | admits
+TransformOp::as_u8 | language | | | a cast
+TransformOp::from_u8 | language | | | a cast, checked like the other enums
+Transforms | generated | Transforms | Transforms
+Transforms: Default | suite | Transforms.Default | Transforms | a C++ Transforms starts at the default
+Transforms::CAPACITY | generated | Constants.MaxTransformEntries | MaxTransformEntries | medius.h's transform table size
+UpdateProgress | hand | UpdateProgress | UpdateProgress
+UpdateProgress::percent | suite | UpdateProgress.Percent | UpdateProgress::percent
+UpdateStatus | language | UpdateException.UpdateStatus | UpdateError::update_status | the box's status byte, on the update error
+UpdateStatus: Display | upstream | | | medius.h has the status byte but not its names
+UpdateStatus::CONSTANTS | upstream | | | medius.h has the status byte but not its names
+UpdateStatus::name | upstream | | | medius.h has the status byte but not its names
+UpdateTarget | generated | UpdateTarget | UpdateTarget
+UpdateTarget: Display | suite | UpdateTarget.Text | to_string
+UpdateTarget::as_u8 | language | | | a cast
+UpdateTarget::from_u8 | language | | | a cast, checked like the other enums
+Usage | hand | Usage | Usage
+Usage: From<Button> | language | Usage.op_Implicit | Usage::Usage | an implicit conversion in C#, a converting constructor in C++
+Usage: From<Key> | language | Usage.op_Implicit | Usage::Usage | an implicit conversion in C#, a converting constructor in C++
+Usage: From<MediaKey> | language | Usage.op_Implicit | Usage::Usage | an implicit conversion in C#, a converting constructor in C++
+Usage::class_id | language | Usage.Kind | Usage::kind | Kind and Id, the class is the Class value
+Usage::new | language | Usage.ctor | Usage::Usage | the constructor
+UsageSnapshot | generated | UsageSnapshot | UsageSnapshot
+UsageSnapshot: Timestamped | language | | | the stamp is on the CatchEvent that carries it
+UsageSnapshot::is_held | suite | UsageSnapshot.IsHeld | UsageSnapshot::is_held
+Version | generated | BoxVersion | Version | C# can't take System.Version's name
+Version: Display | suite | BoxVersion.ToString | to_string
+Version::mac_hex | suite | BoxVersion.MacHex | Version::mac_hex
+find_medius | hardware | Device.FindPorts | Device::find_ports | the serial ports that could be a box
+
+AsyncClipHandle::* (async) | language | | | the async API, C# and C++ run the blocking calls on a thread of their own
+AsyncDevice::* (async) | language | | | the async API, C# and C++ run the blocking calls on a thread of their own

@@ -1,6 +1,6 @@
 [package]
 name = "anybox-rs"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MPL-2.0"
@@ -37,14 +37,14 @@ ysc8k = ["dep:serde_json"]
 trace = []
 
 [dependencies]
-medius = { version = "=3.4.3", optional = true }
+medius = { version = "=3.4.6", optional = true }
 serial2 = { version = "0.2.38", features = ["windows"] }
 serialport = "4.10"
 thiserror = "2"
 serde_json = { version = "1", optional = true }
 
 [dev-dependencies]
-medius = { version = "=3.4.3", features = ["mock"] }
+medius = { version = "=3.4.6", features = ["mock"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -53,10 +53,5 @@ libc = "0.2"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Devices_Communication", "Win32_System_IO", "Win32_System_Performance", "Win32_System_Threading", "Win32_Security"] }
 
 [workspace]
-members = ["bindings/c"]
+members = ["bindings/c", "bindings/gen"]
 
-# medius-capi needs MediusDevice::into_raw, which only the fork has until upstream takes it, and the bundled
-# medius-capi and anybox have to resolve to the same medius crate. the fork is upstream master, still 3.4.3,
-# plus that function
-[patch.crates-io]
-medius = { git = "https://github.com/etherealrl/medius", rev = "0d7e773a093993ac95d5b507b498b1455599f4ff" }

@@ -23,19 +23,19 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libudev-dev pkg-config
       - shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
           NAME: anybox-capi-${{ matrix.target }}
-          TAG: ${{ github.event.release.tag_name }}
         run: |
           set -euo pipefail
           # the static library needs the system libraries this prints, so they go in the tarball
           cargo rustc -p anybox-capi --release --locked -- --print native-static-libs 2>&1 | tee build.log
           mkdir -p "$NAME/include" "$NAME/lib"
-          cp bindings/c/include/anybox.h bindings/c/include/medius.h "$NAME/include/"
+          cp bindings/c/include/anybox.h bindings/c/include/anybox.hpp bindings/c/include/anybox_medius.hpp bindings/c/include/medius.h "$NAME/include/"
           cp LICENSE NOTICE "$NAME/"
           # the notices of every dependency built into the library go with it
           cargo install cargo-about --version 0.9.2 --features cli --locked
@@ -57,4 +57,10 @@ jobs:
             esac
           done
           tar -czf "$NAME.tar.gz" "$NAME"
-          gh release upload "$TAG" "$NAME.tar.gz" --clobber
+      # the token only comes in for the upload, so nothing the build compiled can read it
+      - shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NAME: anybox-capi-${{ matrix.target }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$TAG" "$NAME.tar.gz" --clobber --repo "$GITHUB_REPOSITORY"

@@ -13,6 +13,8 @@ use anybox::{
 use crate::connect::*;
 use crate::device::*;
 use crate::events::*;
+use crate::failure::*;
+use crate::keys::{ANYBOX_KEY_A, ANYBOX_KEY_LEFT_SHIFT, ANYBOX_MEDIA_VOLUME_UP};
 use crate::mock::*;
 use crate::snapshot::*;
 use crate::status::*;
@@ -48,13 +50,17 @@ impl Drop for Mock {
 }
 
 fn mock() -> Mock {
+    mock_with(false)
+}
+
+fn mock_with(keyboard: bool) -> Mock {
     let timing = AnyboxClickTiming {
         kind: ANYBOX_CLICK_TIMING_FIXED,
         fixed_us: 5_000,
     };
     let mut mock = ptr::null_mut();
     let mut device = ptr::null_mut();
-    let status = unsafe { anybox_mock_medius_open(&timing, &mut mock, &mut device) };
+    let status = unsafe { anybox_mock_medius_open(&timing, keyboard, &mut mock, &mut device) };
     assert_eq!(status, ANYBOX_STATUS_OK, "{}", last_error());
     Mock { mock, device }
 }
@@ -68,9 +74,9 @@ fn events(device: *const AnyboxDevice, kinds: u32) -> *mut AnyboxEvents {
     events
 }
 
-fn subscribed(mock: &Mock) {
+fn subscribed(mock: &Mock, kinds: u32) {
     let start = Instant::now();
-    while !unsafe { anybox_mock_subscribed(mock.mock) } {
+    while !unsafe { anybox_mock_subscribed(mock.mock, kinds) } {
         assert!(
             start.elapsed() < Duration::from_secs(5),
             "the receiver never subscribed"
@@ -134,6 +140,31 @@ fn the_last_error_starts_empty_and_survives_a_call_that_works() {
     .unwrap();
 }
 
+// the second thread fails in between the first one's call and its read, so one error kept for the whole process
+// would show the other thread's text
+#[test]
+fn an_error_on_another_thread_in_between_leaves_this_one_alone() {
+    let mock = mock();
+    let failed = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let read = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let other = {
+        let (device, failed, read) = (Shared(mock.device), failed.clone(), read.clone());
+        thread::spawn(move || {
+            let device = device;
+            failed.wait();
+            unsafe { anybox_device_press(device.0, 8888) };
+            assert!(last_error().contains("8888"), "{}", last_error());
+            read.wait();
+        })
+    };
+    unsafe { anybox_device_press(mock.device, 9999) };
+    failed.wait();
+    read.wait();
+    let mine = last_error();
+    other.join().unwrap();
+    assert!(mine.contains("9999") && !mine.contains("8888"), "{mine}");
+}
+
 #[test]
 fn a_nul_inside_a_string_ends_it() {
     assert_eq!(c_string("COM3\0junk").as_bytes(), b"COM3");
@@ -181,7 +212,7 @@ fn null_arguments_are_refused_by_name() {
         assert!(anybox_scan_list_port(ptr::null(), 0).is_null());
         assert_eq!(anybox_string_list_count(ptr::null()), 0);
         assert!(anybox_string_list_get(ptr::null(), 0).is_null());
-        assert!(!anybox_mock_subscribed(ptr::null()));
+        assert!(!anybox_mock_subscribed(ptr::null(), ANYBOX_EVENTS_BUTTONS));
     }
 }
 
@@ -231,7 +262,9 @@ fn out_params_stay_as_they_were_when_a_call_fails() {
         );
         assert_eq!(list, 0x1234 as *mut AnyboxScanList);
         options.family = ANYBOX_FAMILY_ANY;
-        options.can = 1 << 40;
+        let unknown = [40];
+        options.can = unknown.as_ptr();
+        options.can_len = 1;
         let mut ports = 0x1234 as *mut AnyboxStringList;
         assert_eq!(
             anybox_candidates(&options, &mut ports),
@@ -311,7 +344,13 @@ fn values_anybox_doesnt_know_are_refused() {
             ..AnyboxConnectOptions::default()
         },
         AnyboxConnectOptions {
-            can: 1 << 23,
+            can: [23].as_ptr(),
+            can_len: 1,
+            ..AnyboxConnectOptions::default()
+        },
+        AnyboxConnectOptions {
+            can: ptr::null(),
+            can_len: 1,
             ..AnyboxConnectOptions::default()
         },
         AnyboxConnectOptions {
@@ -395,19 +434,16 @@ fn every_table_value_goes_both_ways() {
         );
     }
     assert_eq!(ferrum_api_number(None), ANYBOX_FERRUM_API_NONE);
-    // a snapshot finds an action by its place in the table, so the place has to be its number
-    for (index, (number, _)) in ACTIONS.iter().enumerate() {
-        assert_eq!(index as u32, *number);
-    }
     for (number, action) in ACTIONS {
         assert_eq!(crate::values::action(number), Ok(action));
         assert_eq!(action_number(action), number);
     }
-    assert_eq!(actions((1 << 23) - 1).unwrap().len(), 23);
+    let list = [ANYBOX_ACTION_KEY_TAP, ANYBOX_ACTION_MOVE];
     assert_eq!(
-        actions((1 << ANYBOX_ACTION_MOVE) | (1 << ANYBOX_ACTION_KEY_TAP)),
-        Ok(vec![Action::Move, Action::KeyTap])
+        unsafe { actions(list.as_ptr(), 2, "can") },
+        Ok(vec![Action::KeyTap, Action::Move])
     );
+    assert_eq!(unsafe { actions(ptr::null(), 0, "can") }, Ok(vec![]));
     assert_eq!(event_kinds(ANYBOX_EVENTS_ALL), Ok(EventKinds::ALL));
     assert_eq!(
         event_kinds(ANYBOX_EVENTS_BUTTONS | ANYBOX_EVENTS_MEDIA),
@@ -497,7 +533,8 @@ fn every_connect_option_reaches_the_builder() {
         port: port.as_ptr(),
         family: ANYBOX_FAMILY_FERRUM,
         ferrum_api: ANYBOX_FERRUM_API_LEGACY,
-        can: (1 << ANYBOX_ACTION_MOVE) | (1 << ANYBOX_ACTION_LOCK_KEY),
+        can: [ANYBOX_ACTION_MOVE, ANYBOX_ACTION_LOCK_KEY].as_ptr(),
+        can_len: 2,
         id_kind: ANYBOX_ID_USB_SERIAL,
         id_mac: [0; 6],
         id_serial: serial.as_ptr(),
@@ -633,6 +670,8 @@ fn every_event_kind_has_its_fields() {
         has_box_time: true,
         box_clock: ANYBOX_CLOCK_MEDIUS_DEVICE_CHIP,
         box_time_us: 77,
+        arrived_ns: at.arrived_ns(),
+        received_ns: at.arrived_ns() + 500,
         ..AnyboxEvent::default()
     };
     let cases = [
@@ -847,7 +886,7 @@ fn snapshot_strings_live_until_the_snapshot_is_freed() {
 fn pushed_input_comes_out_as_events() {
     let mock = mock();
     let events = events(mock.device, ANYBOX_EVENTS_ALL);
-    subscribed(&mock);
+    subscribed(&mock, ANYBOX_EVENTS_BUTTONS | ANYBOX_EVENTS_MOTION);
     unsafe {
         anybox_mock_push_motion(mock.mock, 2, 123_456, -2, 3, 1, 0);
         let motion = next_input(events);
@@ -924,7 +963,7 @@ fn woken_by_close(queued: bool) {
     let mock = mock();
     let events = events(mock.device, ANYBOX_EVENTS_MOTION);
     if queued {
-        subscribed(&mock);
+        subscribed(&mock, ANYBOX_EVENTS_MOTION);
         unsafe { anybox_mock_push_motion(mock.mock, 2, 10, 5, 0, 0, 0) };
     }
     let reader = Shared(events);
@@ -970,6 +1009,65 @@ fn closing_from_another_thread_wakes_a_reader_with_nothing_queued() {
 #[test]
 fn closing_from_another_thread_still_hands_out_what_was_queued() {
     woken_by_close(true);
+}
+
+// the receiver's own close says CLOSED, not RECV_CLOSED, so a reader knows it was its receiver and not the device
+#[test]
+fn its_own_close_wakes_a_reader_and_says_closed() {
+    let mock = mock();
+    let events = events(mock.device, ANYBOX_EVENTS_MOTION);
+    let reader = Shared(events);
+    let ready = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let reader = {
+        let ready = ready.clone();
+        thread::spawn(move || {
+            let reader = reader;
+            ready.wait();
+            loop {
+                match recv(reader.0, -1) {
+                    // the mock can send a connection event at any time
+                    (ANYBOX_STATUS_OK, _) => {}
+                    (status, _) => return status,
+                }
+            }
+        })
+    };
+    ready.wait();
+    thread::sleep(Duration::from_millis(50));
+    let started = Instant::now();
+    assert_eq!(unsafe { anybox_events_close(events) }, ANYBOX_STATUS_OK);
+    assert_eq!(reader.join().unwrap(), ANYBOX_STATUS_CLOSED);
+    assert!(started.elapsed() < Duration::from_secs(2));
+    // every recv after it says so too, and a second close is fine
+    assert_eq!(recv(events, 0).0, ANYBOX_STATUS_CLOSED);
+    assert!(
+        last_error().contains("this receiver was closed"),
+        "{}",
+        last_error()
+    );
+    assert_eq!(recv(events, 1_000).0, ANYBOX_STATUS_CLOSED);
+    assert_eq!(unsafe { anybox_events_close(events) }, ANYBOX_STATUS_OK);
+    // the device itself is still up
+    assert_eq!(
+        unsafe { anybox_device_move_by(mock.device, 1, 0) },
+        ANYBOX_STATUS_OK
+    );
+    unsafe { anybox_events_free(events) };
+}
+
+#[test]
+fn its_own_close_throws_out_what_was_queued() {
+    let mock = mock();
+    let closing = events(mock.device, ANYBOX_EVENTS_MOTION);
+    // every receiver gets an event at the same moment, so once this one has it, the other one has it queued
+    let witness = events(mock.device, ANYBOX_EVENTS_MOTION);
+    subscribed(&mock, ANYBOX_EVENTS_MOTION);
+    unsafe { anybox_mock_push_motion(mock.mock, 2, 10, 5, 0, 0, 0) };
+    assert_eq!(next_input(witness).kind, ANYBOX_EVENT_MOTION);
+    assert_eq!(unsafe { anybox_events_close(closing) }, ANYBOX_STATUS_OK);
+    assert_eq!(recv(closing, 0).0, ANYBOX_STATUS_CLOSED);
+    unsafe { anybox_events_free(closing) };
+    unsafe { anybox_events_free(witness) };
 }
 
 #[test]
@@ -1138,6 +1236,7 @@ fn layout_table() -> String {
         family,
         ferrum_api,
         can,
+        can_len,
         id_kind,
         id_mac,
         id_serial,
@@ -1187,19 +1286,76 @@ fn layout_table() -> String {
         has_received_qpc,
         has_box_time,
         box_clock,
-        box_time_us
+        box_time_us,
+        arrived_ns,
+        received_ns
+    );
+    layout!(
+        out,
+        AnyboxErrorDetail,
+        kind,
+        has_action,
+        action,
+        family,
+        expected_family,
+        found_family,
+        port,
+        text,
+        expected_id_kind,
+        expected_id_mac,
+        expected_id_serial,
+        found_id_kind,
+        found_id_mac,
+        found_id_serial,
+        found_firmware_kind,
+        found_firmware_major,
+        found_firmware_minor,
+        found_firmware_patch,
+        found_firmware_protocol,
+        found_firmware_build,
+        found_firmware_text,
+        needed_firmware_kind,
+        needed_firmware_major,
+        needed_firmware_minor,
+        needed_firmware_patch,
+        needed_firmware_protocol,
+        needed_firmware_build,
+        needed_firmware_text,
+        expected_ferrum_api,
+        found_ferrum_api,
+        io_kind,
+        has_os_error,
+        os_error
     );
     out
 }
 
+// the header's number is what every binding's wrap helper comes from, so it has to be what Rust says for each clock
+#[test]
+fn the_wrap_constant_is_what_every_clock_says() {
+    for clock in [
+        anybox::Clock::MediusHostChip,
+        anybox::Clock::MediusDeviceChip,
+    ] {
+        assert_eq!(
+            Duration::from_micros(ANYBOX_BOX_CLOCK_WRAP_US),
+            clock.wraps_after(),
+            "{clock:?}"
+        );
+    }
+}
+
 #[test]
 fn the_layout_matches_the_committed_table() {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/layout.txt");
+    // cargo says where the crate is at run time too, and a test binary copied from another checkout has the other
+    // one's path built in
+    let path = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap())
+        .join("tests/layout.txt");
     let table = layout_table();
     if std::env::var_os("ANYBOX_WRITE_LAYOUT").is_some() {
-        std::fs::write(path, &table).unwrap();
+        std::fs::write(&path, &table).unwrap();
     }
-    let committed = std::fs::read_to_string(path)
+    let committed = std::fs::read_to_string(&path)
         .unwrap_or_default()
         .replace("\r\n", "\n");
     assert_eq!(
@@ -1663,4 +1819,495 @@ fn every_info_field_reaches_c() {
         (out.id_kind, out.id_mac, serial),
         (ANYBOX_ID_MAC, [9, 8, 7, 6, 5, 4], None)
     );
+}
+
+// structured errors
+
+fn detail() -> AnyboxErrorDetail {
+    let mut out = AnyboxErrorDetail::empty(4242);
+    assert_eq!(
+        unsafe { anybox_last_error_detail(&mut out) },
+        ANYBOX_STATUS_OK
+    );
+    out
+}
+
+fn optional(pointer: *const c_char) -> Option<String> {
+    (!pointer.is_null()).then(|| text(pointer))
+}
+
+fn tried() -> Vec<String> {
+    let mut list = ptr::null_mut();
+    assert_eq!(
+        unsafe { anybox_last_error_tried(&mut list) },
+        ANYBOX_STATUS_OK
+    );
+    let count = unsafe { anybox_string_list_count(list) };
+    let ports = (0..count)
+        .map(|index| text(unsafe { anybox_string_list_get(list, index) }))
+        .collect();
+    unsafe { anybox_string_list_free(list) };
+    ports
+}
+
+fn missing(list: *const AnyboxScanList, index: usize) -> Vec<u32> {
+    let mut len = 0;
+    unsafe {
+        assert_eq!(
+            anybox_scan_list_missing(list, index, ptr::null_mut(), 0, &mut len),
+            ANYBOX_STATUS_OK
+        );
+        let mut actions = vec![0; len];
+        assert_eq!(
+            anybox_scan_list_missing(list, index, actions.as_mut_ptr(), len, &mut len),
+            ANYBOX_STATUS_OK
+        );
+        actions
+    }
+}
+
+#[test]
+fn the_detail_is_empty_before_anything_failed_and_a_null_out_leaves_it_alone() {
+    thread::spawn(|| {
+        let empty = detail();
+        assert_eq!((empty.kind, empty.has_action), (ANYBOX_STATUS_OK, false));
+        assert!(empty.port.is_null() && empty.text.is_null());
+        assert_eq!(tried(), Vec::<String>::new());
+        assert_eq!(
+            anybox_mock_fail(ANYBOX_STATUS_PORT_BUSY),
+            ANYBOX_STATUS_PORT_BUSY
+        );
+        unsafe {
+            assert_eq!(
+                anybox_last_error_detail(ptr::null_mut()),
+                ANYBOX_STATUS_INVALID_ARGUMENT
+            );
+            assert_eq!(
+                anybox_last_error_tried(ptr::null_mut()),
+                ANYBOX_STATUS_INVALID_ARGUMENT
+            );
+            assert_eq!(
+                anybox_last_error_incapable(ptr::null_mut()),
+                ANYBOX_STATUS_INVALID_ARGUMENT
+            );
+        }
+        assert_eq!(detail().kind, ANYBOX_STATUS_PORT_BUSY);
+        assert_eq!(optional(detail().port).as_deref(), Some("COM3"));
+    })
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn every_error_hands_its_fields_to_c() {
+    assert_eq!(
+        anybox_mock_fail(ANYBOX_STATUS_NOT_FOUND),
+        ANYBOX_STATUS_NOT_FOUND
+    );
+    assert_eq!(tried(), ["COM3", "COM4"]);
+    assert_eq!(detail().kind, ANYBOX_STATUS_NOT_FOUND);
+
+    for status in [ANYBOX_STATUS_CLOSED, ANYBOX_STATUS_DISCONNECTED] {
+        assert_eq!(anybox_mock_fail(status), status);
+        let empty = detail();
+        assert_eq!((empty.kind, empty.has_action), (status, false));
+        assert!(empty.port.is_null());
+    }
+
+    anybox_mock_fail(ANYBOX_STATUS_PERMISSION_DENIED);
+    assert_eq!(optional(detail().port).as_deref(), Some("/dev/ttyACM0"));
+
+    anybox_mock_fail(ANYBOX_STATUS_WRONG_FAMILY);
+    let wrong = detail();
+    assert_eq!(
+        (wrong.expected_family, wrong.found_family, wrong.family),
+        (
+            ANYBOX_FAMILY_FERRUM,
+            ANYBOX_FAMILY_MAKCU_V4,
+            ANYBOX_FAMILY_ANY
+        )
+    );
+    assert_eq!(optional(wrong.port).as_deref(), Some("COM3"));
+
+    anybox_mock_fail(ANYBOX_STATUS_WRONG_BOX);
+    let wrong = detail();
+    assert_eq!(
+        (
+            wrong.expected_id_kind,
+            optional(wrong.expected_id_serial).as_deref()
+        ),
+        (ANYBOX_ID_USB_SERIAL, Some("ABC123"))
+    );
+    assert_eq!(
+        (
+            wrong.found_id_kind,
+            wrong.found_id_mac,
+            optional(wrong.found_id_serial)
+        ),
+        (ANYBOX_ID_MAC, [1, 2, 3, 4, 5, 6], None)
+    );
+
+    anybox_mock_fail(ANYBOX_STATUS_WRONG_FERRUM_API);
+    let wrong = detail();
+    assert_eq!(
+        (wrong.expected_ferrum_api, wrong.found_ferrum_api),
+        (ANYBOX_FERRUM_API_SOFTWARE, ANYBOX_FERRUM_API_LEGACY)
+    );
+
+    anybox_mock_fail(ANYBOX_STATUS_FIRMWARE_TOO_OLD);
+    let old = detail();
+    assert_eq!(old.family, ANYBOX_FAMILY_MEDIUS);
+    assert_eq!(
+        (old.found_firmware_kind, old.found_firmware_protocol),
+        (ANYBOX_FIRMWARE_PROTOCOL, 8)
+    );
+    assert_eq!(
+        (
+            old.needed_firmware_kind,
+            old.needed_firmware_major,
+            old.needed_firmware_minor,
+            old.needed_firmware_patch
+        ),
+        (ANYBOX_FIRMWARE_VERSION, 3, 4, 0)
+    );
+
+    anybox_mock_fail(ANYBOX_STATUS_LIBRARY_TOO_OLD);
+    let new = detail();
+    assert_eq!(
+        (
+            new.family,
+            new.found_firmware_kind,
+            optional(new.found_firmware_text).as_deref()
+        ),
+        (ANYBOX_FAMILY_MAKCU_V4, ANYBOX_FIRMWARE_TEXT, Some("V9.9"))
+    );
+    assert_eq!(new.needed_firmware_kind, ANYBOX_FIRMWARE_NONE);
+
+    for (status, action, family, reason) in [
+        (
+            ANYBOX_STATUS_UNSUPPORTED,
+            ANYBOX_ACTION_KEY_PRESS,
+            ANYBOX_FAMILY_MEDIUS,
+            Some("no keyboard is plugged into it"),
+        ),
+        (
+            ANYBOX_STATUS_INVALID_ARGUMENT,
+            ANYBOX_ACTION_SCALE_AXIS,
+            ANYBOX_FAMILY_ANY,
+            Some("300 is out of range, a scale goes from -255 to 255"),
+        ),
+        (
+            ANYBOX_STATUS_REJECTED,
+            ANYBOX_ACTION_MOVE,
+            ANYBOX_FAMILY_ANY,
+            Some("its queue is full"),
+        ),
+        (
+            ANYBOX_STATUS_TIMEOUT,
+            ANYBOX_ACTION_LOCK_AXIS,
+            ANYBOX_FAMILY_ANY,
+            None,
+        ),
+        (
+            ANYBOX_STATUS_INTERRUPTED,
+            ANYBOX_ACTION_CLICK,
+            ANYBOX_FAMILY_ANY,
+            None,
+        ),
+    ] {
+        assert_eq!(anybox_mock_fail(status), status);
+        let about = detail();
+        assert_eq!(
+            (about.kind, about.has_action, about.action, about.family),
+            (status, true, action, family)
+        );
+        assert_eq!(optional(about.text).as_deref(), reason);
+    }
+
+    anybox_mock_fail(ANYBOX_STATUS_IO);
+    let io = detail();
+    assert_eq!((io.has_os_error, io.os_error), (true, 5));
+    let kind = if cfg!(windows) {
+        ANYBOX_IO_KIND_PERMISSION_DENIED
+    } else {
+        ANYBOX_IO_KIND_OTHER
+    };
+    assert_eq!(io.io_kind, kind);
+    let other = crate::status::error(anybox::Error::Io(std::io::Error::other("cable")));
+    assert_eq!(other, ANYBOX_STATUS_IO);
+    assert_eq!(
+        (detail().io_kind, detail().has_os_error),
+        (ANYBOX_IO_KIND_OTHER, false)
+    );
+
+    for status in [
+        ANYBOX_STATUS_OK,
+        ANYBOX_STATUS_PANIC,
+        ANYBOX_STATUS_RECV_TIMEOUT,
+        999,
+    ] {
+        assert_eq!(anybox_mock_fail(status), ANYBOX_STATUS_INVALID_ARGUMENT);
+    }
+}
+
+#[test]
+fn a_box_that_cant_comes_with_what_it_couldnt_do() {
+    anybox_mock_fail(ANYBOX_STATUS_NO_BOX_CAN);
+    let mut list = ptr::null_mut();
+    unsafe {
+        assert_eq!(anybox_last_error_incapable(&mut list), ANYBOX_STATUS_OK);
+        assert_eq!(anybox_scan_list_count(list), 1);
+        assert_eq!(text(anybox_scan_list_port(list, 0)), "COM5");
+        assert_eq!(
+            missing(list, 0),
+            [ANYBOX_ACTION_KEY_TAP, ANYBOX_ACTION_LOCK_KEY]
+        );
+        let mut entry = AnyboxErrorDetail::empty(4242);
+        assert_eq!(
+            anybox_scan_list_error_detail(list, 0, &mut entry),
+            ANYBOX_STATUS_OK
+        );
+        assert_eq!(entry.kind, ANYBOX_STATUS_OK);
+        let mut snapshot = ptr::null_mut();
+        assert_eq!(
+            anybox_scan_list_result(list, 0, &mut snapshot),
+            ANYBOX_STATUS_OK
+        );
+        let mut info: AnyboxInfo = std::mem::zeroed();
+        anybox_snapshot_info(snapshot, &mut info);
+        assert_eq!(info.family, ANYBOX_FAMILY_MAKCU_V4);
+        anybox_snapshot_free(snapshot);
+        // the list is a copy, so a later failure doesn't touch it
+        anybox_mock_fail(ANYBOX_STATUS_CLOSED);
+        assert_eq!(text(anybox_scan_list_port(list, 0)), "COM5");
+        anybox_scan_list_free(list);
+
+        assert_eq!(anybox_last_error_incapable(&mut list), ANYBOX_STATUS_OK);
+        assert_eq!(anybox_scan_list_count(list), 0);
+        anybox_scan_list_free(list);
+    }
+}
+
+#[test]
+fn every_failure_replaces_the_whole_last_error() {
+    anybox_mock_fail(ANYBOX_STATUS_NOT_FOUND);
+    assert!(detail().port.is_null());
+    anybox_mock_fail(ANYBOX_STATUS_PORT_BUSY);
+    assert_eq!(tried(), Vec::<String>::new());
+    let mock = mock();
+    unsafe { anybox_device_press(mock.device, 9999) };
+    let invalid = detail();
+    assert_eq!(
+        (invalid.kind, invalid.has_action, invalid.port),
+        (ANYBOX_STATUS_INVALID_ARGUMENT, false, ptr::null())
+    );
+    // a call that works leaves it as it was
+    assert_eq!(
+        unsafe { anybox_device_move_by(mock.device, 1, 0) },
+        ANYBOX_STATUS_OK
+    );
+    assert_eq!(detail().kind, ANYBOX_STATUS_INVALID_ARGUMENT);
+}
+
+#[test]
+fn a_scan_entry_of_a_box_that_cant_says_what_it_couldnt_do() {
+    let no_box_can = anybox::Error::examples()
+        .into_iter()
+        .find(|error| status_of(error) == ANYBOX_STATUS_NO_BOX_CAN)
+        .unwrap();
+    let busy = anybox::Error::examples()
+        .into_iter()
+        .find(|error| status_of(error) == ANYBOX_STATUS_PORT_BUSY)
+        .unwrap();
+    let list = AnyboxScanList(vec![
+        scan_entry("COM5".into(), Err(no_box_can)),
+        scan_entry("COM3".into(), Err(busy)),
+    ]);
+    assert_eq!(
+        missing(&list, 0),
+        [ANYBOX_ACTION_KEY_TAP, ANYBOX_ACTION_LOCK_KEY]
+    );
+    assert_eq!(missing(&list, 1), Vec::<u32>::new());
+    let mut entry = AnyboxErrorDetail::empty(4242);
+    assert_eq!(
+        unsafe { anybox_scan_list_error_detail(&list, 0, &mut entry) },
+        ANYBOX_STATUS_OK
+    );
+    assert_eq!(entry.kind, ANYBOX_STATUS_NO_BOX_CAN);
+}
+
+#[test]
+fn a_scan_entry_keeps_its_whole_error() {
+    let port = CString::new("NOPE98").unwrap();
+    let options = AnyboxConnectOptions {
+        port: port.as_ptr(),
+        ..AnyboxConnectOptions::default()
+    };
+    unsafe {
+        let mut list = ptr::null_mut();
+        assert_eq!(anybox_scan(&options, &mut list), ANYBOX_STATUS_OK);
+        let rust = Connect::port("NOPE98").scan().remove(0).result.unwrap_err();
+        let mut entry = AnyboxErrorDetail::empty(4242);
+        assert_eq!(
+            anybox_scan_list_error_detail(list, 0, &mut entry),
+            ANYBOX_STATUS_OK
+        );
+        assert_eq!(entry.kind, status_of(&rust));
+        assert_eq!(missing(list, 0), Vec::<u32>::new());
+        assert_eq!(
+            anybox_scan_list_error_detail(list, 1, &mut entry),
+            ANYBOX_STATUS_INVALID_ARGUMENT
+        );
+        // reading the result makes it the last error, fields and all
+        anybox_mock_fail(ANYBOX_STATUS_CLOSED);
+        let mut snapshot = ptr::null_mut();
+        assert_eq!(
+            anybox_scan_list_result(list, 0, &mut snapshot),
+            status_of(&rust)
+        );
+        assert_eq!(detail().kind, status_of(&rust));
+        assert_eq!(last_error(), rust.to_string());
+        anybox_scan_list_free(list);
+    }
+}
+
+#[test]
+fn a_snapshot_finds_a_capability_by_its_action_number() {
+    let mock = mock();
+    let snapshot = take_snapshot(mock.device);
+    let mut capability = AnyboxCapability {
+        execution: 4242,
+        reason: ptr::null(),
+        quirk_count: 0,
+    };
+    unsafe {
+        // an extension number sits first and the core ones come backwards, so the place in the table is never
+        // the number
+        let table = &mut (*snapshot).capabilities;
+        let keys = table
+            .iter()
+            .find(|(number, ..)| *number == ANYBOX_ACTION_KEY_PRESS)
+            .cloned()
+            .unwrap();
+        table.reverse();
+        table.insert(0, (0x10005, keys.1, keys.2));
+        for (number, execution) in [
+            (0x10005, ANYBOX_EXECUTION_UNSUPPORTED),
+            (ANYBOX_ACTION_MOVE, ANYBOX_EXECUTION_NATIVE),
+            (ANYBOX_ACTION_CLICK, ANYBOX_EXECUTION_HOST),
+        ] {
+            assert_eq!(
+                anybox_snapshot_capability(snapshot, number, &mut capability),
+                ANYBOX_STATUS_OK
+            );
+            assert_eq!(capability.execution, execution, "{number:#x}");
+        }
+        assert_eq!(
+            anybox_snapshot_capability(snapshot, ANYBOX_ACTION_SCALE_AXIS, &mut capability),
+            ANYBOX_STATUS_OK
+        );
+        assert_eq!(
+            anybox_snapshot_capability(snapshot, 0x10000, &mut capability),
+            ANYBOX_STATUS_INVALID_ARGUMENT
+        );
+        assert!(
+            last_error().contains("65536 isn't an action"),
+            "{}",
+            last_error()
+        );
+        anybox_snapshot_free(snapshot);
+    }
+}
+
+// the mock's other inputs
+
+#[test]
+fn the_mock_says_which_kinds_are_subscribed() {
+    let mock = mock();
+    assert!(!unsafe { anybox_mock_subscribed(mock.mock, ANYBOX_EVENTS_BUTTONS) });
+    let events = events(mock.device, ANYBOX_EVENTS_BUTTONS);
+    subscribed(&mock, ANYBOX_EVENTS_BUTTONS);
+    unsafe {
+        // only what a receiver asked for, and a mouse has no keys to stream
+        assert!(!anybox_mock_subscribed(mock.mock, ANYBOX_EVENTS_MOTION));
+        assert!(!anybox_mock_subscribed(mock.mock, ANYBOX_EVENTS_KEYS));
+        assert!(!anybox_mock_subscribed(mock.mock, 1 << 7));
+        anybox_events_free(events);
+    }
+    // the receiver going lets go of its subscription, and a new one takes it again
+    let start = Instant::now();
+    while unsafe { anybox_mock_subscribed(mock.mock, ANYBOX_EVENTS_BUTTONS) } {
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "the buttons stayed subscribed with no receiver"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+    let again = self::events(mock.device, ANYBOX_EVENTS_BUTTONS);
+    subscribed(&mock, ANYBOX_EVENTS_BUTTONS);
+    unsafe { anybox_events_free(again) };
+}
+
+#[test]
+fn the_mock_pushes_keys_media_a_link_loss_and_a_restart() {
+    let mock = mock_with(true);
+    let events = events(mock.device, ANYBOX_EVENTS_ALL);
+    subscribed(&mock, ANYBOX_EVENTS_ALL);
+    let before = crate::anybox_monotonic_ns();
+    unsafe {
+        let held = [ANYBOX_KEY_LEFT_SHIFT, ANYBOX_KEY_A];
+        assert_eq!(
+            anybox_mock_push_keys(mock.mock, 1, 100, true, held.as_ptr(), 2),
+            ANYBOX_STATUS_OK
+        );
+        let shift = next_input(events);
+        assert_eq!(
+            (shift.kind, shift.key, shift.pressed),
+            (ANYBOX_EVENT_KEY, ANYBOX_KEY_LEFT_SHIFT, true)
+        );
+        let now = crate::anybox_monotonic_ns();
+        assert!(
+            shift.received_ns >= before && shift.received_ns <= now,
+            "{before} {} {now}",
+            shift.received_ns
+        );
+        assert_eq!(next_input(events).key, ANYBOX_KEY_A);
+        assert_eq!(
+            anybox_mock_push_keys(mock.mock, 2, 200, false, ptr::null(), 0),
+            ANYBOX_STATUS_OK
+        );
+        let released: Vec<(u8, bool)> = (0..2)
+            .map(|_| next_input(events))
+            .map(|event| (event.key, event.pressed))
+            .collect();
+        assert!(released.iter().all(|(_, pressed)| !pressed), "{released:?}");
+        let volume = [ANYBOX_MEDIA_VOLUME_UP];
+        anybox_mock_push_media(mock.mock, 3, 300, true, volume.as_ptr(), 1);
+        let media = next_input(events);
+        assert_eq!(
+            (media.kind, media.media, media.pressed),
+            (ANYBOX_EVENT_MEDIA, ANYBOX_MEDIA_VOLUME_UP, true)
+        );
+        assert_eq!(
+            anybox_mock_push_keys(mock.mock, 4, 0, true, ptr::null(), 1),
+            ANYBOX_STATUS_INVALID_ARGUMENT
+        );
+
+        let until = |kind: u32| {
+            let start = Instant::now();
+            loop {
+                assert!(start.elapsed() < Duration::from_secs(10), "no event {kind}");
+                let (status, event) = recv(events, 500_000);
+                if status == ANYBOX_STATUS_OK && event.kind == kind {
+                    return;
+                }
+            }
+        };
+        assert_eq!(anybox_mock_link_lost(mock.mock), ANYBOX_STATUS_OK);
+        until(ANYBOX_EVENT_SESSION_RESET);
+        assert_eq!(anybox_mock_restart(mock.mock), ANYBOX_STATUS_OK);
+        until(ANYBOX_EVENT_DISCONNECTED);
+        until(ANYBOX_EVENT_RECONNECTED);
+        anybox_events_free(events);
+    }
 }

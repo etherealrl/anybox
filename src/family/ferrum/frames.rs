@@ -35,7 +35,7 @@ fn echoed(line: &[u8]) -> bool {
 
 /// what a reply waits under, the command as the box echoes it back. the box has no ids, so this is the only way to
 /// tell which command a reply belongs to when one of them lost its prompt
-pub(crate) fn key(command: &[u8]) -> codec::Key {
+pub(crate) fn key(command: &[u8]) -> codec::ReplyKey {
     // FNV-1a, a collision only matters between two commands in flight at the same time
     command.iter().fold(0x811c_9dc5, |hash: u32, &byte| {
         (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)

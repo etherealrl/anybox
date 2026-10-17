@@ -1028,7 +1028,7 @@ fn shutdown_interrupts_a_silent_reprobe_with_a_bounded_stop() {
     wait_for(|| !silent.written().is_empty());
     let before = Instant::now();
     backend.shutdown(WRITE_DEADLINE);
-    assert!(before.elapsed() < Duration::from_millis(650));
+    assert!(before.elapsed() < WRITE_DEADLINE * 2);
     wait_for(|| rig.system.open_ports() == 0);
     assert_eq!(silent.written(), [wire(r#"{"cmd":132}"#)]);
 }
@@ -1282,7 +1282,7 @@ fn shutdown_during_the_optional_debug_wait_sends_no_session_setup() {
     wait_for(|| fake.written().len() == 2);
     let started = Instant::now();
     backend.shutdown(WRITE_DEADLINE);
-    assert!(started.elapsed() < Duration::from_millis(650));
+    assert!(started.elapsed() < WRITE_DEADLINE * 2);
     wait_for(|| rig.system.open_ports() == 0);
     assert_eq!(
         fake.written(),

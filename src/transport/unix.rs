@@ -66,3 +66,18 @@ pub(crate) fn lock_port(path: &Path) -> io::Result<std::fs::File> {
     }
     Ok(file)
 }
+
+/// the clock `Instant` reads, CLOCK_UPTIME_RAW on macOS and CLOCK_MONOTONIC everywhere else, in nanoseconds
+pub(crate) fn monotonic_ns() -> u64 {
+    #[cfg(target_vendor = "apple")]
+    let clock = libc::CLOCK_UPTIME_RAW;
+    #[cfg(not(target_vendor = "apple"))]
+    let clock = libc::CLOCK_MONOTONIC;
+    let mut now = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: clock_gettime writes one timespec, and this clock exists on every system std supports
+    unsafe { libc::clock_gettime(clock, &mut now) };
+    now.tv_sec as u64 * 1_000_000_000 + now.tv_nsec as u64
+}

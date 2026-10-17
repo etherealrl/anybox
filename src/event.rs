@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::fmt;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 use crate::capability::{Action, Button};
@@ -111,6 +112,28 @@ impl Event {
 
     pub fn rejected(action: Action, count: u64) -> Self {
         Self::Rejected { action, count }
+    }
+}
+
+#[cfg(feature = "mock")]
+impl Event {
+    /// one of each event with every field it has filled in, for testing how code handles them with no box. the
+    /// input ones carry `at` as their host time and a fixed box time
+    pub fn examples(at: Stamp) -> Vec<Event> {
+        let stamped = at.with_box_time(BoxTime::new(4_000_000_000, Clock::MediusDeviceChip));
+        vec![
+            Event::button(Button::Side2, true, stamped),
+            Event::key(Key::LEFT_SHIFT, false, stamped),
+            Event::media(MediaKey::VOLUME_DOWN, true, stamped),
+            Event::motion(-3, 7, -1, 2, stamped),
+            Event::dropped(12, DropSource::Device),
+            Event::dropped(3, DropSource::Host),
+            Event::SessionReset,
+            Event::rejected(Action::Move, 4),
+            Event::Disconnected,
+            Event::Reconnected,
+            Event::Changed,
+        ]
     }
 }
 
@@ -293,6 +316,17 @@ impl Stamp {
         self
     }
 
+    /// `arrived` in nanoseconds on the clock `monotonic_ns` reads, so it lines up with stamps from other devices
+    /// and other programs on this machine
+    pub fn arrived_ns(&self) -> u64 {
+        instant_ns(self.arrived)
+    }
+
+    /// `received` in nanoseconds on the clock `monotonic_ns` reads
+    pub fn received_ns(&self) -> u64 {
+        instant_ns(self.received)
+    }
+
     /// `received_since_open` comes out of `received` and `since_open`, so set those right first
     pub fn with_received(mut self, received: Instant, qpc: Option<i64>) -> Self {
         self.received = received;
@@ -306,6 +340,46 @@ impl Stamp {
         self.received_qpc = qpc;
         self
     }
+}
+
+/// now in nanoseconds on the OS monotonic clock, the one `Instant` reads: QueryPerformanceCounter on Windows,
+/// CLOCK_MONOTONIC on Linux and CLOCK_UPTIME_RAW on macOS. Python's `time.perf_counter_ns()` and .NET's `Stopwatch`
+/// read the same one on Windows and Linux. it only compares on the same machine within one boot
+pub fn monotonic_ns() -> u64 {
+    crate::transport::monotonic_ns()
+}
+
+/// `Instant` hides its raw value, so this is off by the anchor's bracket, which is tens of nanoseconds unless
+/// every sample got preempted
+fn instant_ns(at: Instant) -> u64 {
+    let (anchor, anchor_ns) = anchor();
+    if at >= anchor {
+        anchor_ns.saturating_add(nanos(at.duration_since(anchor)))
+    } else {
+        anchor_ns.saturating_sub(nanos(anchor.duration_since(at)))
+    }
+}
+
+/// an `Instant` and the clock read around it, the tightest of a few brackets so one preempted sample doesn't count
+fn anchor() -> (Instant, u64) {
+    static ANCHOR: OnceLock<(Instant, u64)> = OnceLock::new();
+    *ANCHOR.get_or_init(|| {
+        let mut best = (u64::MAX, Instant::now(), 0);
+        for _ in 0..16 {
+            let before = monotonic_ns();
+            let at = Instant::now();
+            let after = monotonic_ns();
+            let bracket = after.saturating_sub(before);
+            if bracket < best.0 {
+                best = (bracket, at, before + bracket / 2);
+            }
+        }
+        (best.1, best.2)
+    })
+}
+
+fn nanos(duration: Duration) -> u64 {
+    u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -511,6 +585,15 @@ impl Queue {
         self.ready.notify_all();
     }
 
+    /// the receiver's own close, which throws out what's queued instead of leaving it to be read
+    fn close_now(&self) {
+        let mut state = self.lock();
+        state.events.clear();
+        state.closed = true;
+        drop(state);
+        self.ready.notify_all();
+    }
+
     fn try_pop(state: &mut State) -> Result<Event, TryRecvError> {
         match state.events.pop_front() {
             Some(event) => Ok(event),
@@ -525,11 +608,14 @@ pub(crate) trait Listeners: Send + Sync {
     fn receiver_dropped(&self, id: u64);
 }
 
-/// a receiver of events from one device. it ends once the device is gone and you've read everything queued
+/// a receiver of events from one device. it ends once the device is gone and you've read everything queued, or
+/// once you close it
 pub struct Events {
     queue: Arc<Queue>,
     listeners: Weak<dyn Listeners>,
     id: u64,
+    // the device hears about a receiver going once, whether that's a close, a drop or both
+    gone: AtomicBool,
 }
 
 impl Events {
@@ -538,6 +624,24 @@ impl Events {
             queue,
             listeners,
             id,
+            gone: AtomicBool::new(false),
+        }
+    }
+
+    /// ends this receiver now, from any thread, so share it in an `Arc` when another thread reads it. a `recv`
+    /// waiting on it returns `Closed` right away, whatever was queued is thrown out, and the box stops streaming
+    /// what only this receiver wanted. a second close does nothing
+    pub fn close(&self) {
+        // the queue goes first, so a reader wakes without waiting on the device
+        self.queue.close_now();
+        self.leave();
+    }
+
+    fn leave(&self) {
+        if !self.gone.swap(true, Ordering::AcqRel)
+            && let Some(listeners) = self.listeners.upgrade()
+        {
+            listeners.receiver_dropped(self.id);
         }
     }
 
@@ -599,9 +703,7 @@ impl Iterator for Events {
 
 impl Drop for Events {
     fn drop(&mut self) {
-        if let Some(listeners) = self.listeners.upgrade() {
-            listeners.receiver_dropped(self.id);
-        }
+        self.leave();
     }
 }
 

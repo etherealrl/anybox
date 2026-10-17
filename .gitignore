@@ -6,3 +6,8 @@
 /ref/
 __pycache__/
 .pytest_cache/
+bin/
+obj/
+/bindings/csharp/natives/
+TestResults/
+/bindings/csharp/packages/

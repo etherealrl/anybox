@@ -9,7 +9,7 @@ use crate::capability::{
 };
 use crate::click::{Click, ClickTiming};
 use crate::error::Error;
-use crate::event::{DropSource, Event, EventKinds, RecvTimeoutError};
+use crate::event::{DropSource, Event, EventKinds, RecvTimeoutError, TryRecvError};
 use crate::family::fake::{self, mouse};
 use crate::key::{Key, MediaKey};
 
@@ -590,7 +590,11 @@ fn a_cleanup_release_that_fails_keeps_the_button_and_stays_down() {
         Err(Error::Disconnected)
     ));
     assert_eq!(events.try_recv(), Ok(Event::Disconnected));
-    assert!(events.try_recv().is_err());
+    assert_eq!(events.try_recv(), Err(TryRecvError::Empty));
+    // the link going again while it's still down isn't news, it was never said to be back
+    fake.disconnect();
+    device.settle();
+    assert_eq!(events.try_recv(), Err(TryRecvError::Empty));
 
     fake.fail_releases(false);
     fake.reconnect(mouse());
@@ -636,7 +640,7 @@ fn a_closing_device_ignores_link_events_still_in_the_queue() {
     device.settle();
     assert_eq!(fake.streams().len(), streams_before);
     assert!(matches!(device.press(Button::Left), Err(Error::Closed)));
-    assert!(events.try_recv().is_err());
+    assert_eq!(events.try_recv(), Err(TryRecvError::Empty));
     drop(events);
     assert_eq!(fake.streams().len(), streams_before);
 }
@@ -1253,7 +1257,7 @@ fn a_quiet_change_swaps_the_snapshot_and_nothing_else() {
     assert!(!fake.log().contains(&Command::KeyRelease(Key::A)));
     assert_eq!(fake.streams().len(), streams);
     assert_eq!(events.try_recv(), Ok(Event::Changed));
-    assert!(events.try_recv().is_err());
+    assert_eq!(events.try_recv(), Err(TryRecvError::Empty));
 }
 
 #[test]
@@ -1262,7 +1266,7 @@ fn the_same_snapshot_again_is_no_change() {
     let events = device.events();
     fake.changed(with_keyboard(Some(6)));
     device.settle();
-    assert!(events.try_recv().is_err());
+    assert_eq!(events.try_recv(), Err(TryRecvError::Empty));
 }
 
 #[test]
@@ -1274,7 +1278,7 @@ fn unread_changes_wait_as_one_and_a_later_one_still_comes() {
     fake.changed(with_keyboard(Some(6)));
     device.settle();
     assert_eq!(events.try_recv(), Ok(Event::Changed));
-    assert!(events.try_recv().is_err());
+    assert_eq!(events.try_recv(), Err(TryRecvError::Empty));
     // this box has no button stream, so that receiver also hears it refused
     assert!(std::iter::from_fn(|| buttons.try_recv().ok()).any(|event| event == Event::Changed));
     fake.changed(with_keyboard(Some(232)));
@@ -1325,7 +1329,18 @@ fn each_kind_of_lock_is_gated_by_its_own_action_and_target_lists() {
         device.scale_axis(Axis::X, Direction::Both, 256),
         Err(Error::InvalidArgument { .. })
     ));
+    assert!(matches!(
+        device.scale_axis(Axis::X, Direction::Both, -256),
+        Err(Error::InvalidArgument { .. })
+    ));
     assert!(fake.log().is_empty());
+}
+
+#[test]
+fn a_scale_takes_both_ends_of_its_range() {
+    let (device, _fake) = fake::open(with_locks(), ClickTiming::Makcu);
+    device.scale_axis(Axis::X, Direction::Both, -255).unwrap();
+    device.scale_axis(Axis::Y, Direction::Both, 255).unwrap();
 }
 
 #[test]
@@ -1497,6 +1512,66 @@ fn the_box_streams_what_the_receivers_want_together() {
 }
 
 #[test]
+fn closing_a_receiver_wakes_every_reader_and_stops_its_stream() {
+    let (device, fake) = fake::open(streamer(), ClickTiming::Makcu);
+    let buttons = Arc::new(device.events_of(EventKinds::BUTTONS));
+    fake.button(Button::Left, true);
+    let ready = Arc::new(std::sync::Barrier::new(3));
+    let (ended, done) = std::sync::mpsc::channel();
+    for _ in 0..2 {
+        let (buttons, ready, ended) = (buttons.clone(), ready.clone(), ended.clone());
+        thread::spawn(move || {
+            ready.wait();
+            // a reader can still get the press before the close, nothing else comes before the end
+            loop {
+                match buttons.recv() {
+                    Ok(Event::Button { .. }) => {}
+                    Ok(other) => panic!("{other:?}"),
+                    Err(_) => break,
+                }
+            }
+            ended.send(()).unwrap();
+        });
+    }
+    ready.wait();
+    thread::sleep(Duration::from_millis(50));
+    buttons.close();
+    // a close that never wakes a reader fails here instead of hanging the run
+    for _ in 0..2 {
+        done.recv_timeout(Duration::from_secs(3)).unwrap();
+    }
+    assert_eq!(buttons.try_recv(), Err(TryRecvError::Closed));
+    assert_eq!(fake.streams().last(), Some(&InputKinds::default()));
+}
+
+#[test]
+fn a_receiver_closed_twice_and_dropped_tells_the_device_once() {
+    let (device, fake) = fake::open(streamer(), ClickTiming::Makcu);
+    let buttons = device.events_of(EventKinds::BUTTONS);
+    let _motion = device.events_of(EventKinds::MOTION);
+    buttons.close();
+    let told = fake.streams().len();
+    assert_eq!(fake.streams().last(), Some(&kinds(false, true, false)));
+    buttons.close();
+    drop(buttons);
+    assert_eq!(fake.streams().len(), told);
+}
+
+#[test]
+fn a_receiver_closed_while_the_device_closes_ends_either_way() {
+    let (device, _fake) = fake::open(streamer(), ClickTiming::Makcu);
+    let device = Arc::new(device);
+    let buttons = Arc::new(device.events_of(EventKinds::BUTTONS));
+    let closer = {
+        let device = device.clone();
+        thread::spawn(move || device.close())
+    };
+    buttons.close();
+    closer.join().unwrap().unwrap();
+    assert_eq!(buttons.try_recv(), Err(TryRecvError::Closed));
+}
+
+#[test]
 fn a_receiver_only_gets_its_own_kinds_and_every_connection_event() {
     let (device, fake) = fake::open(streamer(), ClickTiming::Makcu);
     let buttons = device.events_of(EventKinds::BUTTONS);
@@ -1536,10 +1611,10 @@ fn asking_for_a_kind_the_box_cant_stream_says_so_once() {
             count: 1
         })
     );
-    assert!(keys.try_recv().is_err());
+    assert_eq!(keys.try_recv(), Err(TryRecvError::Empty));
     // everything the box has, so nothing to refuse
     let all = device.events();
-    assert!(all.try_recv().is_err());
+    assert_eq!(all.try_recv(), Err(TryRecvError::Empty));
 }
 
 #[test]
@@ -1559,7 +1634,7 @@ fn a_stream_that_doesnt_come_on_is_rejected_to_the_receivers_that_wanted_it() {
             count: 1
         })
     );
-    assert!(motion.try_recv().is_err());
+    assert_eq!(motion.try_recv(), Err(TryRecvError::Empty));
 }
 
 #[test]
@@ -1585,7 +1660,7 @@ fn a_receiver_made_right_after_a_refused_one_still_hears_its_own_refusal() {
     let second = device.events_of(EventKinds::BUTTONS);
     device.settle();
     assert_eq!(second.try_recv(), refused);
-    assert!(second.try_recv().is_err());
+    assert_eq!(second.try_recv(), Err(TryRecvError::Empty));
 }
 
 #[test]
@@ -1605,7 +1680,7 @@ fn a_refusal_the_box_reports_before_the_switch_returns_reaches_the_receiver_once
             count: 1
         })
     );
-    assert!(buttons.try_recv().is_err());
+    assert_eq!(buttons.try_recv(), Err(TryRecvError::Empty));
 }
 
 #[test]
@@ -1614,7 +1689,7 @@ fn a_stream_that_failed_on_a_lost_link_isnt_rejected() {
     fake.fail_streams(kinds(true, false, false), Error::Disconnected);
     let buttons = device.events_of(EventKinds::BUTTONS);
     device.settle();
-    assert!(buttons.try_recv().is_err());
+    assert_eq!(buttons.try_recv(), Err(TryRecvError::Empty));
 }
 
 #[test]
@@ -1625,7 +1700,7 @@ fn a_lost_stream_only_tells_the_receivers_of_that_kind() {
     fake.stream_lost(InputKind::Keys);
     device.settle();
     assert!(matches!(keys.try_recv(), Ok(Event::Dropped { .. })));
-    assert!(buttons.try_recv().is_err());
+    assert_eq!(buttons.try_recv(), Err(TryRecvError::Empty));
     assert_eq!(fake.restarted(), vec![InputKind::Keys]);
 }
 
@@ -1706,7 +1781,7 @@ fn a_lost_stream_that_wont_come_back_is_rejected_to_its_receivers() {
         }),
         "{seen:?}"
     );
-    assert!(buttons.try_recv().is_err());
+    assert_eq!(buttons.try_recv(), Err(TryRecvError::Empty));
 }
 
 #[test]

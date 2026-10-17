@@ -42,6 +42,7 @@ ALIGNED(AnyboxInfo)
 ALIGNED(AnyboxCapability)
 ALIGNED(AnyboxQuirk)
 ALIGNED(AnyboxEvent)
+ALIGNED(AnyboxErrorDetail)
 
 #define TYPE(T) put("%s size %u align %u\n", #T, (unsigned)sizeof(T), (unsigned)offsetof(struct align_##T, value))
 #define FIELD(T, f) put("  %s %u\n", #f, (unsigned)offsetof(T, f))
@@ -59,6 +60,7 @@ static void write_layout(void) {
     FIELD(AnyboxConnectOptions, family);
     FIELD(AnyboxConnectOptions, ferrum_api);
     FIELD(AnyboxConnectOptions, can);
+    FIELD(AnyboxConnectOptions, can_len);
     FIELD(AnyboxConnectOptions, id_kind);
     FIELD(AnyboxConnectOptions, id_mac);
     FIELD(AnyboxConnectOptions, id_serial);
@@ -111,6 +113,42 @@ static void write_layout(void) {
     FIELD(AnyboxEvent, has_box_time);
     FIELD(AnyboxEvent, box_clock);
     FIELD(AnyboxEvent, box_time_us);
+    FIELD(AnyboxEvent, arrived_ns);
+    FIELD(AnyboxEvent, received_ns);
+    TYPE(AnyboxErrorDetail);
+    FIELD(AnyboxErrorDetail, kind);
+    FIELD(AnyboxErrorDetail, has_action);
+    FIELD(AnyboxErrorDetail, action);
+    FIELD(AnyboxErrorDetail, family);
+    FIELD(AnyboxErrorDetail, expected_family);
+    FIELD(AnyboxErrorDetail, found_family);
+    FIELD(AnyboxErrorDetail, port);
+    FIELD(AnyboxErrorDetail, text);
+    FIELD(AnyboxErrorDetail, expected_id_kind);
+    FIELD(AnyboxErrorDetail, expected_id_mac);
+    FIELD(AnyboxErrorDetail, expected_id_serial);
+    FIELD(AnyboxErrorDetail, found_id_kind);
+    FIELD(AnyboxErrorDetail, found_id_mac);
+    FIELD(AnyboxErrorDetail, found_id_serial);
+    FIELD(AnyboxErrorDetail, found_firmware_kind);
+    FIELD(AnyboxErrorDetail, found_firmware_major);
+    FIELD(AnyboxErrorDetail, found_firmware_minor);
+    FIELD(AnyboxErrorDetail, found_firmware_patch);
+    FIELD(AnyboxErrorDetail, found_firmware_protocol);
+    FIELD(AnyboxErrorDetail, found_firmware_build);
+    FIELD(AnyboxErrorDetail, found_firmware_text);
+    FIELD(AnyboxErrorDetail, needed_firmware_kind);
+    FIELD(AnyboxErrorDetail, needed_firmware_major);
+    FIELD(AnyboxErrorDetail, needed_firmware_minor);
+    FIELD(AnyboxErrorDetail, needed_firmware_patch);
+    FIELD(AnyboxErrorDetail, needed_firmware_protocol);
+    FIELD(AnyboxErrorDetail, needed_firmware_build);
+    FIELD(AnyboxErrorDetail, needed_firmware_text);
+    FIELD(AnyboxErrorDetail, expected_ferrum_api);
+    FIELD(AnyboxErrorDetail, found_ferrum_api);
+    FIELD(AnyboxErrorDetail, io_kind);
+    FIELD(AnyboxErrorDetail, has_os_error);
+    FIELD(AnyboxErrorDetail, os_error);
 }
 
 static void check_layout(const char *path) {
@@ -155,6 +193,7 @@ int main(int argc, char **argv) {
     AnyboxInfo info;
     AnyboxEvent event;
     AnyboxConnectOptions options;
+    AnyboxErrorDetail detail;
     size_t buttons = 0;
     int tries;
 
@@ -170,13 +209,13 @@ int main(int argc, char **argv) {
 
     memset(&options, 0xAB, sizeof options);
     check(anybox_connect_options_default(&options) == ANYBOX_STATUS_OK, "default options");
-    check(options.port == NULL && options.family == ANYBOX_FAMILY_ANY && options.can == 0, "the defaults are zeros");
+    check(options.port == NULL && options.family == ANYBOX_FAMILY_ANY && options.can == NULL && options.can_len == 0, "the defaults are zeros");
     check(anybox_open(&options, NULL) == ANYBOX_STATUS_INVALID_ARGUMENT, "a null out is refused");
     check(strcmp(anybox_last_error_message(), "out is null") == 0, "the error says which argument");
 
     timing.kind = ANYBOX_CLICK_TIMING_FIXED;
     timing.fixed_us = 5000;
-    check(anybox_mock_medius_open(&timing, &mock, &device) == ANYBOX_STATUS_OK, "open the mock");
+    check(anybox_mock_medius_open(&timing, false, &mock, &device) == ANYBOX_STATUS_OK, "open the mock");
     if (device == NULL) {
         return 1;
     }
@@ -190,16 +229,21 @@ int main(int argc, char **argv) {
     check(anybox_device_move_by(device, 10, -5) == ANYBOX_STATUS_OK, "move");
     check(anybox_device_click(device, ANYBOX_BUTTON_LEFT) == ANYBOX_STATUS_OK, "click");
     check(anybox_device_press_key(device, 0x04) == ANYBOX_STATUS_UNSUPPORTED, "no keyboard on the mock");
+    check(anybox_last_error_detail(&detail) == ANYBOX_STATUS_OK, "the error's fields");
+    check(detail.kind == ANYBOX_STATUS_UNSUPPORTED && detail.has_action && detail.action == ANYBOX_ACTION_KEY_PRESS,
+          "the error names its action");
+    check(detail.family == ANYBOX_FAMILY_MEDIUS && detail.text != NULL, "and the family and the reason");
 
     check(anybox_device_events(device, ANYBOX_EVENTS_ALL, &events) == ANYBOX_STATUS_OK, "a receiver");
     /* about 5 s at most, so a mock that never subscribes fails instead of hanging */
-    for (tries = 0; !anybox_mock_subscribed(mock) && tries < 500; tries++) {
+    for (tries = 0; !anybox_mock_subscribed(mock, ANYBOX_EVENTS_MOTION) && tries < 500; tries++) {
         anybox_events_recv(events, 10000, &event);
     }
-    check(anybox_mock_subscribed(mock), "the receiver subscribed");
+    check(anybox_mock_subscribed(mock, ANYBOX_EVENTS_MOTION), "the receiver subscribed");
     check(anybox_mock_push_motion(mock, 2, 1000, 7, -3, 0, 0) == ANYBOX_STATUS_OK, "push motion");
     check(next_input(events, &event) == ANYBOX_STATUS_OK, "receive the motion");
     check(event.kind == ANYBOX_EVENT_MOTION && event.dx == 7 && event.dy == -3, "the motion it pushed");
+    check(event.received_ns <= anybox_monotonic_ns(), "the stamp is on the monotonic clock");
     check(anybox_mock_push_buttons(mock, 3, 2000, true, 1u << ANYBOX_BUTTON_RIGHT) == ANYBOX_STATUS_OK, "push a press");
     check(next_input(events, &event) == ANYBOX_STATUS_OK, "receive the press");
     check(event.kind == ANYBOX_EVENT_BUTTON && event.button == ANYBOX_BUTTON_RIGHT && event.pressed, "the press");
