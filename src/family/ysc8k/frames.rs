@@ -3,9 +3,10 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use super::{KEYBOARD, Shared, lock};
-use crate::backend::{Input, Sink};
+use crate::backend::{Input, InputKind, Sink};
 use crate::capability::{Action, Capability};
 use crate::event::DropSource;
+use crate::key::Key;
 use crate::transport::codec::{self, Codec, Frame, Incoming};
 
 const START: &[u8] = b"<START>";
@@ -59,15 +60,12 @@ pub(super) fn version(frame: &[u8]) -> Option<String> {
     if value.get("code")?.as_u64()? != 200 || conflicting(&value) {
         return None;
     }
-    let message = value.get("message")?.as_str()?;
-    let version = if left(message) {
-        message
-    } else if message == "version" {
-        value.get("data")?.as_str()?
-    } else {
-        return None;
-    };
-    left(version).then(|| version.to_owned())
+    // the vendor's driver takes it from `data` and then from `message`, whatever the message says
+    ["data", "message"]
+        .into_iter()
+        .filter_map(|field| value.get(field)?.as_str())
+        .find(|text| left(text))
+        .map(str::to_owned)
 }
 
 /// the V1 app's cmd 132 answer, `{"code":200,"message":"version","data":"<build date>"}`. a V2 or bootloader answer
@@ -119,6 +117,35 @@ pub(super) fn debug(frame: &[u8]) -> Option<bool> {
     data(&value)?.get("debug")?.as_bool()
 }
 
+/// a V1 sends its mouse reports with a null message, the vendor's driver also takes them with none at all, from older
+/// firmware, and named `mouse`
+fn mouse(message: Option<&Value>) -> bool {
+    message.is_none_or(|message| message.is_null() || message == "mouse")
+}
+
+/// the keys a keyboard report says are down, and whether more are down than it names. the box sends
+/// `{"code":200,"message":"kbd","data":"{\"mod\":2,\"n\":1,\"ov\":0,\"k\":[4],...}"}` by itself, with the modifiers
+/// from 0xE0 up in `mod`, the other keys in the first `n` of `k`, at most 6 and in ascending order, and how many more
+/// it couldn't name in `ov`. the shape is what a V1 sent, what the fields mean comes from the vendor's driver
+fn keyboard(value: &Value) -> Option<(Vec<Key>, bool)> {
+    let value = data(value)?;
+    let modifiers = u8::try_from(value.get("mod")?.as_u64()?).ok()?;
+    let named = usize::try_from(value.get("n")?.as_u64()?).ok()?;
+    let overflow = value.get("ov")?.as_u64()? > 0;
+    let listed = value.get("k")?.as_array()?;
+    let mut keys: Vec<Key> = (0..8u8)
+        .filter(|bit| modifiers & (1 << bit) != 0)
+        .map(|bit| Key(0xE0 + bit))
+        .collect();
+    for key in listed.iter().take(named) {
+        let key = Key(u8::try_from(key.as_u64()?).ok()?);
+        if key.is_valid() && !keys.contains(&key) {
+            keys.push(key);
+        }
+    }
+    Some((keys, overflow))
+}
+
 /// every reply code the vendor documents or its app reads, and anything with a `cmd`, which is a command going to
 /// the box
 fn known_reply(value: &Value) -> bool {
@@ -147,6 +174,8 @@ pub(super) struct Seen {
     reply: Vec<u8>,
     prompt_space: bool,
     pub(super) buttons: Option<u8>,
+    /// the keys down on the keyboard behind the box, by its last report
+    keys: Vec<Key>,
 }
 
 pub(super) struct YscFrames {
@@ -178,17 +207,21 @@ impl YscFrames {
         }
     }
 
-    /// the box streams `{"code":200,"message":null,"data":"{\"b\":0,\"x\":1,\"y\":0,\"wh\":0}"}`, every field always
-    /// there, the data a json string and the wheel called `wh` (seen on a V1, the vendor's app guessed other names)
+    /// the box streams `{"code":200,"message":null,"data":"{\"b\":0,\"x\":1,\"y\":0,\"wh\":0}"}`, the data a json string
+    /// and the wheel called `wh` (seen on a V1). older firmware leaves `wh` out, the vendor's driver reads that as no
+    /// wheel
     fn upload(&self, value: &Value) -> Option<Vec<Input>> {
-        if value.get("code")?.as_u64()? != 200 || !value.get("message")?.is_null() {
+        if value.get("code")?.as_u64()? != 200 || !mouse(value.get("message")) {
             return None;
         }
         let value = data(value)?;
         let signed = |name| i32::try_from(value.get(name)?.as_i64()?).ok();
         let dx = signed("x")?;
         let dy = signed("y")?;
-        let wheel = signed("wh")?;
+        let wheel = match value.get("wh") {
+            Some(_) => signed("wh")?,
+            None => 0,
+        };
         let buttons = u8::try_from(value.get("b")?.as_u64()?).ok()? & 0x1f;
         let mut inputs = Vec::new();
         let mut state = lock(&self.shared.state);
@@ -211,6 +244,60 @@ impl YscFrames {
             pan: 0,
         });
         Some(inputs)
+    }
+
+    /// the box sends its keyboard report whether anyone listens or not, so the keys are followed from the first
+    /// report on. they stop going out once the box said there's no keyboard, because a receiver that's already
+    /// there doesn't get checked against the new snapshot
+    fn keys(&self, value: &Value) -> Incoming {
+        let report = keyboard(value);
+        let mut state = lock(&self.shared.state);
+        let Some((mut held, overflow)) = report else {
+            let keys = state.keys;
+            drop(state);
+            if keys && let Some(sink) = &self.sink {
+                sink.lost(1, InputKind::Keys);
+            }
+            return Incoming::Noise;
+        };
+        if overflow {
+            // the box names 6 keys in ascending order, so only one above the highest it names can still be down
+            let highest = held.iter().filter(|key| !key.is_modifier()).max().copied();
+            let unnamed: Vec<Key> = state
+                .seen
+                .keys
+                .iter()
+                .copied()
+                .filter(|&key| {
+                    !key.is_modifier()
+                        && !held.contains(&key)
+                        && highest.is_none_or(|highest| key > highest)
+                })
+                .collect();
+            held.extend(unnamed);
+        }
+        // releases first, so a swap in one report reads as one going up and then the other going down
+        let edges: Vec<Input> = state
+            .seen
+            .keys
+            .iter()
+            .filter(|key| !held.contains(key))
+            .map(|&key| Input::Key {
+                key,
+                pressed: false,
+            })
+            .chain(
+                held.iter()
+                    .filter(|key| !state.seen.keys.contains(key))
+                    .map(|&key| Input::Key { key, pressed: true }),
+            )
+            .collect();
+        state.seen.keys = held;
+        if state.keys {
+            Incoming::Inputs(edges)
+        } else {
+            Incoming::Noise
+        }
     }
 }
 
@@ -288,7 +375,12 @@ impl Codec for YscFrames {
                 let mut state = lock(&self.shared.state);
                 let first = std::mem::replace(&mut state.keys, false);
                 if first {
-                    for action in [Action::KeyPress, Action::KeyRelease, Action::KeyTap] {
+                    for action in [
+                        Action::KeyPress,
+                        Action::KeyRelease,
+                        Action::KeyTap,
+                        Action::KeyEvents,
+                    ] {
                         state.snapshot.capabilities = state
                             .snapshot
                             .capabilities
@@ -329,13 +421,15 @@ impl Codec for YscFrames {
             {
                 return Incoming::Reply(key_reply());
             }
+            if code == Some(200) && value.get("message").and_then(Value::as_str) == Some("kbd") {
+                return self.keys(&value);
+            }
             if let Some(inputs) = self.upload(&value) {
                 return Incoming::Inputs(inputs);
             }
-            // a 200 reply always names itself in its message, so one without is an upload nobody could read
-            if !known_reply(&value)
-                || (code == Some(200) && value.get("message").is_none_or(Value::is_null))
-            {
+            // a 200 reply always names itself in its message, so one named like a mouse report, or with none, is an
+            // upload nobody could read
+            if !known_reply(&value) || (code == Some(200) && mouse(value.get("message"))) {
                 self.lost();
             }
             return Incoming::Noise;

@@ -4,7 +4,7 @@ every method of `Device`, and what each box does with it. "on your PC" means the
 
 what you get also depends on what's plugged into the box. a mouse without horizontal scroll means no `pan`, and a device with no keyboard interface at all means no keys. `device.snapshot().capabilities` tells you what the box in front of you can do right now, and why when it can't
 
-Ferrum and YSC8K (the V1 that's sold and the V2 that isn't out yet) are written from vendor docs and reference code, and so far only one community tester ran them on real ones. "app" means only on the Ferrum app's virtual port, the box's own legacy port doesn't have it. YSC keys start as available and worked on a V1 with only a mouse behind it, though a `no_keyboard` from the box disables them until you reconnect. anybox can't tell yet whether a mouse is behind a YSC, so its snapshot says moves, presses and button events work even when nothing is plugged in
+Ferrum and YSC8K (the V1 that's sold and the V2 that isn't out yet) are written from vendor docs and reference code, and so far only one community tester ran them on real ones. "app" means only on the Ferrum app's virtual port, the box's own legacy port doesn't have it. YSC keys and key events start as available, and keys worked on a V1 with only a mouse behind it, though a `no_keyboard` from the box turns both off until you reconnect. anybox can't tell yet whether a mouse is behind a YSC, so its snapshot says moves, presses and button events work even when nothing is plugged in
 
 ## mouse
 
@@ -44,7 +44,7 @@ a Medius holds as many keys at once as the keyboard behind it can report, six on
 | --------------------- | ------------- | ---------------- | ---------------- | --------------- |
 | buttons               | ✓             | ✓                | ✓                | ✓               |
 | motion                | ✓             | ✗                | app              | ✓               |
-| keys                  | ✓             | ✓                | app              | ✗               |
+| keys                  | ✓             | ✓                | app              | ✓               |
 | media keys            | ✓             | ✗                | ✗                | ✗               |
 
 on the Medius every input event also comes with the box's own timestamp, MAKCU, Ferrum, and YSC don't send one
@@ -57,15 +57,18 @@ Ferrum sends the whole state on every change, so anybox works out what changed. 
 
 YSC buttons and motion come in one stream. anybox takes the buttons in the first report as already held, so a button that was down before it never shows its press, only its release. what a V1 puts in those reports was read off a real one, though anybox reading them hasn't run on one yet, and a report anybox can't read counts as at least one lost event, it doesn't tell how many the box sent
 
+YSC keys come in reports of their own, which the box sends every time something changes on the keyboard behind it, whether you listen or not. anybox follows them from the moment it connects, so a key that was already down then shows its press with the next change, and if you start listening while a key is down you only get its release. the keys anybox presses never show up, only the real keyboard's. the box names 6 keys at most next to the modifiers, so with more down than that the extra ones only show up once some go up. those reports were read off a real V1's recording and the vendor's own source, though anybox reading them hasn't run on one yet
+
 ## box-specific behavior
 
 ### YSC8K
 
-- the YSC8K you can buy is the V1, one chip behind a USB serial chip. a community tester ran anybox on one, so moves, buttons, the wheel and keys were seen working there. anybox read the box's events wrong in that run, and the fix for it isn't checked on a real one yet, the rest still comes from the vendor docs and the vendor's own app
+- the YSC8K you can buy is the V1, one chip behind a USB serial chip. a community tester ran anybox on one, so moves, buttons, the wheel and keys were seen working there. anybox read the box's events wrong in that run, and the fix for it isn't checked on a real one yet, the rest still comes from the vendor docs and the vendor's own software, which is public now
 - the vendor also documents a V2 with two chips and its own USB ports. it isn't out yet, so its support only comes from their docs, and a V2 gets found on its own like a Medius. on a V2 anybox talks to its TOWMCULEFT port, the other two ports of the box never get a single byte
 - a V1 can sit at any of 9 rates, so anybox looks for it the way the vendor's app does, 4M first, and never changes the rate. its firmware is the build date it gives back, and if it's in its bootloader you get told to finish the firmware update first
 - clicks and key taps are timed on your PC, and the wheel takes one notch at a time
-- keys worked on that V1 with only a mouse behind it, though if the box ever says there's no keyboard, keys turn off until you connect again
+- keys worked on that V1 with only a mouse behind it, though if the box ever says there's no keyboard, keys and key events turn off until you connect again
+- key events only show the real keyboard behind the box, the keys anybox presses aren't in them
 - anybox can't tell yet whether a mouse is behind the box, so moves, presses and button events say they work even when nothing is plugged in
 - if the box is in debug mode, leave it in the vendor tool first, anybox won't connect otherwise
 - after being unplugged and plugged back in, that V1 kept answering but ignored every text command (moves, clicks, locks) and i don't know why yet. when you connect, anybox checks for that and tells you (a reconnect just keeps trying), turning debug mode on and off in the vendor tool brought it back once

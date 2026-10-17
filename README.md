@@ -37,7 +37,7 @@ some boxes can do things the others can't, and anybox doesn't hide those. you ge
 | **Medius** | 3.4.2+         |   ✓   |   ✓   |  ✓  |  ✓   |     ✓      |   ✓   |   ✓   | all           |
 | **MAKCU**  | V4.085+        |   ✓   |   ✓   |  ✗  |  ✓   |     ✗      |   ✓   |   ✗   | buttons, keys |
 | Ferrum     | docs only      |   ✓   |   ✓   |  ✗  | app  |     ✗      |   ✓   |   ✗   | all but media |
-| YSC8K      | V1 Oct 10 2026 |   ✓   |   ✓   |  ✗  |  ✓   |     ✗      |   ✓   |   ✗   | buttons, motion |
+| YSC8K      | V1 Oct 10 2026 |   ✓   |   ✓   |  ✗  |  ✓   |     ✗      |   ✓   |   ✗   | all but media |
 
 Ferrum and YSC8K were written from the vendor docs and reference code, and so far only one community tester ran them on real ones, so expect surprises and tell me about them. "app" means only through the Ferrum app's port
 
