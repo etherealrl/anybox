@@ -24,6 +24,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
       # serialport reads USB ids through libudev on Linux
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libudev-dev pkg-config
@@ -63,6 +65,8 @@ jobs:
     environment: crates
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
       # cargo publish builds the crate once more before it uploads it
       - run: sudo apt-get update && sudo apt-get install -y libudev-dev pkg-config
       # crates.io never takes the same version twice, so a rerun after the upload went through has nothing left to do

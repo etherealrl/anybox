@@ -23,6 +23,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
       # the target dir and cargo-about between pull request runs, a release always builds from nothing
       - if: github.event_name != 'release'
         uses: Swatinem/rust-cache@v2
