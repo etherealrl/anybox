@@ -34,11 +34,22 @@ fn upload(b: i64, x: i64, y: i64, wh: i64) -> Vec<u8> {
     ))
 }
 
+/// a keyboard report shaped like the V1's, without the box's own counters
+fn report(keys: &[u8]) -> Vec<u8> {
+    let data = format!(
+        r#"{{"mod":0,"n":{},"ov":0,"k":{keys:?},"ok":1}}"#,
+        keys.len()
+    );
+    wire(&serde_json::json!({"code": 200, "message": "kbd", "data": data}).to_string())
+}
+
 struct BoxState {
     version: String,
     debug: Option<String>,
     echo: bool,
     wrong_echo: bool,
+    /// only the next text command gets someone else's echo, so a retry can't race the test switching it off
+    wrong_echo_once: bool,
     partial: bool,
     partial_text: bool,
     key_error: bool,
@@ -55,6 +66,7 @@ impl Default for BoxState {
             debug: Some(r#"{"code":702,"data":"{\"debug\":false}"}"#.into()),
             echo: true,
             wrong_echo: false,
+            wrong_echo_once: false,
             partial: false,
             partial_text: false,
             key_error: false,
@@ -110,7 +122,7 @@ fn respond(state: &mut BoxState, bytes: &[u8]) -> Vec<Vec<u8>> {
     if state.partial_text {
         return vec![bytes.to_vec()];
     }
-    if state.wrong_echo {
+    if state.wrong_echo || std::mem::take(&mut state.wrong_echo_once) {
         return vec![b"km.move(99,99)\r\n>>> ".to_vec()];
     }
     vec![[bytes, b">>> "].concat()]
@@ -501,24 +513,170 @@ fn buttons_and_motion_share_one_write_only_upload_switch() {
 }
 
 #[test]
-fn keys_and_media_streams_are_refused_without_writes() {
+fn key_streams_need_no_writes_and_media_is_still_refused() {
     let rig = Rig::new();
     let (backend, _, _) = rig.attach().unwrap();
     rig.fake.clear_written();
-    for kind in [InputKind::Keys, InputKind::Media] {
-        assert!(matches!(
-            backend.set_streams(kind.kinds()),
-            Err(StreamFailure {
-                error: Error::Unsupported { .. },
-                ..
-            })
-        ));
-        assert!(matches!(
-            backend.restart_stream(kind),
-            Err(Error::Unsupported { .. })
-        ));
-    }
+    backend.set_streams(InputKind::Keys.kinds()).unwrap();
+    backend.restart_stream(InputKind::Keys).unwrap();
     assert!(rig.fake.written().is_empty());
+    assert!(matches!(
+        backend.set_streams(InputKind::Media.kinds()),
+        Err(StreamFailure {
+            error: Error::Unsupported { .. },
+            ..
+        })
+    ));
+    assert!(matches!(
+        backend.restart_stream(InputKind::Media),
+        Err(Error::Unsupported { .. })
+    ));
+    assert!(rig.fake.written().is_empty());
+}
+
+#[test]
+fn keys_ride_along_with_the_upload_switch_and_closing_writes_nothing_for_them() {
+    let rig = Rig::new();
+    let device = rig.device();
+    rig.fake.clear_written();
+    let keys = device.events_of(EventKinds::KEYS);
+    assert!(rig.fake.written().is_empty());
+    let both = device.events_of(EventKinds::KEYS | EventKinds::BUTTONS);
+    assert_eq!(rig.fake.written(), [wire(r#"{"cmd":34,"status":1}"#)]);
+    drop(both);
+    assert_eq!(
+        rig.fake.written(),
+        [
+            wire(r#"{"cmd":34,"status":1}"#),
+            wire(r#"{"cmd":34,"status":0}"#)
+        ]
+    );
+    rig.fake.clear_written();
+    device.close().unwrap();
+    assert!(rig.fake.written().is_empty());
+    drop(keys);
+}
+
+#[test]
+fn key_receivers_get_the_keyboards_own_keys_and_nobody_else_does() {
+    let rig = Rig::new();
+    let device = rig.device();
+    assert_eq!(
+        device
+            .snapshot()
+            .capabilities
+            .get(Action::KeyEvents)
+            .execution,
+        Execution::Native
+    );
+    let keys = device.events_of(EventKinds::KEYS);
+    let others = device.events_of(EventKinds::BUTTONS | EventKinds::MOTION);
+    rig.fake.send(&report(&[4]));
+    assert!(matches!(
+        keys.recv_timeout(WAIT).unwrap(),
+        Event::Key {
+            key: Key::A,
+            pressed: true,
+            ..
+        }
+    ));
+    rig.fake.send(&report(&[]));
+    assert!(matches!(
+        keys.recv_timeout(WAIT).unwrap(),
+        Event::Key {
+            key: Key::A,
+            pressed: false,
+            ..
+        }
+    ));
+    rig.fake.send(&upload(0, 1, 0, 0));
+    assert!(matches!(
+        others.recv_timeout(WAIT).unwrap(),
+        Event::Motion { .. }
+    ));
+    assert!(others.try_recv().is_err());
+}
+
+#[test]
+fn a_key_down_before_anyone_listened_shows_only_its_release() {
+    let rig = Rig::new();
+    let device = rig.device();
+    let motion = device.events_of(EventKinds::MOTION);
+    // b goes down and up and c goes down while nobody listens for keys, the upload after them says they're read
+    rig.fake.send(&report(&[5]));
+    rig.fake.send(&report(&[]));
+    rig.fake.send(&report(&[6]));
+    rig.fake.send(&upload(0, 1, 0, 0));
+    assert!(matches!(
+        motion.recv_timeout(WAIT).unwrap(),
+        Event::Motion { .. }
+    ));
+    let keys = device.events_of(EventKinds::KEYS);
+    rig.fake.send(&report(&[]));
+    assert!(matches!(
+        keys.recv_timeout(WAIT).unwrap(),
+        Event::Key {
+            key: Key::C,
+            pressed: false,
+            ..
+        }
+    ));
+    device.settle();
+    assert!(keys.try_recv().is_err());
+}
+
+#[test]
+fn a_reprobe_with_keys_down_starts_from_nothing_down() {
+    let rig = Rig::new();
+    let device = rig.device();
+    let keys = device.events_of(EventKinds::KEYS);
+    rig.fake.send(&report(&[4]));
+    assert!(matches!(
+        keys.recv_timeout(WAIT).unwrap(),
+        Event::Key {
+            key: Key::A,
+            pressed: true,
+            ..
+        }
+    ));
+    rig.system.unplug("COM7");
+    assert_eq!(keys.recv_timeout(WAIT).unwrap(), Event::Disconnected);
+    let replacement = FakeBox::new(|bytes| respond(&mut BoxState::default(), bytes));
+    rig.system
+        .plug("COM7", usb(Some("TOWMCULEFT")), replacement.clone());
+    assert_eq!(keys.recv_timeout(WAIT).unwrap(), Event::Reconnected);
+    replacement.send(&report(&[4]));
+    assert!(matches!(
+        past_changed(&keys),
+        Event::Key {
+            key: Key::A,
+            pressed: true,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn after_no_keyboard_a_key_receiver_gets_nothing_more() {
+    let rig = Rig::new();
+    let device = rig.device();
+    let keys = device.events_of(EventKinds::KEYS);
+    let motion = device.events_of(EventKinds::MOTION);
+    rig.fake
+        .send(&wire(r#"{"code":404,"message":"no_keyboard","data":null}"#));
+    assert_eq!(keys.recv_timeout(WAIT).unwrap(), Event::Changed);
+    assert!(
+        !device
+            .snapshot()
+            .capabilities
+            .get(Action::KeyEvents)
+            .is_supported()
+    );
+    rig.fake.send(&report(&[4]));
+    rig.fake.send(&upload(0, 1, 0, 0));
+    assert!(matches!(past_changed(&motion), Event::Motion { .. }));
+    device.settle();
+    assert!(keys.try_recv().is_err());
 }
 
 #[test]
@@ -768,7 +926,12 @@ fn every_no_keyboard_disables_keys_and_only_one_action_kind_can_be_attributed() 
         let Signal::Changed(snapshot) = changed else {
             unreachable!()
         };
-        for action in [Action::KeyPress, Action::KeyRelease, Action::KeyTap] {
+        for action in [
+            Action::KeyPress,
+            Action::KeyRelease,
+            Action::KeyTap,
+            Action::KeyEvents,
+        ] {
             assert!(!snapshot.capabilities.get(action).is_supported());
             assert!(
                 snapshot
@@ -1324,13 +1487,12 @@ fn a_failed_release_stays_tracked_for_reconnect_and_is_retried() {
     let device = rig.device();
     let events = device.events_of(EventKinds::NONE);
     device.press(Button::Side2).unwrap();
-    rig.state.lock().unwrap().wrong_echo = true;
+    rig.state.lock().unwrap().wrong_echo_once = true;
     assert!(matches!(
         device.release(Button::Side2),
         Err(Error::Disconnected)
     ));
     assert_eq!(events.recv_timeout(WAIT).unwrap(), Event::Disconnected);
-    rig.state.lock().unwrap().wrong_echo = false;
     assert_eq!(events.recv_timeout(WAIT).unwrap(), Event::Reconnected);
     assert_eq!(
         rig.fake
@@ -1714,7 +1876,7 @@ fn ch343() -> Option<crate::transport::PortUsb> {
     Some(crate::transport::PortUsb {
         vid: 0x1a86,
         pid: 0x55d3,
-        serial: Some("5B69201745".into()),
+        serial: Some("1A2B3C4D5E".into()),
     })
 }
 

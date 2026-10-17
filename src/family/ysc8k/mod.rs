@@ -29,6 +29,7 @@ const V1_WAIT: Duration = Duration::from_millis(200);
 const BOOTLOADER: &str = "the YSC box is in its bootloader, finish or leave the firmware update in the vendor tool and connect again";
 const KEYBOARD: &str =
     "the YSC box says there's no keyboard behind it, so plug one in and connect again";
+const MEDIA: &str = "YSC has no media keys";
 const BUTTONS: [Button; 5] = [
     Button::Left,
     Button::Right,
@@ -282,6 +283,7 @@ fn snapshot(version: String, variant: Variant) -> Snapshot {
         .set(Action::MotionEvents, Capability::native())
         .set(Action::KeyPress, Capability::native())
         .set(Action::KeyRelease, Capability::native())
+        .set(Action::KeyEvents, Capability::native())
         .set(
             Action::MoveNow,
             Capability::unsupported("YSC has no move that skips ahead of the others"),
@@ -301,12 +303,8 @@ fn snapshot(version: String, variant: Variant) -> Snapshot {
         .set(
             Action::LockKey,
             Capability::unsupported("YSC has no way to lock a key"),
-        )
-        .set(
-            Action::KeyEvents,
-            Capability::unsupported("YSC only reports mouse buttons and motion"),
         );
-    let no_media = Capability::unsupported("YSC has no media keys");
+    let no_media = Capability::unsupported(MEDIA);
     let capabilities = [
         Action::MediaPress,
         Action::MediaRelease,
@@ -510,16 +508,10 @@ impl Backend for YscBackend {
     fn set_streams(&self, kinds: InputKinds) -> std::result::Result<(), StreamFailure> {
         let result = (|| {
             let _request = lock(&self.shared.requests);
-            if kinds.keys || kinds.media {
-                return Err(self.unsupported(
-                    if kinds.keys {
-                        Action::KeyEvents
-                    } else {
-                        Action::MediaEvents
-                    },
-                    "YSC only uploads mouse buttons and motion",
-                ));
+            if kinds.media {
+                return Err(self.unsupported(Action::MediaEvents, MEDIA));
             }
+            // the box sends its keyboard report by itself, so only buttons and motion have a switch
             let current = lock(&self.shared.state).streams;
             if (current.buttons || current.motion) != (kinds.buttons || kinds.motion) {
                 self.upload(
@@ -539,15 +531,10 @@ impl Backend for YscBackend {
 
     fn restart_stream(&self, kind: InputKind) -> Result<()> {
         let _request = lock(&self.shared.requests);
-        if matches!(kind, InputKind::Keys | InputKind::Media) {
-            return Err(self.unsupported(
-                if kind == InputKind::Keys {
-                    Action::KeyEvents
-                } else {
-                    Action::MediaEvents
-                },
-                "YSC only uploads mouse buttons and motion",
-            ));
+        match kind {
+            InputKind::Media => return Err(self.unsupported(Action::MediaEvents, MEDIA)),
+            InputKind::Keys => return Ok(()),
+            InputKind::Buttons | InputKind::Motion => {}
         }
         let streams = lock(&self.shared.state).streams;
         if streams.buttons || streams.motion {

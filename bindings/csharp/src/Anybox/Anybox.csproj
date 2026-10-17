@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <Version>0.9.0</Version>
+    <Version>0.10.0</Version>
     <PackageId>Anybox</PackageId>
     <!-- not Anybox.dll, Windows file names ignore case, so it would be the same file as the native anybox.dll and
          get loaded in its place -->
