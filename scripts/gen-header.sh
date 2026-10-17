@@ -5,6 +5,6 @@ set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 cbindgen --quiet --config bindings/c/cbindgen.toml --crate anybox-capi --output bindings/c/include/anybox.h
 medius_capi=$(cargo metadata --format-version 1 --locked |
-  sed -n 's/.*"manifest_path":"\([^"]*medius-capi[\/]*Cargo.toml\)".*/\1/p' | head -n 1)
+  sed -n 's/.*"manifest_path":"\([^"]*medius-capi-[0-9.]*[\/]*Cargo.toml\)".*/\1/p' | head -n 1)
 [ -n "$medius_capi" ] || { echo "gen-header: cargo metadata has no medius-capi" >&2; exit 1; }
 cp "$(dirname "${medius_capi//\\//}")/include/medius.h" bindings/c/include/medius.h

@@ -202,3 +202,42 @@ fn a_stamp_built_with_a_huge_since_open_saturates_instead_of_panicking() {
         Stamp::new(arrived, Duration::MAX).with_received(arrived + Duration::from_millis(1), None);
     assert_eq!(stamp.received_since_open, Duration::MAX);
 }
+
+#[test]
+fn a_stamp_lands_on_the_os_clock_between_the_reads_around_it() {
+    let before = super::monotonic_ns();
+    let at = Instant::now();
+    let after = super::monotonic_ns();
+    let stamp = Stamp::new(at, Duration::ZERO).with_received(at + Duration::from_millis(3), None);
+    // the anchor's own bracket is the only slack, and it's far under a microsecond unless the test got preempted
+    let slack = 50_000;
+    assert!(
+        stamp.arrived_ns() + slack >= before && stamp.arrived_ns() <= after + slack,
+        "{before} <= {} <= {after}",
+        stamp.arrived_ns()
+    );
+    assert_eq!(stamp.received_ns() - stamp.arrived_ns(), 3_000_000);
+}
+
+// the match has no wildcard, so a new kind of event doesn't build until it has an example
+#[cfg(feature = "mock")]
+#[test]
+fn the_examples_have_every_kind_of_event() {
+    let mut seen = [false; 10];
+    for event in Event::examples(Stamp::new(Instant::now(), Duration::ZERO)) {
+        let index = match event {
+            Event::Button { .. } => 0,
+            Event::Key { .. } => 1,
+            Event::Media { .. } => 2,
+            Event::Motion { .. } => 3,
+            Event::Dropped { .. } => 4,
+            Event::SessionReset => 5,
+            Event::Rejected { .. } => 6,
+            Event::Disconnected => 7,
+            Event::Reconnected => 8,
+            Event::Changed => 9,
+        };
+        seen[index] = true;
+    }
+    assert!(seen.iter().all(|seen| *seen), "{seen:?}");
+}

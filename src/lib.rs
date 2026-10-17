@@ -59,7 +59,7 @@ pub use device::Device;
 pub use error::{Error, Result};
 pub use event::{
     BoxTime, Clock, Closed, DropSource, Event, EventKinds, Events, RecvTimeoutError, Stamp,
-    TryRecvError,
+    TryRecvError, monotonic_ns,
 };
 #[cfg(feature = "mock")]
 pub use family::medius::mock::MockPoller;

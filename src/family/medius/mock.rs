@@ -1,10 +1,13 @@
+use std::path::Path;
 use std::sync::mpsc;
 
-use super::{Poller, build};
+use super::{Poller, build, open_failure};
 use crate::backend::Sink;
 use crate::click::{ClickTiming, Holds};
 use crate::device::{Device, Start};
-use crate::error::{Error, Result};
+use crate::error::Result;
+
+const PORT: &str = "mock box";
 
 /// the poller of a device made with `Device::mock_medius_manual`, ticked by hand so a test doesn't wait on its
 /// timing
@@ -42,7 +45,7 @@ impl Device {
         click_timing: ClickTiming,
     ) -> Result<(Device, MockPoller)> {
         let crate_device = medius::Device::open_mock(mock)
-            .map_err(|error| Error::Io(std::io::Error::other(error)))?;
+            .map_err(|error| open_failure(Path::new(PORT), error))?;
         let (signals, incoming) = mpsc::channel();
         let (backend, snapshot, poller) = build(crate_device, Sink(signals.clone()))?;
         let device = Device::start(Start {
@@ -52,7 +55,7 @@ impl Device {
             incoming,
             click_timing,
             holds: Holds::from_clock(),
-            port: "mock box".into(),
+            port: PORT.into(),
         })?;
         Ok((device, MockPoller(poller)))
     }

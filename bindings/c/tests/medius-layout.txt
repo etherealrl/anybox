@@ -1,0 +1,310 @@
+MediusUsage size 4 align 2
+  kind 0
+  id 2
+MediusSetup size 8 align 2
+  request_type 0
+  request 1
+  value 2
+  index 4
+  length 6
+MediusClipTrigger size 8 align 2
+  on 0
+  edge 4
+  action 5
+  consume 6
+MediusClipPacketTrigger size 48 align 2
+  class_ 0
+  id 2
+  direction 4
+  action 5
+  consume 6
+  once_per_run 7
+  selector_len 8
+  match_len 10
+  mask_len 12
+  match_bytes 14
+  mask 30
+  hits 46
+MediusClipStatus size 1060 align 4
+  state 0
+  free 4
+  total 8
+  played 12
+  ticks 16
+  underruns 20
+  overruns 22
+  seq_gaps 24
+  xfers 26
+  xfer_errs 28
+  gated 30
+  held_n 32
+  held 34
+MediusClipSettings size 458 align 2
+  autolock_bits 0
+  loop_ 1
+  retain 2
+  finalized 3
+  ride 4
+  triggers 6
+  n 70
+  packet_triggers 72
+  packet_n 456
+MediusPortInfo size 646 align 2
+  path 0
+  vid 512
+  pid 514
+  serial 516
+  has_serial 644
+MediusVersion size 43 align 1
+  proto_ver 0
+  fw_major 1
+  fw_minor 2
+  fw_patch 3
+  mac 4
+  name 10
+MediusDeviceInfo size 140 align 2
+  vid 0
+  pid 2
+  bcd_device 4
+  bcd_usb 6
+  has_serial 8
+  has_bos 9
+  kind 10
+  product 11
+MediusBoxInfo size 832 align 2
+  port 0
+  version 646
+  device 690
+  has_device 830
+MediusMotion size 10 align 2
+  kind 0
+  dx 2
+  dy 4
+  wheel 6
+  pan 8
+MediusLockTarget size 6 align 2
+  kind 0
+  usage 2
+MediusTransferOutcome size 516 align 2
+  status 0
+  len 2
+  data 4
+MediusRewriteRule size 558 align 2
+  class_ 0
+  id 2
+  direction 4
+  action 5
+  offset 6
+  match_len 8
+  mask_len 10
+  payload_len 12
+  match_bytes 14
+  mask 30
+  payload 46
+MediusRewriteEntry size 14 align 2
+  class_ 0
+  id 2
+  direction 4
+  action 5
+  match_len 6
+  offset 8
+  payload_len 10
+  hits 12
+MediusRewriteTable size 452 align 2
+  table_full 0
+  generation 1
+  n 2
+  entries 4
+MediusPatch size 520 align 2
+  section 0
+  cfg 1
+  index 2
+  offset 4
+  len 6
+  bytes 8
+MediusPatchEntry size 8 align 2
+  section 0
+  cfg 1
+  index 2
+  offset 4
+  len 6
+MediusPatchSet size 134 align 2
+  applied 0
+  pending 1
+  refused 2
+  table_full 3
+  n 4
+  entries 6
+MediusTransform size 14 align 2
+  op 0
+  source 2
+  dest 8
+MediusTransforms size 452 align 2
+  table_full 0
+  n 2
+  entries 4
+MediusChipFirmware size 5 align 1
+  major 0
+  minor 1
+  patch 2
+  slot 3
+  state 4
+MediusFirmwareInfo size 20 align 4
+  device 0
+  host_present 5
+  host 6
+  slot_size 12
+  device_staged 16
+  host_staged 17
+MediusHealth size 11 align 1
+  link_up 0
+  mouse_attached 1
+  clone_configured 2
+  injection_active 3
+  rate_confident 4
+  lock_on 5
+  catch_on 6
+  kbd_attached 7
+  rewrite_on 8
+  patch_on 9
+  transform_on 10
+MediusMouseCaps size 7 align 1
+  n_buttons 0
+  has_x 1
+  has_y 2
+  has_wheel 3
+  pan 4
+  has_report_id 5
+  n_hid 6
+MediusKbdCaps size 5 align 1
+  n_keys 0
+  nkro 1
+  has_consumer 2
+  has_system 3
+  has_report_id 4
+MediusCaps size 14 align 1
+  mouse 0
+  keyboard 7
+  mouse_change_driven 12
+  kbd_change_driven 13
+MediusRate size 6 align 2
+  native_period_us 0
+  poll_period_us 2
+  confident 4
+  change_driven 5
+MediusStats size 32 align 4
+  inject_emits 0
+  tx_drops 4
+  tx_merges 6
+  tx_maxdepth 8
+  tx_wedges 9
+  wakeups 10
+  reset_count 12
+  config_count 14
+  link_rx_drops 16
+  host_rx_drops 20
+  relay_drops 24
+  session 28
+MediusLockEntry size 10 align 2
+  target 0
+  is_blanket 6
+  direction 7
+  scale 8
+MediusLocks size 2562 align 2
+  n 0
+  entries 2
+MediusClockEstimate size 16 align 4
+  offset_us 0
+  rate_ppb 4
+  delay_us 8
+  age_ms 12
+MediusCatchFilter size 6 align 2
+  class_ 0
+  id 2
+  direction 4
+  capture 5
+MediusCatchEntry size 8 align 2
+  filter 0
+  dropped 6
+MediusCatchState size 284 align 4
+  table_full 0
+  dropped 4
+  clock 8
+  n 24
+  entries 26
+MediusImperfectStatus size 3 align 1
+  allowed 0
+  over_capacity 1
+  clone_imperfect 2
+MediusEmitPaceStatus size 12 align 2
+  mode 0
+  fixed_hz 2
+  resolved_hz 4
+  force_hz 6
+  advertised_hz 8
+  force_active 10
+MediusBearing size 4 align 2
+  window_ms 0
+  mode 2
+MediusRenderStatus size 3 align 1
+  mode 0
+  full 1
+  ready 2
+MediusSpreadStatus size 8 align 4
+  percent 0
+  span_us 4
+MediusCountersSnapshot size 40 align 8
+  frames_tx 0
+  frames_rx 8
+  crc_drops 16
+  reconnects 24
+  restarts 32
+MediusUpdateError size 8 align 4
+  op 0
+  status 1
+  arg 4
+MediusUsageEvent size 1028 align 2
+  class_ 0
+  direction 1
+  n 2
+  usages 4
+MediusTrafficEvent size 190 align 2
+  class_ 0
+  id 2
+  direction 4
+  flags 5
+  true_len 6
+  len 8
+  bytes 10
+MediusBusEvent size 4 align 1
+  kind 0
+  configuration 1
+  interface 2
+  alt 3
+MediusMotionEvent size 8 align 2
+  dx 0
+  dy 2
+  dz 4
+  pan 6
+MediusCatchEventData size 1028 align 2
+MediusCatchEvent size 1040 align 4
+  kind 0
+  ts_us 4
+  clock 8
+  data 10
+MediusInputEvent size 24 align 4
+  kind 0
+  ts_us 4
+  clock 8
+  usage 10
+  dx 14
+  dy 16
+  dz 18
+  pan 20
+MediusStamped size 24 align 8
+  host_ns 0
+  box_us 8
+  excess_ns 16
+MediusLogLine size 513 align 1
+  level 0
+  text 1

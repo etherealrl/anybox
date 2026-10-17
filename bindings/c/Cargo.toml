@@ -1,6 +1,6 @@
 [package]
 name = "anybox-capi"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MPL-2.0"
@@ -25,4 +25,12 @@ trace = ["anybox-rs/trace"]
 
 [dependencies]
 anybox-rs = { path = "../.." }
-medius-capi = { git = "https://github.com/etherealrl/medius", rev = "0d7e773a093993ac95d5b507b498b1455599f4ff" }
+medius-capi = "=3.4.6"
+
+[dev-dependencies]
+# the conformance suite's scenarios and what it records are JSON, so every language can read them
+serde_json = "1"
+# reads the medius crate's source for what a binding has to mirror
+syn = { version = "3", features = ["full"] }
+# the Medius suite runs the crate's own helpers, the same version medius-capi pins
+medius = { version = "=3.4.6", features = ["mock"] }

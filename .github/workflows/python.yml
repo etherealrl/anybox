@@ -1,11 +1,11 @@
 name: python
 
-# every release gets a wheel for each platform, built from its tag. a pull request that touches the bindings, or
-# running it by hand, builds and tests the wheels without publishing anything
+# every release gets a wheel for each platform, built from its tag. a pull request that touches the Python package, the
+# C ABI or the dependencies, or running it by hand, builds and tests the wheels without publishing anything
 on:
   workflow_dispatch:
   pull_request:
-    paths: [bindings/**, .github/workflows/python.yml]
+    paths: [bindings/python/**, bindings/c/**, src/**, Cargo.toml, Cargo.lock, rust-toolchain.toml, .github/workflows/python.yml]
   release:
     types: [published]
 
@@ -23,6 +23,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
+      # the target dir and cargo-about between pull request runs, a release always builds from nothing
+      - if: github.event_name != 'release'
+        uses: Swatinem/rust-cache@v2
       # the notices of every dependency built into the library go in the wheel, the build hook picks them up there
       - shell: bash
         run: |
@@ -57,6 +60,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.event.release.tag_name }}
         run: gh release upload "$TAG" wheelhouse/*.whl --clobber --repo "$GITHUB_REPOSITORY"
+      # a rerun after one wheel went up skips that one instead of failing on it, like the crates job
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: wheelhouse
+          skip-existing: true

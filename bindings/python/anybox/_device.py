@@ -4,18 +4,17 @@ from __future__ import annotations
 
 import ctypes
 import operator
-import os
 import threading
 import weakref
 from collections.abc import Callable, Iterator, Sequence
-from typing import Any
 from contextlib import contextmanager
 from dataclasses import dataclass
 from types import MappingProxyType
+from typing import Any
 
 from . import _errors
 from . import _native as native
-from ._errors import RECV_CLOSED, RECV_TIMEOUT, ClosedError, Error, check, error
+from ._errors import RECV_TIMEOUT, ClosedError, Error, RecvClosedError, check, error, firmware, stable_id, unknown
 from ._native import lib, text
 from ._types import (
     Action,
@@ -37,8 +36,6 @@ from ._types import (
     Execution,
     Family,
     FerrumApi,
-    Firmware,
-    FirmwareKind,
     Info,
     Key,
     KeyEvent,
@@ -59,9 +56,6 @@ from ._types import (
     _IdKind,
 )
 
-# a recv with no timeout waits in slices this long, so closing the receiver from another thread is seen this fast
-_RECV_SLICE_US = 100_000
-
 
 def _int(value: int, low: int, high: int, what: str) -> int:
     """ctypes wraps an int that doesn't fit without saying anything, so it gets checked here first"""
@@ -78,7 +72,9 @@ def _i16(value: int, what: str) -> int:
 def _micros(seconds: float, what: str) -> int:
     if seconds < 0:
         raise ValueError(f"{what} can't be negative")
-    return _int(round(seconds * 1_000_000), 0, 2**64 - 1, what)
+    # whole microseconds cut short like Rust's `as_micros` and the C# package, after rounding to nanoseconds so a
+    # float like 0.0015 doesn't land a hair under 1500
+    return _int(round(seconds * 1_000_000_000) // 1000, 0, 2**64 - 1, what)
 
 
 def _seconds(micros: int) -> float:
@@ -117,14 +113,28 @@ class _Handle:
     def closed(self) -> bool:
         return self._closed
 
-    def close(self) -> None:
+    def close(self, first: Callable[[int], int] | None = None) -> int:
+        """`first` runs on the handle before it can be freed, counted in like any call, so a receiver can wake
+        whoever waits on it. it's what `first` gave back, 0 when there was nothing to do"""
         with self._lock:
             if self._closed:
-                return
+                return 0
+            # the flag goes up first, so a call that comes back after this already sees it
             self._closed = True
-            idle = self._calls == 0
-        if idle:
-            self._release()
+            pointer = self._pointer
+            self._calls += 1
+        try:
+            return first(pointer) if first and pointer else 0
+        finally:
+            with self._lock:
+                self._calls -= 1
+                idle = self._calls == 0
+            if idle:
+                self._release()
+
+    @property
+    def closed_text(self) -> str:
+        return self._closed_text
 
     def _release(self) -> None:
         with self._lock:
@@ -160,20 +170,18 @@ def _stamp(event: native.Event) -> Stamp:
     return Stamp(
         since_open_ns=event.since_open_ns,
         received_since_open_ns=event.received_since_open_ns,
+        arrived_ns=event.arrived_ns,
+        received_ns=event.received_ns,
         received_qpc=event.received_qpc if event.has_received_qpc else None,
         box_time=BoxTime(event.box_time_us, Clock(event.box_clock)) if event.has_box_time else None,
     )
-
-
-def _unknown(what: str, value: int) -> Error:
-    return Error(f"the library sent {what} this package doesn't know ({value}), so update anybox-rs")
 
 
 def _event(event: native.Event) -> Event:
     try:
         kind = _EventKind(event.kind)
     except ValueError:
-        raise _unknown("an event", event.kind) from None
+        raise unknown("an event", event.kind) from None
     if kind == _EventKind.BUTTON:
         return ButtonEvent(Button(event.button), event.pressed, _stamp(event))
     if kind == _EventKind.KEY:
@@ -194,38 +202,13 @@ def _event(event: native.Event) -> Event:
     }[kind]()
 
 
-def _firmware(raw: native.Info) -> Firmware | None:
-    kind = raw.firmware_kind
-    if kind == 0:
-        return None
-    if kind == FirmwareKind.VERSION:
-        return Firmware(kind, version=(raw.firmware_major, raw.firmware_minor, raw.firmware_patch))
-    if kind == FirmwareKind.BUILD:
-        return Firmware(kind, build=raw.firmware_build)
-    if kind == FirmwareKind.PROTOCOL:
-        return Firmware(kind, protocol=raw.firmware_protocol)
-    if kind == FirmwareKind.TEXT:
-        return Firmware(kind, text=text(raw.firmware_text))
-    raise _unknown("a firmware kind", kind)
-
-
-def _stable_id(raw: native.Info) -> StableId | None:
-    if raw.id_kind == _IdKind.NONE:
-        return None
-    if raw.id_kind == _IdKind.MAC:
-        return StableId(mac=bytes(raw.id_mac))
-    if raw.id_kind == _IdKind.USB_SERIAL:
-        return StableId(usb_serial=text(raw.id_serial))
-    raise _unknown("an id kind", raw.id_kind)
-
-
 def _info(raw: native.Info) -> Info:
     return Info(
         port=text(raw.port) or "",
         family=Family(raw.family),
         model=text(raw.model),
-        firmware=_firmware(raw),
-        id=_stable_id(raw),
+        firmware=firmware(raw, "firmware_"),
+        id=stable_id(raw, "id_"),
         ferrum_api=FerrumApi(raw.ferrum_api) if raw.ferrum_api else None,
         peripheral=UsbIds(raw.peripheral_vid, raw.peripheral_pid) if raw.has_peripheral else None,
     )
@@ -244,11 +227,12 @@ def _quirk(raw: native.Quirk) -> Quirk:
     return Quirk(kind)
 
 
-def _list(read: Callable, pointer: int) -> list[int]:
+def _list(read: Callable[..., int]) -> list[int]:
+    """a list the C side fills count first, `read` takes the buffer, its size and where the length goes"""
     length = ctypes.c_size_t()
-    check(read(pointer, None, 0, ctypes.byref(length)))
+    check(read(None, 0, ctypes.byref(length)))
     values = (ctypes.c_uint32 * length.value)()
-    check(read(pointer, values, length.value, ctypes.byref(length)))
+    check(read(values, length.value, ctypes.byref(length)))
     return list(values)
 
 
@@ -270,12 +254,32 @@ def _snapshot(pointer: int) -> Snapshot:
             actions[action] = Capability(Execution(capability.execution), text(capability.reason), tuple(quirks))
         capabilities = Capabilities(
             MappingProxyType(actions),
-            tuple(Button(value) for value in _list(lib.anybox_snapshot_buttons, pointer)),
-            tuple(Axis(value) for value in _list(lib.anybox_snapshot_axes, pointer)),
+            tuple(Button(value) for value in _list(lambda *out: lib.anybox_snapshot_buttons(pointer, *out))),
+            tuple(Axis(value) for value in _list(lambda *out: lib.anybox_snapshot_axes(pointer, *out))),
         )
         return Snapshot(info, capabilities)
     finally:
         lib.anybox_snapshot_free(pointer)
+
+
+def snapshot_of(scan_list: ctypes.c_void_p, index: int) -> Snapshot:
+    """the box on a scan list entry, raising its error when the entry is one"""
+    out = ctypes.c_void_p()
+    check(lib.anybox_scan_list_result(scan_list, index, ctypes.byref(out)))
+    return _snapshot(out.value)  # type: ignore[arg-type]
+
+
+def missing(scan_list: ctypes.c_void_p, index: int) -> frozenset[Action]:
+    """what the box on a scan list entry couldn't do"""
+    values = _list(lambda *out: lib.anybox_scan_list_missing(scan_list, index, *out))
+    return frozenset(Action(value) for value in values)
+
+
+def monotonic_ns() -> int:
+    """now on the clock the `arrived_ns` and `received_ns` of every stamp are on, the one `time.perf_counter_ns()`
+    reads on Windows and Linux (QueryPerformanceCounter and CLOCK_MONOTONIC, CLOCK_UPTIME_RAW on macOS). it only
+    compares on the same machine within one boot"""
+    return int(lib.anybox_monotonic_ns())
 
 
 class Events:
@@ -293,25 +297,23 @@ class Events:
 
     def recv(self, timeout: float | None = None) -> Event | None:
         """the next event, waiting up to `timeout` seconds for it (forever with none) and None when nothing came.
-        it raises `ClosedError` once the device is gone and everything queued was read"""
+        it raises `RecvClosedError` once the device is gone and everything queued was read, and `ClosedError` once
+        this receiver was closed"""
         if timeout is not None and timeout < 0:
             raise ValueError("a timeout can't be negative")
-        left = None if timeout is None else _micros(timeout, "a timeout")
+        # the library takes a signed count, and a wait that long is forever anyway
+        wait = -1 if timeout is None else min(_micros(timeout, "a timeout"), 2**63 - 1)
         out = native.Event()
-        while True:
-            wait = _RECV_SLICE_US if left is None else min(left, _RECV_SLICE_US)
-            with self._handle.use() as pointer:
-                status = lib.anybox_events_recv(pointer, wait, ctypes.byref(out))
-            if status == 0:
-                return _event(out)
-            if status == RECV_CLOSED:
-                raise ClosedError("the device is gone and every event it queued was read")
-            if status != RECV_TIMEOUT:
-                raise error(status)
-            if left is not None:
-                left -= wait
-                if left <= 0:
-                    return None
+        with self._handle.use() as pointer:
+            status = lib.anybox_events_recv(pointer, wait, ctypes.byref(out))
+        # closed while it waited, so whatever came back belongs to a receiver that's gone
+        if self._handle.closed:
+            raise ClosedError(self._handle.closed_text)
+        if status == 0:
+            return _event(out)
+        if status == RECV_TIMEOUT:
+            return None
+        raise error(status)
 
     def try_recv(self) -> Event | None:
         return self.recv(0)
@@ -320,20 +322,30 @@ class Events:
         while True:
             try:
                 event = self.recv()
-            except ClosedError:
+            except (RecvClosedError, ClosedError):
                 return
             if event is not None:
                 yield event
 
     def close(self) -> None:
-        """stops this receiver, a `recv` waiting on it from another thread returns within about 100 ms"""
-        self._finalizer()
+        """ends this receiver now, a `recv` waiting on it from another thread raises `ClosedError` right away, what
+        was queued is thrown out, and the box stops streaming what only this receiver wanted. a second close does
+        nothing"""
+        self._finalizer.detach()
+        check(self._handle.close(lib.anybox_events_close))
 
     def __enter__(self) -> Events:
         return self
 
-    def __exit__(self, *_: object) -> None:
-        self.close()
+    def __exit__(self, _: object, raised: BaseException | None, __: object) -> None:
+        if raised is None:
+            self.close()
+            return
+        # like the device's, a close that fails after the block raised doesn't take the place of what it raised
+        try:
+            self.close()
+        except Error as error:
+            raised.add_note(f"closing the receiver failed too: {error}")
 
 
 class Device:
@@ -360,6 +372,7 @@ class Device:
             check(lib.anybox_device_snapshot(pointer, ctypes.byref(out)))
         return _snapshot(out.value)  # type: ignore[arg-type]
 
+    # made by bindings/gen from its call table (methods), change the table and run cargo run -p anybox-gen
     def move_by(self, dx: int, dy: int) -> None:
         """moves by counts, going through whatever smoothing the box has on"""
         self._call(lib.anybox_device_move_by, _i16(dx, "dx"), _i16(dy, "dy"))
@@ -373,50 +386,62 @@ class Device:
         self._call(lib.anybox_device_press, _button(button))
 
     def release(self, button: Button) -> None:
+        """lets go of a button"""
         self._call(lib.anybox_device_release, _button(button))
 
     def click(self, button: Button, *, hold: float | None = None, native_only: bool = False) -> None:
-        """the box's own click, or one timed on the PC with the device's click timing if the box has none. `hold`
-        is in seconds, and `native_only` fails instead of letting anybox time it from the PC"""
+        """the box's own click, or one timed on the PC with the device's click timing if the box has none, which
+        blocks the thread for the hold. `hold` is in seconds, and `native_only` fails instead of letting anybox
+        time it from the PC"""
         self._call(lib.anybox_device_click_with, _button(button), ctypes.byref(_click(hold, native_only)))
 
     def press_key(self, key: Key) -> None:
-        """holds a key down until `release_key`"""
+        """holds a key down until `release_key`. a key is its HID usage, from 0x04 to 0xE7"""
         self._call(lib.anybox_device_press_key, _key(key))
 
     def release_key(self, key: Key) -> None:
+        """lets go of a key"""
         self._call(lib.anybox_device_release_key, _key(key))
 
     def tap_key(self, key: Key, *, hold: float | None = None, native_only: bool = False) -> None:
-        """presses and lets go, timed by the box, or on the PC with the device's click timing if the box can't"""
+        """presses and lets go, timed by the box, or on the PC with the device's click timing if the box can't,
+        which blocks the thread for the hold. `hold` is in seconds, and `native_only` fails instead of letting
+        anybox time it from the PC"""
         self._call(lib.anybox_device_tap_key_with, _key(key), ctypes.byref(_click(hold, native_only)))
 
     def press_media(self, key: MediaKey) -> None:
+        """holds a media key down until `release_media`. a media key is its HID consumer usage"""
         self._call(lib.anybox_device_press_media, _media(key))
 
     def release_media(self, key: MediaKey) -> None:
+        """lets go of a media key"""
         self._call(lib.anybox_device_release_media, _media(key))
 
     def tap_media(self, key: MediaKey, *, hold: float | None = None, native_only: bool = False) -> None:
+        """presses and lets go of a media key, timed like a key's tap, which blocks the thread for the hold. `hold`
+        is in seconds, and `native_only` fails instead of letting anybox time it from the PC"""
         self._call(lib.anybox_device_tap_media_with, _media(key), ctypes.byref(_click(hold, native_only)))
 
     def lock_button(self, button: Button) -> None:
-        """keeps the physical button from reaching the PC until `unlock_button`. your own presses still go
-        through and its events still come, so you can take the button over"""
+        """keeps the physical button from reaching the PC until `unlock_button`. your own presses still go through
+        and its events still come, so you can take the button over"""
         self._call(lib.anybox_device_lock_button, _button(button))
 
     def unlock_button(self, button: Button) -> None:
+        """lets the physical button through again"""
         self._call(lib.anybox_device_unlock_button, _button(button))
 
     def lock_key(self, key: Key) -> None:
+        """keeps the physical key from reaching the PC until `unlock_key`"""
         self._call(lib.anybox_device_lock_key, _key(key))
 
     def unlock_key(self, key: Key) -> None:
+        """lets the physical key through again"""
         self._call(lib.anybox_device_unlock_key, _key(key))
 
     def lock_axis(self, axis: Axis, direction: Direction = Direction.BOTH) -> None:
-        """keeps physical motion one way or both ways along an axis from reaching the PC, your own moves still go
-        through"""
+        """keeps physical motion one way or both ways along an axis from reaching the PC until `unlock_axis`. your
+        own moves still go through"""
         self._call(lib.anybox_device_lock_axis, _u32(axis, "an axis"), _u32(direction, "a direction"))
 
     def unlock_axis(self, axis: Axis, direction: Direction = Direction.BOTH) -> None:
@@ -424,8 +449,8 @@ class Device:
         self._call(lib.anybox_device_unlock_axis, _u32(axis, "an axis"), _u32(direction, "a direction"))
 
     def scale_axis(self, axis: Axis, direction: Direction, percent: int) -> None:
-        """keeps `percent` of the physical motion along an axis, from -255 to 255. 100 leaves it alone, 0 blocks
-        it and -100 inverts it"""
+        """keeps `percent` of the physical motion one way or both ways along an axis, from -255 to 255. 100 leaves
+        it alone, 0 blocks it and -100 inverts it. `unlock_axis` puts it back to 100"""
         self._call(
             lib.anybox_device_scale_axis,
             _u32(axis, "an axis"),
@@ -445,6 +470,8 @@ class Device:
         """throws away the moves the box took but hasn't sent yet"""
         self._call(lib.anybox_device_discard_pending_moves)
 
+    # the end of what bindings/gen makes (methods)
+
     def events(self, kinds: EventKinds = EventKinds.ALL) -> Events:
         """a new receiver for these kinds of input, plus the connection events. the box only streams while at
         least one receiver is alive. a kind this box can't stream gets one `Rejected` right away, except with
@@ -461,13 +488,21 @@ class Device:
         `pip install anybox-rs[medius]`. it shares this device's connection, and keeping it holds the port open
         after this device is gone. anybox doesn't know about anything you press or lock through it, and its
         `reset()` lets go of and unlocks EVERYTHING, what anybox did too"""
-        medius = _medius_package()
         out = ctypes.c_void_p()
         with self._handle.use() as pointer:
             status = lib.anybox_device_medius(pointer, ctypes.byref(out))
         if status in (_errors.UNSUPPORTED, _errors.CLOSED):
             return None
         check(status)
+        # asked first, so another box or a closed device is None like in Rust even without the medius package
+        try:
+            medius = _medius_package()
+        except BaseException:
+            free = lib.medius_device_free
+            free.argtypes = [ctypes.c_void_p]
+            free.restype = None
+            free(out.value)
+            raise
         return medius.Device(out.value)
 
     def close(self) -> None:
@@ -481,10 +516,19 @@ class Device:
     def __enter__(self) -> Device:
         return self
 
-    def __exit__(self, *_: object) -> None:
+    def __exit__(self, _: object, raised: BaseException | None, __: object) -> None:
         # a device you already closed inside the block is fine, only the first close says how it went
-        if not self._closed:
+        if self._closed:
+            return
+        if raised is None:
             self.close()
+            return
+        # what the block raised is what you need, so like Rust's drop, a close that fails after it doesn't take its
+        # place
+        try:
+            self.close()
+        except Error as error:
+            raised.add_note(f"closing the device failed too: {error}")
 
 
 def _medius_package() -> Any:
@@ -496,7 +540,9 @@ def _medius_package() -> Any:
         raise ImportError(
             f"device.medius() needs the medius package, install it with pip install anybox-rs[medius] ({error})"
         ) from error
-    if not os.path.samefile(medius._native.lib._name, lib._name):
+    # the loader hands back the same handle for a library it already has, whatever path or name it was asked by,
+    # and a name from find_library isn't a path samefile could look at
+    if medius._native.lib._handle != lib._handle:
         raise Error(
             f"the medius package loaded its own library ({medius._native.lib._name}), so it can't use anybox's "
             "connection. import anybox before medius and leave MEDIUS_LIB unset"
@@ -550,8 +596,12 @@ class Connect:
             options.port = native.char_array(self.port)
         options.family = 0 if self.family is None else _u32(self.family, "a family")
         options.ferrum_api = 0 if self.ferrum_api is None else _u32(self.ferrum_api, "a Ferrum API")
-        for action in self.can:
-            options.can |= 1 << _int(action, 0, 63, "an action")
+        if self.can:
+            can = (ctypes.c_uint32 * len(self.can))(*(_u32(action, "an action") for action in self.can))
+            # the options only point at the array, so they keep it alive for as long as they're used
+            options._can = can
+            options.can = ctypes.cast(can, ctypes.POINTER(ctypes.c_uint32))
+            options.can_len = len(self.can)
         if self.id is not None and self.id.mac is not None:
             options.id_kind = _IdKind.MAC
             options.id_mac[:] = list(self.id.mac)

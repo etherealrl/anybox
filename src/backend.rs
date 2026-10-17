@@ -259,6 +259,10 @@ pub(crate) enum Signal {
     /// lets a test wait until everything sent before it got handled
     #[cfg(test)]
     Barrier(std::sync::mpsc::Sender<()>),
+    /// events that only go out to the receivers, with none of what the real ones change in the device, so a
+    /// test can show every kind without a disconnect actually disconnecting
+    #[cfg(feature = "mock")]
+    Examples(Vec<crate::event::Event>),
     Stop,
 }
 

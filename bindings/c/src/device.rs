@@ -41,6 +41,7 @@ pub unsafe extern "C" fn anybox_device_snapshot(
     })
 }
 
+// made by bindings/gen from its call table (calls), change the table and run cargo run -p anybox-gen
 /// moves by counts, going through whatever smoothing the box has on
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn anybox_device_move_by(
@@ -82,6 +83,7 @@ pub unsafe extern "C" fn anybox_device_press(
     })
 }
 
+/// lets go of a button
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn anybox_device_release(
     device: *const AnyboxDevice,
@@ -107,6 +109,9 @@ pub unsafe extern "C" fn anybox_device_click(
     })
 }
 
+/// the box's own click, or one timed on the PC with the device's click timing if the box has none, which blocks the
+/// thread for the hold. `click` says how long to hold it and whether to fail instead of letting anybox time it from
+/// the PC
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn anybox_device_click_with(
     device: *const AnyboxDevice,
@@ -136,6 +141,7 @@ pub unsafe extern "C" fn anybox_device_press_key(
     })
 }
 
+/// lets go of a key
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn anybox_device_release_key(
     device: *const AnyboxDevice,
@@ -161,6 +167,9 @@ pub unsafe extern "C" fn anybox_device_tap_key(
     })
 }
 
+/// presses and lets go, timed by the box, or on the PC with the device's click timing if the box can't, which blocks
+/// the thread for the hold. `tap` says how long to hold it and whether to fail instead of letting anybox time it
+/// from the PC
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn anybox_device_tap_key_with(
     device: *const AnyboxDevice,
@@ -187,6 +196,7 @@ pub unsafe extern "C" fn anybox_device_press_media(
     })
 }
 
+/// lets go of a media key
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn anybox_device_release_media(
     device: *const AnyboxDevice,
@@ -199,6 +209,7 @@ pub unsafe extern "C" fn anybox_device_release_media(
     })
 }
 
+/// presses and lets go of a media key, timed like a key's tap
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn anybox_device_tap_media(
     device: *const AnyboxDevice,
@@ -211,6 +222,8 @@ pub unsafe extern "C" fn anybox_device_tap_media(
     })
 }
 
+/// presses and lets go of a media key, timed like a key's tap, which blocks the thread for the hold. `tap` says how
+/// long to hold it and whether to fail instead of letting anybox time it from the PC
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn anybox_device_tap_media_with(
     device: *const AnyboxDevice,
@@ -238,6 +251,7 @@ pub unsafe extern "C" fn anybox_device_lock_button(
     })
 }
 
+/// lets the physical button through again
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn anybox_device_unlock_button(
     device: *const AnyboxDevice,
@@ -263,6 +277,7 @@ pub unsafe extern "C" fn anybox_device_lock_key(
     })
 }
 
+/// lets the physical key through again
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn anybox_device_unlock_key(
     device: *const AnyboxDevice,
@@ -275,8 +290,8 @@ pub unsafe extern "C" fn anybox_device_unlock_key(
     })
 }
 
-/// keeps physical motion one way or both ways along an axis from reaching the PC until
-/// `anybox_device_unlock_axis`. your own moves still go through
+/// keeps physical motion one way or both ways along an axis from reaching the PC until `anybox_device_unlock_axis`.
+/// your own moves still go through
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn anybox_device_lock_axis(
     device: *const AnyboxDevice,
@@ -304,8 +319,8 @@ pub unsafe extern "C" fn anybox_device_unlock_axis(
     })
 }
 
-/// keeps `percent` of the physical motion one way or both ways along an axis, from -255 to 255. 100 leaves it
-/// alone, 0 blocks it and -100 inverts it. `anybox_device_unlock_axis` puts it back to 100
+/// keeps `percent` of the physical motion one way or both ways along an axis, from -255 to 255. 100 leaves it alone,
+/// 0 blocks it and -100 inverts it. `anybox_device_unlock_axis` puts it back to 100
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn anybox_device_scale_axis(
     device: *const AnyboxDevice,
@@ -349,6 +364,8 @@ pub unsafe extern "C" fn anybox_device_discard_pending_moves(
             .map_err(error)
     })
 }
+
+// the end of what bindings/gen makes (calls)
 
 /// a new receiver for these kinds of input, `ANYBOX_EVENTS_*` combined with `|`, plus the connection events. the
 /// box only streams while at least one receiver is alive, and it streams what any receiver wants. a kind this box

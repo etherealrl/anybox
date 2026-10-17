@@ -47,9 +47,9 @@ a Medius holds as many keys at once as the keyboard behind it can report, six on
 | keys                  | ✓             | ✓                | app              | ✗               |
 | media keys            | ✓             | ✗                | ✗                | ✗               |
 
-on the Medius every event also comes with the box's own timestamp, MAKCU, Ferrum, and YSC don't send one
+on the Medius every input event also comes with the box's own timestamp, MAKCU, Ferrum, and YSC don't send one
 
-`received` is on every event from every box. on MAKCU, Ferrum, and YSC it's the moment the port read returned, on Medius it's when anybox took the event from the medius crate, which reads the port on its own thread, so a bit later than the read
+`received` is on every input event from every box. on MAKCU, Ferrum, and YSC it's the moment the port read returned, on Medius it's when anybox took the event from the medius crate, which reads the port on its own thread, so a bit later than the read
 
 on Medius each kind of event is its own subscription, so asking for buttons only never makes the box stream motion, and the order between two kinds is only as good as their box time
 
@@ -91,7 +91,7 @@ YSC buttons and motion come in one stream. anybox takes the buttons in the first
 - the box never says no, so a command it doesn't take just does nothing. anybox only sends what the box says it has
 - a mouse or keyboard you set in the app after connecting shows up within a second
 - unplugging the box from this PC doesn't disconnect anybox, because it talks to the app's port and that stays open. the app just loses the mouse and keyboard, so they go away from the snapshot with an `Event::Changed` and come back the same way when you plug it back in (the app doing that was seen on a real box). the box forgets its locks over that, so when it's back you also get an `Event::SessionReset`, and anybox puts your locks back and lets go of what you held. a replug quicker than a second can slip past that though
-- `info.peripheral` comes from the app's `device.VID()` and `device.PID()`, which name the first device plugged into the box, not always the mouse. with nothing plugged in the app answers a default pair that's also a real Logitech receiver, so anybox leaves it empty then
+- `info.peripheral` comes from the app's `device.VID()` and `device.PID()`. with nothing plugged in the app answers a default pair that's also a real Logitech receiver, so anybox leaves it empty then
 - the legacy port answers exactly like a KMBox B+, so a B+ opens as a legacy Ferrum too. anybox only promises the legacy commands there, and nobody tried it on a B+
 - locking one way of an axis needs an app that has directional locks, otherwise (and on the legacy port) you can only lock a whole axis
 - i don't know yet whether the events include what anybox sends or only what you do yourself

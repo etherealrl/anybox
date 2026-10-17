@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "anybox-rs"
-version = "0.8.0"
+version = "0.9.0"
 description = "one API for the most popular passthrough boxes"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -26,7 +26,7 @@ Homepage = "https://github.com/etherealrl/anybox"
 [project.optional-dependencies]
 test = ["pytest"]
 # the medius package for `device.medius()`, at the medius version this library has inside
-medius = ["medius==3.4.3"]
+medius = ["medius==3.4.6"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["anybox"]
@@ -45,9 +45,19 @@ build-frontend = "build"
 test-command = "python -c \"import anybox; print(anybox.version(), anybox.ABI_VERSION, anybox.has_mock())\""
 
 [tool.cibuildwheel.linux]
-# serialport reads USB ids through libudev, which auditwheel then puts in the wheel, and the container has no Rust
-before-all = "dnf install -y systemd-devel pkgconfig && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none"
+# serialport reads USB ids through libudev, which auditwheel then puts in the wheel, and the container has no Rust.
+# only BaseOS has systemd-devel, and the default mirror once took 27 minutes to list every repo, so it picks the
+# fastest one
+before-all = "dnf install -y --disablerepo='*' --enablerepo=baseos --setopt=fastestmirror=True systemd-devel pkgconfig && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none"
 environment = { PATH = "$HOME/.cargo/bin:$PATH" }
 
 [tool.ruff]
 line-length = 115
+
+# chosen on purpose and not ruff's default, which grows between releases. check.sh runs it with the ruff it pins
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# the keys I and O are named after the letters on them
+"anybox/_types.py" = ["E741"]

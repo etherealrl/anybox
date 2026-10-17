@@ -1,11 +1,18 @@
 name: ci
 
 # a push only runs on the public repo, the private one pays for its minutes (Windows counts double) and
-# its hooks already run the same checks, so there it only runs when someone asks
+# its hooks already run the same checks, so there it only runs when someone asks. a release runs the checks on
+# its tag, then puts the crate on crates.io
 on:
   workflow_dispatch:
   pull_request:
   push:
+  release:
+    types: [published]
+
+# a pull request runs its own code here, so the token only reads, and publish asks for what it needs itself
+permissions:
+  contents: read
 
 jobs:
   check:
@@ -20,22 +27,21 @@ jobs:
       # serialport reads USB ids through libudev on Linux
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libudev-dev pkg-config
-      # rustup reads rust-toolchain.toml and installs the pinned stable with rustfmt and clippy
+      # rustup reads rust-toolchain.toml and installs the latest stable with rustfmt and clippy
       - run: rustup show active-toolchain
+      # the target dir and the cargo installs below, so a run only builds what changed
+      - uses: Swatinem/rust-cache@v2
       # the header check needs cbindgen, pinned because its output changes between versions
       - if: runner.os == 'Linux'
         run: cargo install cbindgen --version 0.29.4 --locked
+      # check.sh runs the C# tests too
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
       # check.sh runs the Python tests through uv, which fetches the Pythons it needs
       - run: python -m pip install uv
       - run: bash scripts/check.sh
         shell: bash
-      # cl is only on the path inside a developer prompt, so the C smoke test gets one here
-      - if: runner.os == 'Windows'
-        shell: cmd
-        run: |
-          for /f "usebackq delims=" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do call "%%i\VC\Auxiliary\Build\vcvars64.bat"
-          rem a bare bash could be WSL's from System32
-          "%ProgramFiles%\Git\bin\bash.exe" scripts/test-c.sh
       # the oldest Rust the crate says it builds on, and each box family on its own like the README offers
       - if: runner.os == 'Linux'
         run: |
@@ -45,3 +51,35 @@ jobs:
           cargo clippy --no-default-features --features makcu --all-targets -- -D warnings
           cargo clippy --no-default-features --features ferrum --all-targets -- -D warnings
           cargo clippy --no-default-features --features ysc8k --all-targets -- -D warnings
+
+  publish:
+    if: github.event_name == 'release' && github.repository == 'etherealrl/anybox'
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # trusted publishing, crates.io trusts this workflow so there's no long lived token to leak
+      id-token: write
+    environment: crates
+    steps:
+      - uses: actions/checkout@v5
+      # cargo publish builds the crate once more before it uploads it
+      - run: sudo apt-get update && sudo apt-get install -y libudev-dev pkg-config
+      # crates.io never takes the same version twice, so a rerun after the upload went through has nothing left to do
+      - id: published
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+          code="$(curl -s -o /dev/null -w '%{http_code}' -A 'anybox release (github.com/etherealrl/anybox)' \
+            "https://crates.io/api/v1/crates/anybox-rs/$version")"
+          case "$code" in
+            200) echo "anybox-rs $version is already on crates.io, so there's nothing to publish"; echo "skip=true" >> "$GITHUB_OUTPUT" ;;
+            404) echo "skip=false" >> "$GITHUB_OUTPUT" ;;
+            *) echo "crates.io answered $code, so there's no telling if $version is up there already" >&2; exit 1 ;;
+          esac
+      - if: steps.published.outputs.skip == 'false'
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+      - if: steps.published.outputs.skip == 'false'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: cargo publish -p anybox-rs --locked

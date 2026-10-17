@@ -1,10 +1,11 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anybox::{Clock, DropSource, Event, Events, RecvTimeoutError, Stamp, TryRecvError};
 
 use crate::status::{
-    ANYBOX_STATUS_RECV_CLOSED, ANYBOX_STATUS_RECV_TIMEOUT, AnyboxStatus, fail, guard, guard_free,
-    read, write,
+    ANYBOX_STATUS_CLOSED, ANYBOX_STATUS_RECV_CLOSED, ANYBOX_STATUS_RECV_TIMEOUT, AnyboxStatus,
+    fail, guard, guard_free, read, write,
 };
 use crate::values::{action_number, button_number, nanos};
 
@@ -44,13 +45,24 @@ pub const ANYBOX_DROP_SOURCE_HOST: u32 = 1;
 pub const ANYBOX_CLOCK_MEDIUS_HOST_CHIP: u32 = 0;
 pub const ANYBOX_CLOCK_MEDIUS_DEVICE_CHIP: u32 = 1;
 
+/// a box clock counts microseconds in 32 bits, so it rolls over after this many
+pub const ANYBOX_BOX_CLOCK_WRAP_US: u64 = 4_294_967_296;
+
 /// a receiver of events from one device. it can be read from any thread, and two threads reading the same one
 /// split the events between them
-pub struct AnyboxEvents(Events);
+pub struct AnyboxEvents {
+    events: Events,
+    // Rust's recv says Closed for both, so this is what tells a reader its receiver was closed from the device
+    // going away
+    closed: AtomicBool,
+}
 
 impl AnyboxEvents {
     pub(crate) fn boxed(events: Events) -> *mut Self {
-        Box::into_raw(Box::new(Self(events)))
+        Box::into_raw(Box::new(Self {
+            events,
+            closed: AtomicBool::new(false),
+        }))
     }
 }
 
@@ -83,6 +95,11 @@ pub struct AnyboxEvent {
     pub has_box_time: bool,
     pub box_clock: u32,
     pub box_time_us: u32,
+    /// `since_open_ns` on the clock `anybox_monotonic_ns` reads, so it lines up with events from other devices and
+    /// other programs on this machine. Python's `time.perf_counter_ns()` and .NET's `Stopwatch` read that clock too
+    pub arrived_ns: u64,
+    /// `received_since_open_ns` on that clock
+    pub received_ns: u64,
 }
 
 fn stamped(kind: u32, at: &Stamp) -> AnyboxEvent {
@@ -95,6 +112,8 @@ fn stamped(kind: u32, at: &Stamp) -> AnyboxEvent {
         has_box_time: at.box_time.is_some(),
         box_clock: at.box_time.map_or(0, |time| clock_number(time.clock)),
         box_time_us: at.box_time.map_or(0, |time| time.micros),
+        arrived_ns: at.arrived_ns(),
+        received_ns: at.received_ns(),
         ..AnyboxEvent::default()
     }
 }
@@ -180,14 +199,22 @@ fn timed_out() -> AnyboxStatus {
     )
 }
 
-fn ended() -> AnyboxStatus {
-    fail(ANYBOX_STATUS_RECV_CLOSED, anybox::Closed.to_string())
+fn ended(events: &AnyboxEvents) -> AnyboxStatus {
+    if events.closed.load(Ordering::Acquire) {
+        fail(
+            ANYBOX_STATUS_CLOSED,
+            "this receiver was closed, get a new one with anybox_device_events",
+        )
+    } else {
+        fail(ANYBOX_STATUS_RECV_CLOSED, anybox::Closed.to_string())
+    }
 }
 
 /// the next event. a negative `timeout_us` waits as long as it takes, 0 doesn't wait at all, and anything else
 /// waits up to that many microseconds. it's `ANYBOX_STATUS_RECV_TIMEOUT` when nothing came, and
 /// `ANYBOX_STATUS_RECV_CLOSED` once the device is gone and everything queued was read, so a reader that loops until
-/// then gets every event. closing the device from another thread wakes it
+/// then gets every event. closing the device or `anybox_events_close` from another thread wakes it, and after the
+/// second it's `ANYBOX_STATUS_CLOSED`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn anybox_events_recv(
     events: *const AnyboxEvents,
@@ -195,19 +222,20 @@ pub unsafe extern "C" fn anybox_events_recv(
     out: *mut AnyboxEvent,
 ) -> AnyboxStatus {
     guard(|| {
-        let events = &unsafe { read(events, "events") }?.0;
+        let events = unsafe { read(events, "events") }?;
         let out = write(out, "out")?;
         let event = match timeout_us {
-            ..0 => events.recv().map_err(|_| ended())?,
-            0 => events.try_recv().map_err(|error| match error {
+            ..0 => events.events.recv().map_err(|_| ended(events))?,
+            0 => events.events.try_recv().map_err(|error| match error {
                 TryRecvError::Empty => timed_out(),
-                TryRecvError::Closed => ended(),
+                TryRecvError::Closed => ended(events),
             })?,
             _ => events
+                .events
                 .recv_timeout(Duration::from_micros(timeout_us as u64))
                 .map_err(|error| match error {
                     RecvTimeoutError::Timeout => timed_out(),
-                    RecvTimeoutError::Closed => ended(),
+                    RecvTimeoutError::Closed => ended(events),
                 })?,
         };
         out.set(event_struct(&event));
@@ -215,8 +243,23 @@ pub unsafe extern "C" fn anybox_events_recv(
     })
 }
 
-/// null does nothing. it must not run while another thread is in `anybox_events_recv` on it, close the device to
-/// wake that one first
+/// ends this receiver now, also while another thread waits in `anybox_events_recv` on it, which then returns
+/// `ANYBOX_STATUS_CLOSED` right away, like every recv after it. whatever was queued is thrown out and the box stops
+/// streaming what only this receiver wanted. a second close does nothing. it doesn't free the receiver, do that
+/// with `anybox_events_free` once no recv is in it
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn anybox_events_close(events: *const AnyboxEvents) -> AnyboxStatus {
+    guard(|| {
+        let events = unsafe { read(events, "events") }?;
+        // before the close, so a reader the close wakes already sees it
+        events.closed.store(true, Ordering::Release);
+        events.events.close();
+        Ok(())
+    })
+}
+
+/// null does nothing. it must not run while another thread is in `anybox_events_recv` on it, wake that one first
+/// with `anybox_events_close` or by closing the device
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn anybox_events_free(events: *mut AnyboxEvents) {
     guard_free(|| {

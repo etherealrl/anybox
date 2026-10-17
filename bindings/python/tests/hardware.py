@@ -8,8 +8,12 @@ import time
 
 import anybox
 
-connect = anybox.Connect(port=sys.argv[1]) if len(sys.argv) > 1 else anybox.Connect()
-with connect.open() as device:
+try:
+    anybox.Connect(port="NOPE99").open()
+except anybox.NotFoundError as error:
+    print(f"a port with nothing on it tried {error.tried}")
+port = sys.argv[1] if len(sys.argv) > 1 else None
+with anybox.Connect(port=port, can=[anybox.Action.MOVE]).open() as device:
     info = device.snapshot().info
     print(f"{info.family.name} on {info.port}, model {info.model}, firmware {info.firmware}")
     with device.events(anybox.EventKinds.BUTTONS) as events:
@@ -26,7 +30,8 @@ with connect.open() as device:
         while (left := deadline - time.monotonic()) > 0:
             event = events.recv(left)
             if isinstance(event, anybox.ButtonEvent) and event.pressed:
-                print(f"got {event.button.name} down")
+                late = (time.perf_counter_ns() - event.at.received_ns) // 1000
+                print(f"got {event.button.name} down, read {late} us ago on the monotonic clock")
                 break
         else:
             print("no button came")

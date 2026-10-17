@@ -30,7 +30,7 @@
 
 // bumped on any change to a struct, a constant or a function, so a caller compares it with `anybox_abi_version()`
 // once at start and calls nothing else when they differ
-#define ANYBOX_ABI_VERSION 1
+#define ANYBOX_ABI_VERSION 2
 
 // `button`, `pressed` and the stamp
 #define ANYBOX_EVENT_BUTTON 0
@@ -78,6 +78,49 @@
 #define ANYBOX_CLOCK_MEDIUS_HOST_CHIP 0
 
 #define ANYBOX_CLOCK_MEDIUS_DEVICE_CHIP 1
+
+// a box clock counts microseconds in 32 bits, so it rolls over after this many
+#define ANYBOX_BOX_CLOCK_WRAP_US 4294967296
+
+// not an `ANYBOX_STATUS_IO` error
+#define ANYBOX_IO_KIND_NONE 0
+
+// a kind this table has no number for, the message still says what it was
+#define ANYBOX_IO_KIND_OTHER 1
+
+#define ANYBOX_IO_KIND_NOT_FOUND 2
+
+#define ANYBOX_IO_KIND_PERMISSION_DENIED 3
+
+#define ANYBOX_IO_KIND_TIMED_OUT 4
+
+#define ANYBOX_IO_KIND_BROKEN_PIPE 5
+
+#define ANYBOX_IO_KIND_WOULD_BLOCK 6
+
+#define ANYBOX_IO_KIND_INVALID_INPUT 7
+
+#define ANYBOX_IO_KIND_INVALID_DATA 8
+
+#define ANYBOX_IO_KIND_UNEXPECTED_EOF 9
+
+#define ANYBOX_IO_KIND_INTERRUPTED 10
+
+#define ANYBOX_IO_KIND_UNSUPPORTED 11
+
+#define ANYBOX_IO_KIND_OUT_OF_MEMORY 12
+
+#define ANYBOX_IO_KIND_RESOURCE_BUSY 13
+
+#define ANYBOX_IO_KIND_WRITE_ZERO 14
+
+#define ANYBOX_IO_KIND_NOT_CONNECTED 15
+
+// ctrl, shift, alt and gui on either side are the keys from this one to `ANYBOX_KEY_MODIFIER_LAST`. a keyboard
+// report keeps them in a byte of their own
+#define ANYBOX_KEY_MODIFIER_FIRST 224
+
+#define ANYBOX_KEY_MODIFIER_LAST 231
 
 #define ANYBOX_KEY_A 4
 
@@ -458,6 +501,8 @@
 #define ANYBOX_CLICK_TIMING_OFF 3
 
 // combined with `|` for `anybox_device_events`
+#define ANYBOX_EVENTS_NONE 0
+
 #define ANYBOX_EVENTS_BUTTONS 1
 
 #define ANYBOX_EVENTS_MOTION 2
@@ -492,7 +537,8 @@ typedef struct AnyboxSnapshot AnyboxSnapshot;
 // a list of strings, like the ports `anybox_candidates` gives
 typedef struct AnyboxStringList AnyboxStringList;
 
-// what a call did, `ANYBOX_STATUS_OK` or the reason it failed. `anybox_last_error_message` has the text
+// what a call did, `ANYBOX_STATUS_OK` or the reason it failed. `anybox_last_error_message` has the text and
+// `anybox_last_error_detail` the fields
 typedef uint32_t AnyboxStatus;
 
 // how `anybox_device_click` and the taps are timed on a box that can't time them itself. `fixed_us` is only read for
@@ -511,9 +557,10 @@ typedef struct AnyboxConnectOptions {
     uint32_t family;
     // only a Ferrum on this API, see `Connect::ferrum_api` in the Rust docs
     uint32_t ferrum_api;
-    // skips a box that can't do these, one bit per action (bit n for action n). `ANYBOX_ACTION_CONNECT` matches no
-    // box
-    uint64_t can;
+    // skips a box that can't do these, `can_len` of `ANYBOX_ACTION_*`. `ANYBOX_ACTION_CONNECT` matches no box. it
+    // can be null when `can_len` is 0
+    const uint32_t *can;
+    uintptr_t can_len;
     // only the box with this id, whatever port it's on
     uint32_t id_kind;
     uint8_t id_mac[6];
@@ -521,6 +568,60 @@ typedef struct AnyboxConnectOptions {
     // what a click does on a box with no click of its own
     struct AnyboxClickTiming click_timing;
 } AnyboxConnectOptions;
+
+// the fields of a failure, so code can tell errors apart without reading the message. which fields mean something
+// depends on `kind`, the rest are 0 and null. every string lives as long as the failure it came from, see
+// `anybox_last_error_detail`
+typedef struct AnyboxErrorDetail {
+    // the failure's status, `ANYBOX_STATUS_OK` when nothing failed
+    uint32_t kind;
+    // set for `ANYBOX_STATUS_UNSUPPORTED`, `ANYBOX_STATUS_INVALID_ARGUMENT`, `ANYBOX_STATUS_REJECTED`,
+    // `ANYBOX_STATUS_TIMEOUT` and `ANYBOX_STATUS_INTERRUPTED` when anybox made them
+    bool has_action;
+    uint32_t action;
+    // the box family the error is about, `ANYBOX_FAMILY_ANY` when it names none. the same goes for the two below,
+    // which `ANYBOX_STATUS_WRONG_FAMILY` sets
+    uint32_t family;
+    uint32_t expected_family;
+    uint32_t found_family;
+    // the port the error is about, null when it names none
+    const char *port;
+    // the reason of `ANYBOX_STATUS_UNSUPPORTED`, the detail of `ANYBOX_STATUS_INVALID_ARGUMENT` and
+    // `ANYBOX_STATUS_REJECTED`, null otherwise
+    const char *text;
+    // the ids `ANYBOX_STATUS_WRONG_BOX` compares, flattened like in `AnyboxInfo`
+    uint32_t expected_id_kind;
+    uint8_t expected_id_mac[6];
+    const char *expected_id_serial;
+    uint32_t found_id_kind;
+    uint8_t found_id_mac[6];
+    const char *found_id_serial;
+    // the firmware `ANYBOX_STATUS_FIRMWARE_TOO_OLD` and `ANYBOX_STATUS_LIBRARY_TOO_OLD` found, flattened like in
+    // `AnyboxInfo`
+    uint32_t found_firmware_kind;
+    uint16_t found_firmware_major;
+    uint16_t found_firmware_minor;
+    uint16_t found_firmware_patch;
+    uint8_t found_firmware_protocol;
+    uint32_t found_firmware_build;
+    const char *found_firmware_text;
+    // the firmware `ANYBOX_STATUS_FIRMWARE_TOO_OLD` needs
+    uint32_t needed_firmware_kind;
+    uint16_t needed_firmware_major;
+    uint16_t needed_firmware_minor;
+    uint16_t needed_firmware_patch;
+    uint8_t needed_firmware_protocol;
+    uint32_t needed_firmware_build;
+    const char *needed_firmware_text;
+    // the APIs `ANYBOX_STATUS_WRONG_FERRUM_API` compares
+    uint32_t expected_ferrum_api;
+    uint32_t found_ferrum_api;
+    // an `ANYBOX_IO_KIND_*` for `ANYBOX_STATUS_IO`
+    uint32_t io_kind;
+    // the operating system's own error code, when the I/O error came from it
+    bool has_os_error;
+    int32_t os_error;
+} AnyboxErrorDetail;
 
 // how one click or tap goes. with no hold, the box uses its own timing, or the device's click timing if it has
 // none
@@ -559,6 +660,11 @@ typedef struct AnyboxEvent {
     bool has_box_time;
     uint32_t box_clock;
     uint32_t box_time_us;
+    // `since_open_ns` on the clock `anybox_monotonic_ns` reads, so it lines up with events from other devices and
+    // other programs on this machine. Python's `time.perf_counter_ns()` and .NET's `Stopwatch` read that clock too
+    uint64_t arrived_ns;
+    // `received_since_open_ns` on that clock
+    uint64_t received_ns;
 } AnyboxEvent;
 
 // who the box is. every string lives as long as the snapshot it came from
@@ -663,6 +769,11 @@ uint32_t anybox_abi_version(void);
 // the anybox version this library was built from
 const char *anybox_version(void);
 
+// now in nanoseconds on the OS monotonic clock, the one the `arrived_ns` and `received_ns` of an event are on:
+// QueryPerformanceCounter on Windows, CLOCK_MONOTONIC on Linux and CLOCK_UPTIME_RAW on macOS. it only compares on
+// the same machine within one boot
+uint64_t anybox_monotonic_ns(void);
+
 // whether this library was built with the mock functions, ask BEFORE calling any of them
 bool anybox_has_mock(void);
 
@@ -688,12 +799,27 @@ uintptr_t anybox_scan_list_count(const struct AnyboxScanList *list);
 const char *anybox_scan_list_port(const struct AnyboxScanList *list, uintptr_t index);
 
 // the box on entry `index` as a snapshot you free with `anybox_snapshot_free`, or the error a search of just that
-// port gives, with its text in `anybox_last_error_message`. mostly that's busy (the box you already have open
-// shows up as busy too, so leave its port out), not allowed, too old, `ANYBOX_STATUS_NO_BOX_CAN` for a box that
-// can't do what `can` asked, or `ANYBOX_STATUS_NOT_FOUND` when nothing answered
+// port gives, which becomes the last error so `anybox_last_error_message` and `anybox_last_error_detail` have it.
+// mostly that's busy (the box you already have open shows up as busy too, so leave its port out), not allowed, too
+// old, `ANYBOX_STATUS_NO_BOX_CAN` for a box that can't do what `can` asked, or `ANYBOX_STATUS_NOT_FOUND` when
+// nothing answered
 AnyboxStatus anybox_scan_list_result(const struct AnyboxScanList *list,
                                      uintptr_t index,
                                      struct AnyboxSnapshot **out);
+
+// the fields of entry `index`'s error, `kind` is `ANYBOX_STATUS_OK` for an entry that's a box. the strings live as
+// long as the list
+AnyboxStatus anybox_scan_list_error_detail(const struct AnyboxScanList *list,
+                                           uintptr_t index,
+                                           struct AnyboxErrorDetail *out);
+
+// the `ANYBOX_ACTION_*` the box on entry `index` couldn't do, when it's `ANYBOX_STATUS_NO_BOX_CAN` or an entry of
+// `anybox_last_error_incapable`, and none for any other. it's filled like `anybox_snapshot_buttons`
+AnyboxStatus anybox_scan_list_missing(const struct AnyboxScanList *list,
+                                      uintptr_t index,
+                                      uint32_t *out,
+                                      uintptr_t cap,
+                                      uintptr_t *len);
 
 void anybox_scan_list_free(struct AnyboxScanList *list);
 
@@ -724,12 +850,16 @@ AnyboxStatus anybox_device_move_now(const struct AnyboxDevice *device, int16_t d
 // holds a button down until `anybox_device_release`
 AnyboxStatus anybox_device_press(const struct AnyboxDevice *device, uint32_t button);
 
+// lets go of a button
 AnyboxStatus anybox_device_release(const struct AnyboxDevice *device, uint32_t button);
 
 // the box's own click, or a click timed on the PC with the device's click timing if the box doesn't have one
 AnyboxStatus anybox_device_click(const struct AnyboxDevice *device,
                                  uint32_t button);
 
+// the box's own click, or one timed on the PC with the device's click timing if the box has none, which blocks the
+// thread for the hold. `click` says how long to hold it and whether to fail instead of letting anybox time it from
+// the PC
 AnyboxStatus anybox_device_click_with(const struct AnyboxDevice *device,
                                       uint32_t button,
                                       const struct AnyboxClick *click);
@@ -737,12 +867,16 @@ AnyboxStatus anybox_device_click_with(const struct AnyboxDevice *device,
 // holds a key down until `anybox_device_release_key`. a key is its HID usage, from 0x04 to 0xE7
 AnyboxStatus anybox_device_press_key(const struct AnyboxDevice *device, uint8_t key);
 
+// lets go of a key
 AnyboxStatus anybox_device_release_key(const struct AnyboxDevice *device, uint8_t key);
 
 // presses and lets go, timed by the box, or on the PC with the device's click timing if the box can't
 AnyboxStatus anybox_device_tap_key(const struct AnyboxDevice *device,
                                    uint8_t key);
 
+// presses and lets go, timed by the box, or on the PC with the device's click timing if the box can't, which blocks
+// the thread for the hold. `tap` says how long to hold it and whether to fail instead of letting anybox time it
+// from the PC
 AnyboxStatus anybox_device_tap_key_with(const struct AnyboxDevice *device,
                                         uint8_t key,
                                         const struct AnyboxClick *tap);
@@ -750,10 +884,14 @@ AnyboxStatus anybox_device_tap_key_with(const struct AnyboxDevice *device,
 // holds a media key down until `anybox_device_release_media`. a media key is its HID consumer usage
 AnyboxStatus anybox_device_press_media(const struct AnyboxDevice *device, uint16_t key);
 
+// lets go of a media key
 AnyboxStatus anybox_device_release_media(const struct AnyboxDevice *device, uint16_t key);
 
+// presses and lets go of a media key, timed like a key's tap
 AnyboxStatus anybox_device_tap_media(const struct AnyboxDevice *device, uint16_t key);
 
+// presses and lets go of a media key, timed like a key's tap, which blocks the thread for the hold. `tap` says how
+// long to hold it and whether to fail instead of letting anybox time it from the PC
 AnyboxStatus anybox_device_tap_media_with(const struct AnyboxDevice *device,
                                           uint16_t key,
                                           const struct AnyboxClick *tap);
@@ -763,15 +901,17 @@ AnyboxStatus anybox_device_tap_media_with(const struct AnyboxDevice *device,
 AnyboxStatus anybox_device_lock_button(const struct AnyboxDevice *device,
                                        uint32_t button);
 
+// lets the physical button through again
 AnyboxStatus anybox_device_unlock_button(const struct AnyboxDevice *device, uint32_t button);
 
 // keeps the physical key from reaching the PC until `anybox_device_unlock_key`
 AnyboxStatus anybox_device_lock_key(const struct AnyboxDevice *device, uint8_t key);
 
+// lets the physical key through again
 AnyboxStatus anybox_device_unlock_key(const struct AnyboxDevice *device, uint8_t key);
 
-// keeps physical motion one way or both ways along an axis from reaching the PC until
-// `anybox_device_unlock_axis`. your own moves still go through
+// keeps physical motion one way or both ways along an axis from reaching the PC until `anybox_device_unlock_axis`.
+// your own moves still go through
 AnyboxStatus anybox_device_lock_axis(const struct AnyboxDevice *device,
                                      uint32_t axis,
                                      uint32_t direction);
@@ -781,8 +921,8 @@ AnyboxStatus anybox_device_unlock_axis(const struct AnyboxDevice *device,
                                        uint32_t axis,
                                        uint32_t direction);
 
-// keeps `percent` of the physical motion one way or both ways along an axis, from -255 to 255. 100 leaves it
-// alone, 0 blocks it and -100 inverts it. `anybox_device_unlock_axis` puts it back to 100
+// keeps `percent` of the physical motion one way or both ways along an axis, from -255 to 255. 100 leaves it alone,
+// 0 blocks it and -100 inverts it. `anybox_device_unlock_axis` puts it back to 100
 AnyboxStatus anybox_device_scale_axis(const struct AnyboxDevice *device,
                                       uint32_t axis,
                                       uint32_t direction,
@@ -823,27 +963,63 @@ void anybox_device_free(struct AnyboxDevice *device);
 // the next event. a negative `timeout_us` waits as long as it takes, 0 doesn't wait at all, and anything else
 // waits up to that many microseconds. it's `ANYBOX_STATUS_RECV_TIMEOUT` when nothing came, and
 // `ANYBOX_STATUS_RECV_CLOSED` once the device is gone and everything queued was read, so a reader that loops until
-// then gets every event. closing the device from another thread wakes it
+// then gets every event. closing the device or `anybox_events_close` from another thread wakes it, and after the
+// second it's `ANYBOX_STATUS_CLOSED`
 AnyboxStatus anybox_events_recv(const struct AnyboxEvents *events,
                                 int64_t timeout_us,
                                 struct AnyboxEvent *out);
 
-// null does nothing. it must not run while another thread is in `anybox_events_recv` on it, close the device to
-// wake that one first
+// ends this receiver now, also while another thread waits in `anybox_events_recv` on it, which then returns
+// `ANYBOX_STATUS_CLOSED` right away, like every recv after it. whatever was queued is thrown out and the box stops
+// streaming what only this receiver wanted. a second close does nothing. it doesn't free the receiver, do that
+// with `anybox_events_free` once no recv is in it
+AnyboxStatus anybox_events_close(const struct AnyboxEvents *events);
+
+// null does nothing. it must not run while another thread is in `anybox_events_recv` on it, wake that one first
+// with `anybox_events_close` or by closing the device
 void anybox_events_free(struct AnyboxEvents *events);
 
+// the fields of the last call that failed on this thread, `kind` is `ANYBOX_STATUS_OK` before anything failed.
+// the strings stay valid as long as `anybox_last_error_message` does. this one and the two below never change the
+// last error, a null `out` is `ANYBOX_STATUS_INVALID_ARGUMENT` and leaves it as it was
+AnyboxStatus anybox_last_error_detail(struct AnyboxErrorDetail *out);
+
+// the ports the last failure on this thread looked at, when it was `ANYBOX_STATUS_NOT_FOUND`, and an empty list for
+// any other. it's a copy of its own, free it with `anybox_string_list_free`
+AnyboxStatus anybox_last_error_tried(struct AnyboxStringList **out);
+
+// the boxes that answered when the last failure on this thread was `ANYBOX_STATUS_NO_BOX_CAN`, an empty list for
+// any other. each entry is a box (its error detail is `ANYBOX_STATUS_OK`) and `anybox_scan_list_missing` says what
+// it couldn't do. it's a copy of its own, free it with `anybox_scan_list_free`
+AnyboxStatus anybox_last_error_incapable(struct AnyboxScanList **out);
+
 #if defined(ANYBOX_FEATURE_MOCK)
-// a device over a new mock box, a five button mouse with a wheel. it runs the exact code a real Medius gets. null
-// `click_timing` is the default. free the mock with `anybox_mock_free` and the device with `anybox_device_free`
+// a device over a new mock box, a five button mouse with a wheel, and with `keyboard` a six key keyboard with media
+// keys behind it too. it runs the exact code a real Medius gets, checking the link every 250 ms like a real one.
+// null `click_timing` is the default. free the mock with `anybox_mock_free` and the device with
+// `anybox_device_free`
 AnyboxStatus anybox_mock_medius_open(const struct AnyboxClickTiming *click_timing,
+                                     bool keyboard,
                                      struct AnyboxMock **mock,
                                      struct AnyboxDevice **out);
 #endif
 
 #if defined(ANYBOX_FEATURE_MOCK)
-// whether anything subscribed to the mock's input yet. a receiver subscribes on its own thread, so wait for this
-// before you push, otherwise the box drops what you pushed like a real one would
-bool anybox_mock_subscribed(const struct AnyboxMock *mock);
+// the same as `anybox_mock_medius_open`, except that the link only gets checked on `anybox_mock_tick`, so a test
+// decides when a link event gets noticed and nothing lands between the frames it records
+AnyboxStatus anybox_mock_medius_open_manual(const struct AnyboxClickTiming *click_timing,
+                                            bool keyboard,
+                                            struct AnyboxMock **mock,
+                                            struct AnyboxDevice **out);
+#endif
+
+#if defined(ANYBOX_FEATURE_MOCK)
+// whether the mock box got the subscription of every kind in `kinds` (`ANYBOX_EVENTS_*` combined with `|`) yet.
+// a receiver subscribes each kind on the device's own threads, the keys and media a moment after the buttons, and
+// the box drops what's pushed before its kind is in like a real one would, so wait for this before you push. it's
+// false for a null mock or a bit that isn't a kind
+bool anybox_mock_subscribed(const struct AnyboxMock *mock,
+                            uint32_t kinds);
 #endif
 
 #if defined(ANYBOX_FEATURE_MOCK)
@@ -867,6 +1043,84 @@ AnyboxStatus anybox_mock_push_buttons(const struct AnyboxMock *mock,
                                       uint32_t ts_us,
                                       bool pressed,
                                       uint32_t held);
+#endif
+
+#if defined(ANYBOX_FEATURE_MOCK)
+// the physical keys held now, as if from the box, `len` HID usages from `keys`, modifiers included. it's the whole
+// held set like `anybox_mock_push_buttons`, so the last release is pushing no keys at all. `keys` can be null when
+// `len` is 0
+AnyboxStatus anybox_mock_push_keys(const struct AnyboxMock *mock,
+                                   uint8_t seq,
+                                   uint32_t ts_us,
+                                   bool pressed,
+                                   const uint8_t *keys,
+                                   uintptr_t len);
+#endif
+
+#if defined(ANYBOX_FEATURE_MOCK)
+// the media keys held now, as if from the box, `len` consumer usages from `media`, the whole held set like the keys
+AnyboxStatus anybox_mock_push_media(const struct AnyboxMock *mock,
+                                    uint8_t seq,
+                                    uint32_t ts_us,
+                                    bool pressed,
+                                    const uint16_t *media,
+                                    uintptr_t len);
+#endif
+
+#if defined(ANYBOX_FEATURE_MOCK)
+// one pass of what a real device checks on the link every 250 ms, on a mock from
+// `anybox_mock_medius_open_manual`, which is where it notices `anybox_mock_link_lost` and `anybox_mock_restart`.
+// the box drop counter and the clone are only looked at every fourth pass, and the mock keeps its own timers (a
+// restarted clone is back 100 ms later), so a test still waits for those
+AnyboxStatus anybox_mock_tick(const struct AnyboxMock *mock);
+#endif
+
+#if defined(ANYBOX_FEATURE_MOCK)
+// how many frames the mock box got since it opened or since `anybox_mock_clear_recorded`
+uintptr_t anybox_mock_recorded(const struct AnyboxMock *mock);
+#endif
+
+#if defined(ANYBOX_FEATURE_MOCK)
+// frame number `index` the mock box got, its type byte (the protocol's, `MOVE` is 1) in `type` and its payload
+// copied into `payload`, `len` getting the payload's whole length even when `cap` was too small
+AnyboxStatus anybox_mock_recorded_frame(const struct AnyboxMock *mock,
+                                        uintptr_t index,
+                                        uint8_t *type,
+                                        uint8_t *payload,
+                                        uintptr_t cap,
+                                        uintptr_t *len);
+#endif
+
+#if defined(ANYBOX_FEATURE_MOCK)
+// forgets every frame the mock box got so far
+AnyboxStatus anybox_mock_clear_recorded(const struct AnyboxMock *mock);
+#endif
+
+#if defined(ANYBOX_FEATURE_MOCK)
+// sends every receiver of `device` one event of every kind, with every field filled in, through the same queue
+// as real ones, so you can test how your code reads each kind with no box. none of them does to the device what
+// the real one would, so the device stays connected through the example `ANYBOX_EVENT_DISCONNECTED`
+AnyboxStatus anybox_mock_example_events(const struct AnyboxDevice *device);
+#endif
+
+#if defined(ANYBOX_FEATURE_MOCK)
+// the link between the box's two chips drops and comes back, so the box lets go of what it held and the device
+// sends `ANYBOX_EVENT_SESSION_RESET` once it checks the link (within 250 ms, or on the next `anybox_mock_tick` of a
+// manual mock)
+AnyboxStatus anybox_mock_link_lost(const struct AnyboxMock *mock);
+#endif
+
+#if defined(ANYBOX_FEATURE_MOCK)
+// the box restarts, so the device sends `ANYBOX_EVENT_DISCONNECTED` and then `ANYBOX_EVENT_RECONNECTED`, noticed the
+// way `anybox_mock_link_lost` is
+AnyboxStatus anybox_mock_restart(const struct AnyboxMock *mock);
+#endif
+
+#if defined(ANYBOX_FEATURE_MOCK)
+// makes the last error on this thread anybox's example of the error with this status, with every field it has
+// filled in, and returns the status, so you can test how your code handles each one with no box. a status with no
+// example (`ANYBOX_STATUS_OK`, the ones only this C ABI makes) is `ANYBOX_STATUS_INVALID_ARGUMENT`
+AnyboxStatus anybox_mock_fail(AnyboxStatus status);
 #endif
 
 #if defined(ANYBOX_FEATURE_MOCK)
@@ -903,7 +1157,7 @@ AnyboxStatus anybox_snapshot_axes(const struct AnyboxSnapshot *snapshot,
 void anybox_snapshot_free(struct AnyboxSnapshot *snapshot);
 
 // what went wrong in the last call that failed on this thread, in UTF-8. it stays valid until the next anybox call
-// on this thread that fails, and it's empty when nothing failed yet
+// on this thread that fails, and it's empty when nothing failed yet. `anybox_last_error_detail` has its fields
 const char *anybox_last_error_message(void);
 
 #ifdef __cplusplus

@@ -1351,7 +1351,7 @@ fn a_ferrum_search_never_lists_a_ysc_port() {
 #[test]
 fn candidates_are_the_ports_a_search_would_look_at_in_port_order() {
     let listed = vec![
-        ch343_serial("COM11", "5C68244673"),
+        ch343_serial("COM11", "A1B2C3D4E5"),
         ftdi("COM4"),
         usb("COM5", 0x1A86, 0xFE0C, Some("TOWMCULEFT")),
         usb("COM6", 0x1A86, 0xFE0C, Some("TOWMCURIGHT")),
@@ -1375,7 +1375,7 @@ fn candidates_are_the_ports_a_search_would_look_at_in_port_order() {
     };
     assert_eq!(candidates(Connect::auto().family(Family::Ferrum)), ferrum);
     assert_eq!(
-        candidates(Connect::auto().id(StableId::UsbSerial("5C68244673".into()))),
+        candidates(Connect::auto().id(StableId::UsbSerial("A1B2C3D4E5".into()))),
         ["COM11"]
     );
     assert_eq!(candidates(Connect::port("COM9")), ["COM9"]);

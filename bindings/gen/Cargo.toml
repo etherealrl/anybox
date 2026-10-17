@@ -1,0 +1,13 @@
+[package]
+name = "anybox-gen"
+version = "0.9.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MPL-2.0"
+authors = ["ethereal"]
+description = "writes the plain calls of every binding from one table"
+repository = "https://github.com/etherealrl/anybox"
+publish = false
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

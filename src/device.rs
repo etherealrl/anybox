@@ -1118,10 +1118,14 @@ impl Core {
                 if output.closing {
                     return;
                 }
+                // a box that came back but never got up again was already said to be down
+                let was_up = output.link_up;
                 output.link_up = false;
                 output.session += 1;
                 drop(output);
-                self.publish(Event::Disconnected);
+                if was_up {
+                    self.publish(Event::Disconnected);
+                }
             }
             Signal::Reconnected(snapshot) => {
                 let mut output = lock(&self.output);
@@ -1194,6 +1198,12 @@ impl Core {
             Signal::Barrier(done) => {
                 let _ = done.send(());
             }
+            #[cfg(feature = "mock")]
+            Signal::Examples(events) => {
+                for event in events {
+                    self.publish(event);
+                }
+            }
             Signal::Stop => {}
         }
     }
@@ -1229,6 +1239,20 @@ fn spawn_link(
             let _ = done.send(());
         })?;
     Ok((handle, finished))
+}
+
+#[cfg(feature = "mock")]
+impl Device {
+    /// sends every receiver one of each event from `Event::examples`, through the same queue as real ones, without
+    /// any of them doing to the device what the real one would. for testing how code reads every kind of event
+    pub fn mock_example_events(&self) {
+        let now = Instant::now();
+        let at = Stamp::new(now, now.saturating_duration_since(self.core.opened));
+        let _ = self
+            .core
+            .signals
+            .send(Signal::Examples(Event::examples(at)));
+    }
 }
 
 #[cfg(test)]

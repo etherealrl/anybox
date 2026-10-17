@@ -20,7 +20,7 @@ class CustomBuildHook(BuildHookInterface):
         build_data["pure_python"] = False
         build_data["tag"] = f"py3-none-{next(iter(sys_tags())).platform}"
         workspace = Path(self.root).parents[1]
-        # rust-toolchain.toml pins the toolchain, rustup installs it on the first cargo call
+        # rust-toolchain.toml asks for the latest stable, rustup installs it on the first cargo call
         if not os.environ.get("ANYBOX_SKIP_CARGO"):
             subprocess.run(
                 ["cargo", "build", "-p", "anybox-capi", "--release", "--locked"], cwd=workspace, check=True

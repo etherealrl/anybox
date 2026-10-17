@@ -5,9 +5,13 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from enum import IntEnum, IntFlag
-from typing import ClassVar, Union
+from typing import ClassVar
 
 EXTRA_BASE = 256
+# the header's ANYBOX_KEY_MODIFIER_FIRST, ANYBOX_KEY_MODIFIER_LAST and ANYBOX_BOX_CLOCK_WRAP_US
+MODIFIER_FIRST = 0xE0
+MODIFIER_LAST = 0xE7
+BOX_CLOCK_WRAP_US = 1 << 32
 
 
 class _Open(IntEnum):
@@ -37,12 +41,23 @@ class Family(IntEnum):
     FERRUM = 3
     YSC = 4
 
+    def __str__(self) -> str:
+        return {
+            Family.MEDIUS: "Medius",
+            Family.MAKCU_V4: "MAKCU V4",
+            Family.FERRUM: "Ferrum",
+            Family.YSC: "YSC 8K",
+        }[self]
+
 
 class FerrumApi(IntEnum):
     """the two ways into a Ferrum, see `FerrumApi` in the Rust docs"""
 
     SOFTWARE = 1
     LEGACY = 2
+
+    def __str__(self) -> str:
+        return "the Ferrum app's port" if self is FerrumApi.SOFTWARE else "the box's own legacy port"
 
 
 class Button(_Open):
@@ -57,7 +72,9 @@ class Button(_Open):
     @classmethod
     def extra(cls, number: int) -> Button:
         if not 0 <= number <= 255:
-            raise ValueError(f"an extra button is numbered from 0 to 255, not {number}")
+            raise ValueError(
+                f"an extra button's number is a byte, from 0 to 255, not {number} (the first real one is 5)"
+            )
         return cls(EXTRA_BASE + number)
 
     @classmethod
@@ -68,12 +85,20 @@ class Button(_Open):
     def _unnamed(cls, value: int) -> str:
         return f"EXTRA{value - EXTRA_BASE}"
 
+    def __str__(self) -> str:
+        if self >= EXTRA_BASE:
+            return f"extra {self - EXTRA_BASE}"
+        return self.name.lower()
+
 
 class Axis(IntEnum):
     X = 0
     Y = 1
     WHEEL = 2
     PAN = 3
+
+    def __str__(self) -> str:
+        return ("X", "Y", "wheel", "pan")[self]
 
 
 class Direction(IntEnum):
@@ -109,6 +134,36 @@ class Action(IntEnum):
     LOCK_AXIS = 20
     LOCK_KEY = 21
     SCALE_AXIS = 22
+
+    def __str__(self) -> str:
+        return _ACTION_TEXTS[self]
+
+
+_ACTION_TEXTS = (
+    "connect",
+    "move",
+    "move now",
+    "press",
+    "release",
+    "click",
+    "scroll",
+    "scroll sideways",
+    "discard pending moves",
+    "report button events",
+    "report motion events",
+    "report key events",
+    "report media key events",
+    "press a key",
+    "release a key",
+    "tap a key",
+    "press a media key",
+    "release a media key",
+    "tap a media key",
+    "lock or unlock a button",
+    "lock or unlock an axis",
+    "lock or unlock a key",
+    "scale an axis",
+)
 
 
 class Execution(IntEnum):
@@ -172,10 +227,35 @@ class Clock(IntEnum):
     MEDIUS_HOST_CHIP = 0
     MEDIUS_DEVICE_CHIP = 1
 
+    def wraps_after(self) -> float:
+        """in seconds, a 32 bit microsecond counter rolls over every 71.6 minutes"""
+        return BOX_CLOCK_WRAP_US / 1_000_000
+
+
+class IoKind(IntEnum):
+    """what kind of I/O error an `IoError` is, `OTHER` for every kind this has no number for"""
+
+    OTHER = 1
+    NOT_FOUND = 2
+    PERMISSION_DENIED = 3
+    TIMED_OUT = 4
+    BROKEN_PIPE = 5
+    WOULD_BLOCK = 6
+    INVALID_INPUT = 7
+    INVALID_DATA = 8
+    UNEXPECTED_EOF = 9
+    INTERRUPTED = 10
+    UNSUPPORTED = 11
+    OUT_OF_MEMORY = 12
+    RESOURCE_BUSY = 13
+    WRITE_ZERO = 14
+    NOT_CONNECTED = 15
+
 
 class EventKinds(IntFlag):
     """which input a receiver wants, combined with `|`. connection events and drops reach every receiver"""
 
+    NONE = 0
     BUTTONS = 1
     MOTION = 2
     KEYS = 4
@@ -292,6 +372,13 @@ class Key(_Open):
     RIGHT_ALT = 0xE6
     RIGHT_GUI = 0xE7
 
+    def is_modifier(self) -> bool:
+        """ctrl, shift, alt and gui on either side. a keyboard report keeps these in a byte of their own"""
+        return MODIFIER_FIRST <= self <= MODIFIER_LAST
+
+    def __str__(self) -> str:
+        return f"key 0x{int(self):02X}"
+
     @classmethod
     def _fits(cls, value: int) -> bool:
         return 0 <= value <= 0xFF
@@ -313,6 +400,9 @@ class MediaKey(_Open):
     @classmethod
     def _fits(cls, value: int) -> bool:
         return 0 <= value <= 0xFFFF
+
+    def __str__(self) -> str:
+        return f"media key 0x{int(self):04X}"
 
 
 class _ClickTimingKind(IntEnum):
@@ -406,8 +496,8 @@ class Info:
 
 @dataclass(frozen=True)
 class Quirk:
-    """one way the box behaves differently, `kind` says which. `min` and `max` are seconds, and only the fields that
-    kind has are set"""
+    """one way the box behaves differently, `kind` says which. `min` and `max` are seconds, and only the fields
+    that kind has are set"""
 
     kind: QuirkKind
     min: float | None = None
@@ -465,10 +555,14 @@ class BoxTime:
 class Stamp:
     """`since_open_ns` is the best guess at when it happened, as the time since the device was opened, and the one
     to compare events by. `received_since_open_ns` is when anybox got it, and `received_qpc` the raw
-    QueryPerformanceCounter value then, on Windows only"""
+    QueryPerformanceCounter value then, on Windows only. `arrived_ns` and `received_ns` are the same two moments on
+    the clock `monotonic_ns()` reads, which is the one `time.perf_counter_ns()` reads on Windows and Linux, so they
+    line up with other devices and the rest of your program"""
 
     since_open_ns: int
     received_since_open_ns: int
+    arrived_ns: int
+    received_ns: int
     received_qpc: int | None = None
     box_time: BoxTime | None = None
 
@@ -548,15 +642,15 @@ class Changed:
     """the snapshot changed with no reconnect, so read it again"""
 
 
-Event = Union[
-    ButtonEvent,
-    KeyEvent,
-    MediaEvent,
-    MotionEvent,
-    Dropped,
-    SessionReset,
-    Rejected,
-    Disconnected,
-    Reconnected,
-    Changed,
-]
+Event = (
+    ButtonEvent
+    | KeyEvent
+    | MediaEvent
+    | MotionEvent
+    | Dropped
+    | SessionReset
+    | Rejected
+    | Disconnected
+    | Reconnected
+    | Changed
+)

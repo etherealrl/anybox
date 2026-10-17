@@ -1,12 +1,17 @@
 use std::ffi::{CString, c_char};
 use std::ptr;
+use std::sync::Arc;
 
 use anybox::{Connect, Found, StableId};
 
 use crate::device::AnyboxDevice;
-use crate::snapshot::{ANYBOX_ID_MAC, ANYBOX_ID_NONE, ANYBOX_ID_USB_SERIAL, AnyboxSnapshot};
+use crate::failure::{AnyboxErrorDetail, Failure};
+use crate::snapshot::{
+    ANYBOX_ID_MAC, ANYBOX_ID_NONE, ANYBOX_ID_USB_SERIAL, AnyboxSnapshot, copy_out,
+};
 use crate::status::{
-    AnyboxStatus, c_string, error, fail, guard, guard_free, invalid, read, status_of, text, write,
+    ANYBOX_STATUS_OK, AnyboxStatus, c_string, error, guard, guard_free, invalid, read, set_failure,
+    text, write,
 };
 use crate::values::{
     ANYBOX_FAMILY_ANY, ANYBOX_FERRUM_API_NONE, AnyboxClickTiming, actions, click_timing,
@@ -24,9 +29,10 @@ pub struct AnyboxConnectOptions {
     pub family: u32,
     /// only a Ferrum on this API, see `Connect::ferrum_api` in the Rust docs
     pub ferrum_api: u32,
-    /// skips a box that can't do these, one bit per action (bit n for action n). `ANYBOX_ACTION_CONNECT` matches no
-    /// box
-    pub can: u64,
+    /// skips a box that can't do these, `can_len` of `ANYBOX_ACTION_*`. `ANYBOX_ACTION_CONNECT` matches no box. it
+    /// can be null when `can_len` is 0
+    pub can: *const u32,
+    pub can_len: usize,
     /// only the box with this id, whatever port it's on
     pub id_kind: u32,
     pub id_mac: [u8; 6],
@@ -41,7 +47,8 @@ impl Default for AnyboxConnectOptions {
             port: ptr::null(),
             family: ANYBOX_FAMILY_ANY,
             ferrum_api: ANYBOX_FERRUM_API_NONE,
-            can: 0,
+            can: ptr::null(),
+            can_len: 0,
             id_kind: ANYBOX_ID_NONE,
             id_mac: [0; 6],
             id_serial: ptr::null(),
@@ -50,14 +57,19 @@ impl Default for AnyboxConnectOptions {
     }
 }
 
-/// the box on a port, or the status and text of the error a search of just that port gives
-type Outcome = Result<Found, (AnyboxStatus, String)>;
-
 /// every port a scan looked at, in port order
-pub struct AnyboxScanList(Vec<(CString, Outcome)>);
+pub struct AnyboxScanList(pub(crate) Vec<Entry>);
+
+pub(crate) struct Entry {
+    pub(crate) port: CString,
+    /// the box on the port, or the error a search of just that port gives
+    pub(crate) result: Result<Found, Arc<Failure>>,
+    /// the `ANYBOX_ACTION_*` the box couldn't do
+    pub(crate) missing: Vec<u32>,
+}
 
 /// a list of strings, like the ports `anybox_candidates` gives
-pub struct AnyboxStringList(Vec<CString>);
+pub struct AnyboxStringList(pub(crate) Vec<CString>);
 
 /// null options are the defaults
 pub(crate) unsafe fn builder(
@@ -78,7 +90,7 @@ pub(crate) unsafe fn builder(
     if let Some(api) = ferrum_api_filter(options.ferrum_api)? {
         connect = connect.ferrum_api(api);
     }
-    for action in actions(options.can)? {
+    for action in unsafe { actions(options.can, options.can_len, "options.can") }? {
         connect = connect.can(action);
     }
     connect = match options.id_kind {
@@ -137,16 +149,25 @@ pub unsafe extern "C" fn anybox_scan(
         let scanned = connect
             .scan()
             .into_iter()
-            .map(|scanned| {
-                let result = scanned
-                    .result
-                    .map_err(|error| (status_of(&error), error.to_string()));
-                (c_string(scanned.port), result)
-            })
+            .map(|scanned| scan_entry(scanned.port, scanned.result))
             .collect();
         out.set(Box::into_raw(Box::new(AnyboxScanList(scanned))));
         Ok(())
     })
+}
+
+/// a port of a scan, with what its box couldn't do when it's `NoBoxCan`
+pub(crate) fn scan_entry(port: String, result: Result<Found, anybox::Error>) -> Entry {
+    let result = result.map_err(|error| Failure::of(&error));
+    let missing = result
+        .as_ref()
+        .err()
+        .map_or_else(Vec::new, |failure| failure.missing());
+    Entry {
+        port: c_string(port),
+        result,
+        missing,
+    }
 }
 
 /// how many ports the scan looked at, 0 for a null list
@@ -164,13 +185,14 @@ pub unsafe extern "C" fn anybox_scan_list_port(
 ) -> *const c_char {
     unsafe { list.as_ref() }
         .and_then(|list| list.0.get(index))
-        .map_or(ptr::null(), |(port, _)| port.as_ptr())
+        .map_or(ptr::null(), |entry| entry.port.as_ptr())
 }
 
 /// the box on entry `index` as a snapshot you free with `anybox_snapshot_free`, or the error a search of just that
-/// port gives, with its text in `anybox_last_error_message`. mostly that's busy (the box you already have open
-/// shows up as busy too, so leave its port out), not allowed, too old, `ANYBOX_STATUS_NO_BOX_CAN` for a box that
-/// can't do what `can` asked, or `ANYBOX_STATUS_NOT_FOUND` when nothing answered
+/// port gives, which becomes the last error so `anybox_last_error_message` and `anybox_last_error_detail` have it.
+/// mostly that's busy (the box you already have open shows up as busy too, so leave its port out), not allowed, too
+/// old, `ANYBOX_STATUS_NO_BOX_CAN` for a box that can't do what `can` asked, or `ANYBOX_STATUS_NOT_FOUND` when
+/// nothing answered
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn anybox_scan_list_result(
     list: *const AnyboxScanList,
@@ -180,20 +202,58 @@ pub unsafe extern "C" fn anybox_scan_list_result(
     guard(|| {
         let list = unsafe { read(list, "list") }?;
         let out = write(out, "out")?;
-        let (_, result) = list.0.get(index).ok_or_else(|| {
-            invalid(format!(
-                "there's no entry {index}, the list has {}",
-                list.0.len()
-            ))
-        })?;
-        match result {
+        match &entry(list, index)?.result {
             Ok(found) => {
                 let snapshot = AnyboxSnapshot::new(&found.info, &found.capabilities);
                 out.set(Box::into_raw(Box::new(snapshot)));
                 Ok(())
             }
-            Err((status, message)) => Err(fail(*status, message.clone())),
+            Err(failure) => Err(set_failure(failure.clone())),
         }
+    })
+}
+
+fn entry(list: &AnyboxScanList, index: usize) -> Result<&Entry, AnyboxStatus> {
+    list.0.get(index).ok_or_else(|| {
+        invalid(format!(
+            "there's no entry {index}, the list has {}",
+            list.0.len()
+        ))
+    })
+}
+
+/// the fields of entry `index`'s error, `kind` is `ANYBOX_STATUS_OK` for an entry that's a box. the strings live as
+/// long as the list
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn anybox_scan_list_error_detail(
+    list: *const AnyboxScanList,
+    index: usize,
+    out: *mut AnyboxErrorDetail,
+) -> AnyboxStatus {
+    guard(|| {
+        let list = unsafe { read(list, "list") }?;
+        let out = write(out, "out")?;
+        out.set(match &entry(list, index)?.result {
+            Ok(_) => AnyboxErrorDetail::empty(ANYBOX_STATUS_OK),
+            Err(failure) => failure.detail,
+        });
+        Ok(())
+    })
+}
+
+/// the `ANYBOX_ACTION_*` the box on entry `index` couldn't do, when it's `ANYBOX_STATUS_NO_BOX_CAN` or an entry of
+/// `anybox_last_error_incapable`, and none for any other. it's filled like `anybox_snapshot_buttons`
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn anybox_scan_list_missing(
+    list: *const AnyboxScanList,
+    index: usize,
+    out: *mut u32,
+    cap: usize,
+    len: *mut usize,
+) -> AnyboxStatus {
+    guard(|| {
+        let list = unsafe { read(list, "list") }?;
+        unsafe { copy_out(&entry(list, index)?.missing, out, cap, len) }
     })
 }
 

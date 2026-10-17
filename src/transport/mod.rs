@@ -18,6 +18,15 @@ pub(crate) mod unix;
 #[cfg(windows)]
 mod windows;
 
+/// now on the OS monotonic clock, in nanoseconds
+pub(crate) fn monotonic_ns() -> u64 {
+    #[cfg(windows)]
+    let now = windows::monotonic_ns();
+    #[cfg(unix)]
+    let now = unix::monotonic_ns();
+    now
+}
+
 /// how long one read waits before the reader checks whether it should stop
 pub(crate) const READ_SLICE: Duration = Duration::from_millis(100);
 

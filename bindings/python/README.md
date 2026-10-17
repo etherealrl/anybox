@@ -20,7 +20,7 @@ with anybox.connect() as device:
 
 `anybox.connect()` takes the first box it finds, `anybox.Connect(port="COM18").open()` or `anybox.Connect(family=anybox.Family.MEDIUS).open()` the one you want, and `anybox.scan()` gives every port with what's on it, which is what a box picker wants. `anybox.candidates()` is the cheap one to call every second. leave the `with` or call `close()` so anybox lets go of what you held and unlocks what you locked
 
-if a box can't do something you get an `anybox.UnsupportedError` saying why, and `device.snapshot().capabilities[anybox.Action.KEY_TAP]` tells you before you try. every error is an `anybox.Error` with the library's own text
+if a box can't do something you get an `anybox.UnsupportedError` saying why, and `device.snapshot().capabilities[anybox.Action.KEY_TAP]` tells you before you try. every error is an `anybox.Error` with the library's own text, and it has the Rust error's fields too, like `error.port`, `error.action` or the boxes a `NoBoxCanError` found and what each one couldn't do
 
 what happens on the box comes in as events:
 
@@ -38,9 +38,9 @@ with anybox.connect() as device:
                 print("it's back")
 ```
 
-`events.recv(timeout)` gives you one at a time instead, `None` when nothing came in time. iterating ends once the device is closed and everything queued was read. just so you know, a receiver of keys sees every key typed on the keyboard behind the box, passwords included
+`events.recv(timeout)` gives you one at a time instead, `None` when nothing came in time. iterating ends once the device is closed and everything queued was read, and a receiver keeps its device open while you have it, unlike in Rust, since the garbage collector would close it under you otherwise. just so you know, a receiver of keys sees every key typed on the keyboard behind the box, passwords included
 
-durations like a click's `hold` are seconds, and an event's stamp is nanoseconds since the device was opened. a number that doesn't fit what the box takes (a move of 40000 for example) is a `ValueError` and never gets cut short on its way
+durations like a click's `hold` are seconds, and an event's stamp is nanoseconds since the device was opened. `at.arrived_ns` and `at.received_ns` are on the clock `time.perf_counter_ns()` reads, so you can line them up with your own timing and with other boxes. a number that doesn't fit what the box takes (a move of 40000 for example) is a `ValueError` and never gets cut short on its way
 
 what only one box can do stays reachable through that box's own API. on a Medius, `device.medius()` gives you the [medius](https://pypi.org/project/medius/) package's own device for clips, transforms, rendering and the rest, and None on every other box. it needs the extra:
 

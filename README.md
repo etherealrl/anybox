@@ -5,13 +5,17 @@
 one API for the most popular passthrough boxes
 
 <p>
-  <img src="https://img.shields.io/badge/rust-111111?style=flat&logo=rust" />
-  <a href="https://crates.io/crates/anybox-rs"><img src="https://img.shields.io/crates/v/anybox-rs?style=flat&amp;color=2b2b2b&amp;labelColor=111111&amp;label=crates.io&amp;logo=data%3Aimage%2Fpng%3Bbase64%2CiVBORw0KGgoAAAANSUhEUgAAABwAAAAcCAIAAAD9b0jDAAAACXBIWXMAAAABAAAAAQBPJcTWAAAAAXNSR0IB2cksfwAAACBjSFJNAAB6JgAAgIQAAPoAAACA6AAAdTAAAOpgAAA6mAAAF3CculE8AAAABGdBTUEAALGPC%2FxhBQAAB5FJREFUeJyN1XdQU9kaAPBLKNJNKCLSFFGKFAkhHSkBKdIRURbUhV0LiuLqggMoiIiAoBEEpQlYlpJ7UwgQOggCK6isrlhHSsgtIdFZ%2FWf%2FfQfd55v3Rt%2FuN9%2FcuWfm3t%2F55lQI%2BkboaWg4m5ADvSz4FyJ7a4Jw6W5cugu5HFpbnhQf7Whnu%2BpbP34zjCHoCM3i7knuVF2EQhz1vmunsitBNXjo41TOQn%2FWC8nBxvOBmSm2QVwz%2FVWa%2F0g00dM8HUV9BSeo%2B3a%2F692j7tv%2F8UGuciwbHUjHuhKJjugPst1%2F9qf%2B0ZM8yI%2B4Vhjgw93gsE5fm%2FR%2FdcvVGucOMWfvbp8TBCyPZavu5xC9e1FpLNa5E%2B%2Fctdyfqh7LVA4fUcl2f%2ByPf9%2BX%2BPB2ZFdFXFqynX%2Bg4TdlK2Odwh%2FoL24xXjY7yzvjF0WhcgEPFUcCEe%2FaBV6wzjjlSLpi6ITyXoZ6MOVdT5xaFjsnjO6tiY%2BPcSaTtb6K6l5Iob1opr5qcn7Z5Py2haEQheHSOLQjhujZT%2FSlAhqTRCgkUagsCbjL49n4UMaydMeH%2FnhBbZY3g%2FM11IiUl%2BT2vJkx18pBhcEKYTjaEYX1fo%2BPnlaCoRg6gncn4NIovDsW7wY9heN9%2B9TjWYttrCUBp6Uqw4vO%2FWqlUMF%2B6qIwUiEKRzv34f0Z%2BMgpbOg4JkvGpNFERzjRGQk4rCtmSRy62M5cQnzQjhBFO03V4dd245SXt89XUHN9KCfZ7Vmz35vb3qqRTNW9TLT7O1S6EwOcJBgkJuLJYe4S7LvYxl5ooS21M5ba6aiAoZLwbvGTveje%2FyuSTQ1C2WaX0lx%2Fb%2BL%2B3uC6KIldEEW%2BbectICGoJBgFRSE%2BcgF9XuCpgLdhsD8GczCYi8McAmYRSFB5liHV2%2BQvC%2BwPZ2ebhB0O5zKYklKOQhLxrMFz5vqmp3VOszc9QL5spsoFXAXMeX2HPnnN7UmDByr0xZEAAvEhYC4Bc5QAhQP%2Fg1IohtVHGU2FIS87UxdFUWpZNNEd%2B6TO42Gl3Uy1%2FdNax6c1jrP1LgoBa76FNVzuMlTm8muVhwLxJ4SfUGQF%2FVxpWaY%2B1ZsCkTWhg9ttXkuTVbI4ojselyUujx5TjZ2Yue4yUW45XQHcjSt0jSOBcF41M3svufaXu09UeuKiAELEw4VsQhKgHj6gEAYsCcMr89yp3naQNQRluhs8vuU317bt3f0z6rGcpe7kBUn8g%2FJ1oyXmwJ3i20xdtZ2pdlAKuc8aGMN8j99uMt7cZiyLA5bFgbiQg0rC8f4f3wqCcHFIU7GlJ80coqyGcg6bTVYyntU5yDv2vG3jgZRLoscvWQ0WUiaubprk24%2BXWU5dtQNzstTOmamngc22LPEDawAXB80joQvIdgxmY%2B0MHPFrLKJ40kzAgEJnjpmOlntOX7V7UusxW79ltnbz86atU9Uuw5ccHt%2BJGa%2BiDxQYj5VZKcDwCdlKEQcTBciFgYui7XKhnwJhzbXSpm9sfd7gqRIHNV40XUFNyNDZo%2BShC06TJWsny2yn%2BSCtp6s2zdS4Pqp2nKndOlFJHbhgMVxitYD4LwkDFR2xRG%2FKXBvnzR0WLvJbaGWOVHgMX3Ebr3DHEF5TselfleYfp8gK7IYLySMXzMaKLe6XWo5f2fCwyulRhf3kZdvfqjc%2BvO704JrTPBwkh%2F1QaYSyZ4%2B8lSFvZSmFPq%2FvMGWlW%2FrKXMf47oQoqPmiGZVmBmnrQlE8fel56548g958o%2F4CULX5aKnN5JWNkmwLQab5QKHlg0qrR1UOCy3s%2BV9oGMLEYKZCwEZhDg6mrolxj%2B8%2BdYP2tIH2R2doXf5aFzfTlXXqYq3XctpFmm8yyXfvKzAD9GDRmpESGyTLvOmYSevP5gNF5lMVGxQCDgoDi4UhKyKGcMF6kLexpm54Pb1JU3dwFHDwiUQXLd1PN40%2F1bL0AKP8gP39ysSekg3iXKj%2FvOFY6brWkya1aeT6o6vFuZRf%2BetRAQdH2CBX5hrhgiREXLWUrZKy5tt4A5fDui7%2FmJ4U8nmLajiuNz2aQD9%2FmFdyOLT4EKfptF1nnvFEqYXsLEWQufrWMUNBpuFEuS1AlQjYOWxiBfVRiri4aNtsW4i4PKIkjfdzAnOs%2FsQPO3lWNoDUJEEQiWKo58OwdVhPIRsahTOdSw561WfaSfLNes7qik%2BSus8YDF9c8xlViXkfBpNQUejjxmBBUdjl9B05sZ4Fu70y4mjB9E0UY%2F3PhWqQIJCkLwfVZhvymcO87O8Di9OYjVlOnXlmffm6w0UUMKBqMft9T8JL%2BEhzrv%2FFNN%2FR2tRr6f4%2FxbjF0h1syat1NLU1vjgaEGQIQUaamrqfWkar9Hw97U%2Ft25YSzeJuWXc01uV6%2BubuvDXgIhivCWvIDju3j5URR81L8StOj%2FClbbRfb25goPuVgxkEuK60wVNLS0MDXIkkY10DHZIO6MNYWystml6S5ttWlHDleNhPcW65yeyMWNbOba7rTI20tUgrRf1taHyKL00dTdLeEM%2FzB4MnG07dPbfncAzNn7bBGhSno%2F3vj0jQP4L%2FO6zXUsIYm3P3BvK81jtYGulp%2Fw3xLxzmgcpQDPe3AAAAAElFTkSuQmCC" /></a>
-</p>
-<p>
-  <img src="docs/badges/windows.svg" />
-  <img src="https://img.shields.io/badge/linux-111111?style=flat&logo=linux&logoColor=FCC624" />
-  <a href="#support"><img src="https://img.shields.io/badge/support_my_work-111111?style=flat&logo=githubsponsors&logoColor=EA4AAA" /></a>
+  <a href="https://docs.rs/anybox-rs"><img src="docs/badges/rust.svg#gh-dark-mode-only" /></a>
+  <a href="https://docs.rs/anybox-rs"><img src="docs/badges/rust-light.svg#gh-light-mode-only" /></a>
+  <a href="https://crates.io/crates/anybox-rs"><img src="docs/badges/crates.svg#gh-dark-mode-only" /></a>
+  <a href="https://crates.io/crates/anybox-rs"><img src="docs/badges/crates-light.svg#gh-light-mode-only" /></a>
+  <br />
+  <a href="https://github.com/etherealrl/anybox/releases/latest"><img src="docs/badges/windows.svg#gh-dark-mode-only" /></a>
+  <a href="https://github.com/etherealrl/anybox/releases/latest"><img src="docs/badges/windows-light.svg#gh-light-mode-only" /></a>
+  <a href="https://github.com/etherealrl/anybox/releases/latest"><img src="docs/badges/linux.svg#gh-dark-mode-only" /></a>
+  <a href="https://github.com/etherealrl/anybox/releases/latest"><img src="docs/badges/linux-light.svg#gh-light-mode-only" /></a>
+  <a href="https://github.com/sponsors/etherealrl"><img src="docs/badges/support.svg#gh-dark-mode-only" /></a>
+  <a href="https://github.com/sponsors/etherealrl"><img src="docs/badges/support-light.svg#gh-light-mode-only" /></a>
 </p>
 
 </div>
@@ -57,50 +61,9 @@ to test your own code without a box plugged in, turn on the `mock` feature. `Dev
 
 if a box acts weird and you want to see what actually goes over the wire, turn on the `trace` feature and set `ANYBOX_TRACE` to a file path. every byte anybox sends and gets back ends up in that file with a timestamp, the Medius is the one exception since it talks through the medius crate
 
-### C and C++
+### other languages
 
-every release has an `anybox-capi-<target>.tar.gz` for Windows and Linux with `anybox.h`, `medius.h`, the library, shared and static (the static one also needs the libraries in `native-static-libs.txt`, and the one that isn't part of Windows is in there too), and the licenses of everything built into it. you can also build it yourself with `cargo build -p anybox-capi --release`
-
-```c
-#include <stdio.h>
-#include "anybox.h"
-
-int main(void) {
-    AnyboxDevice *device;
-    if (anybox_abi_version() != ANYBOX_ABI_VERSION) {
-        printf("this library doesn't go with this anybox.h\n");
-        return 1;
-    }
-    if (anybox_connect(&device) != ANYBOX_STATUS_OK) {
-        printf("%s\n", anybox_last_error_message());
-        return 1;
-    }
-    anybox_device_move_by(device, 100, 0);
-    anybox_device_click(device, ANYBOX_BUTTON_LEFT);
-    anybox_device_free(device);
-    return 0;
-}
-```
-
-it's the same API with C names. every call returns a status, the text is in `anybox_last_error_message()`, and the header explains the rest. on a Medius, `anybox_device_medius` gives you a handle for `medius.h`, so everything only Medius does works from C too. the mock is in there when you build it with `--features mock`
-
-### Python
-
-```sh
-pip install anybox-rs
-```
-
-```python
-import anybox
-
-with anybox.connect() as device:
-    device.move_by(100, 0)
-    device.click(anybox.Button.LEFT)
-```
-
-it's the same API with Python names, on top of the C library, which comes inside the wheel so you don't need Rust. Python 3.11 or newer, and the [package's readme](bindings/python/README.md) has the rest. `pip install anybox-rs[medius]` also gets you `device.medius()`, the medius package's own device
-
-C and Python are only Windows and Linux on x64 for now. if you need another platform or another language, open an issue
+there's a C library with a header for C and one for C++, a Python package (`pip install anybox-rs`) and a C# package (`dotnet add package Anybox`), all on top of the same core, so they're the same API with the names of their language and they do exactly what the Rust crate does. if one doesn't, that's a bug, open an issue. how to install and use each one is in [bindings](docs/bindings.md)
 
 ## usage
 
@@ -155,7 +118,7 @@ fn main() -> anybox::Result<()> {
 
 a receiver can ask for only some kinds, `device.events_of(EventKinds::BUTTONS)` for a hotkey for example, and then the box doesn't stream motion or keys just for it. the box only streams while at least one receiver wants something. just so you know, a receiver of keys sees every key typed on the keyboard behind the box, passwords included
 
-every event has a stamp. `received` is when anybox got it, which is what you want next to a capture or your own timing. `arrived` is anybox's best guess at when it happened, and on a Medius that's the box clock mapped onto the PC's and smoothed, so it's NOT when the PC got it
+a button, key, media key or motion event has a stamp, the others like `Dropped` or `Disconnected` don't. `received` is when anybox got it, which is what you want next to a capture or your own timing, and `received_ns()` gives you the same moment in nanoseconds on the OS clock `Instant` reads, so it lines up with the other bindings and other programs on the same machine. `arrived` is anybox's best guess at when it happened, and on a Medius that's the box clock mapped onto the PC's and smoothed, so it's NOT when the PC got it
 
 when you drop the device, anybox tries to let go of everything you still hold and unlock everything you locked. if the box is unplugged right then it can't, so call `close()` instead when you want to know whether it worked. `close()` also works on a device you share between threads, and after it every command fails with `Error::Closed`
 
@@ -204,6 +167,8 @@ fn main() -> anybox::Result<()> {
 }
 ```
 
+the same thing in Python, C# and C is in [bindings](docs/bindings.md#when-a-box-cant-do-something)
+
 ## moving from another library
 
 if your app already talks to a box directly, moving over is mostly swapping your calls for anybox's. a few things that help:
@@ -220,11 +185,11 @@ if your app already talks to a box directly, moving over is mostly swapping your
 ```text
 I'm moving this project from talking to a passthrough box directly to anybox, a library that drives
 these boxes through one API. Its core is the Rust crate `anybox-rs` (imported as `anybox`), and the
-README lists the bindings for other languages (a C ABI for C and C++, Python and so on).
+docs/bindings.md lists the bindings for other languages (a C ABI for C and C++, Python, C# and so on).
 
 Before changing anything, read:
-- the README at https://github.com/etherealrl/anybox (API overview, which languages are supported and
-  how to install each, the pattern for adding things a box can't do)
+- the README at https://github.com/etherealrl/anybox (API overview, the pattern for adding things a
+  box can't do) and docs/bindings.md there (which languages are supported and how to install each)
 - docs/boxes.md in that repo (what each box supports, method by method, and how each one behaves)
 - the API docs for this project's language: https://docs.rs/anybox-rs for Rust, or the docs the README
   links for the binding

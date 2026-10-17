@@ -5,8 +5,8 @@ use anybox::{Capabilities, Capability, Firmware, Info, Quirk, StableId};
 
 use crate::status::{AnyboxStatus, c_string, guard, guard_free, invalid, read, write};
 use crate::values::{
-    ACTIONS, AnyboxClickTiming, action, axis_number, button_number, click_timing_struct,
-    execution_number, family_number, ferrum_api_number, micros,
+    ACTIONS, AnyboxClickTiming, axis_number, button_number, click_timing_struct, execution_number,
+    family_number, ferrum_api_number, micros,
 };
 
 pub const ANYBOX_FIRMWARE_NONE: u32 = 0;
@@ -42,8 +42,8 @@ pub const ANYBOX_QUIRK_KEEPS_LOCKED: u32 = 10;
 /// who the box is and what it can do, read from one connection, see `anybox_device_snapshot`
 pub struct AnyboxSnapshot {
     info: AnyboxInfo,
-    /// indexed by action number, with the C copy of the reason next to each
-    capabilities: Vec<(Capability, Option<CString>)>,
+    /// by action number, with the C copy of the reason next to each
+    pub(crate) capabilities: Vec<(u32, Capability, Option<CString>)>,
     buttons: Vec<u32>,
     axes: Vec<u32>,
     // the strings `info` points into
@@ -111,41 +111,19 @@ impl AnyboxSnapshot {
         };
         let port = keep(&info.port);
         let model = info.model.as_deref().map_or(ptr::null(), &mut keep);
-        let (firmware_kind, firmware_major, firmware_minor, firmware_patch) = match &info.firmware {
-            None => (ANYBOX_FIRMWARE_NONE, 0, 0, 0),
-            Some(Firmware::Version {
-                major,
-                minor,
-                patch,
-            }) => (ANYBOX_FIRMWARE_VERSION, *major, *minor, *patch),
-            Some(Firmware::Build(_)) => (ANYBOX_FIRMWARE_BUILD, 0, 0, 0),
-            Some(Firmware::Protocol(_)) => (ANYBOX_FIRMWARE_PROTOCOL, 0, 0, 0),
-            Some(Firmware::Text(_)) => (ANYBOX_FIRMWARE_TEXT, 0, 0, 0),
-            Some(other) => panic!("the C ABI has no number for {other:?} yet"),
-        };
-        let (firmware_build, firmware_protocol, firmware_text) = match &info.firmware {
-            Some(Firmware::Build(build)) => (*build, 0, ptr::null()),
-            Some(Firmware::Protocol(protocol)) => (0, *protocol, ptr::null()),
-            Some(Firmware::Text(text)) => (0, 0, keep(text)),
-            _ => (0, 0, ptr::null()),
-        };
-        let (id_kind, id_mac, id_serial) = match &info.id {
-            None => (ANYBOX_ID_NONE, [0; 6], ptr::null()),
-            Some(StableId::Mac(mac)) => (ANYBOX_ID_MAC, *mac, ptr::null()),
-            Some(StableId::UsbSerial(serial)) => (ANYBOX_ID_USB_SERIAL, [0; 6], keep(serial)),
-            Some(other) => panic!("the C ABI has no number for {other:?} yet"),
-        };
+        let firmware = firmware_fields(info.firmware.as_ref(), &mut keep);
+        let (id_kind, id_mac, id_serial) = id_fields(info.id.as_ref(), &mut keep);
         let info = AnyboxInfo {
             port,
             family: family_number(info.family),
             model,
-            firmware_kind,
-            firmware_major,
-            firmware_minor,
-            firmware_patch,
-            firmware_protocol,
-            firmware_build,
-            firmware_text,
+            firmware_kind: firmware.kind,
+            firmware_major: firmware.major,
+            firmware_minor: firmware.minor,
+            firmware_patch: firmware.patch,
+            firmware_protocol: firmware.protocol,
+            firmware_build: firmware.build,
+            firmware_text: firmware.text,
             id_kind,
             id_mac,
             id_serial,
@@ -158,7 +136,7 @@ impl AnyboxSnapshot {
             info,
             capabilities: ACTIONS
                 .iter()
-                .map(|(_, action)| {
+                .map(|(number, action)| {
                     let capability = capabilities.get(*action).clone();
                     let reason =
                         (!capability.is_supported()).then(|| match &capability.execution {
@@ -167,7 +145,7 @@ impl AnyboxSnapshot {
                             }
                             _ => CString::default(),
                         });
-                    (capability, reason)
+                    (*number, capability, reason)
                 })
                 .collect(),
             buttons: capabilities
@@ -184,9 +162,78 @@ impl AnyboxSnapshot {
         }
     }
 
-    fn capability(&self, value: u32) -> Result<&(Capability, Option<CString>), AnyboxStatus> {
-        action(value)?;
-        Ok(&self.capabilities[value as usize])
+    fn capability(&self, value: u32) -> Result<(&Capability, &Option<CString>), AnyboxStatus> {
+        self.capabilities
+            .iter()
+            .find(|(number, ..)| *number == value)
+            .map(|(_, capability, reason)| (capability, reason))
+            .ok_or_else(|| invalid(format!("{value} isn't an action anybox knows")))
+    }
+}
+
+/// a firmware flattened the way `AnyboxInfo` and `AnyboxErrorDetail` carry it
+pub(crate) struct FirmwareFields {
+    pub(crate) kind: u32,
+    pub(crate) major: u16,
+    pub(crate) minor: u16,
+    pub(crate) patch: u16,
+    pub(crate) protocol: u8,
+    pub(crate) build: u32,
+    pub(crate) text: *const c_char,
+}
+
+/// `keep` holds on to a string and gives back its pointer
+pub(crate) fn firmware_fields(
+    firmware: Option<&Firmware>,
+    keep: &mut impl FnMut(&str) -> *const c_char,
+) -> FirmwareFields {
+    let plain = |kind| FirmwareFields {
+        kind,
+        major: 0,
+        minor: 0,
+        patch: 0,
+        protocol: 0,
+        build: 0,
+        text: ptr::null(),
+    };
+    match firmware {
+        None => plain(ANYBOX_FIRMWARE_NONE),
+        Some(Firmware::Version {
+            major,
+            minor,
+            patch,
+        }) => FirmwareFields {
+            major: *major,
+            minor: *minor,
+            patch: *patch,
+            ..plain(ANYBOX_FIRMWARE_VERSION)
+        },
+        Some(Firmware::Build(build)) => FirmwareFields {
+            build: *build,
+            ..plain(ANYBOX_FIRMWARE_BUILD)
+        },
+        Some(Firmware::Protocol(protocol)) => FirmwareFields {
+            protocol: *protocol,
+            ..plain(ANYBOX_FIRMWARE_PROTOCOL)
+        },
+        Some(Firmware::Text(text)) => FirmwareFields {
+            text: keep(text),
+            ..plain(ANYBOX_FIRMWARE_TEXT)
+        },
+        Some(other) => panic!("the C ABI has no number for {other:?} yet"),
+    }
+}
+
+/// an id flattened into its kind, MAC and serial
+pub(crate) fn id_fields(
+    id: Option<&StableId>,
+    keep: &mut impl FnMut(&str) -> *const c_char,
+) -> (u32, [u8; 6], *const c_char) {
+    match id {
+        None => (ANYBOX_ID_NONE, [0; 6], ptr::null()),
+        Some(StableId::Mac(mac)) => (ANYBOX_ID_MAC, *mac, ptr::null()),
+        Some(StableId::UsbSerial(serial)) => (ANYBOX_ID_USB_SERIAL, [0; 6], keep(serial)),
+        Some(other) => panic!("the C ABI has no number for {other:?} yet"),
     }
 }
 
@@ -317,9 +364,9 @@ pub unsafe extern "C" fn anybox_snapshot_axes(
     })
 }
 
-unsafe fn copy_out(
-    items: &[u32],
-    out: *mut u32,
+pub(crate) unsafe fn copy_out<T: Copy>(
+    items: &[T],
+    out: *mut T,
     cap: usize,
     len: *mut usize,
 ) -> Result<(), AnyboxStatus> {

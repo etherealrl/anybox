@@ -1,5 +1,10 @@
 // the named keys and media keys of `anybox::Key` and `anybox::MediaKey`, any other HID usage works too
 
+/// ctrl, shift, alt and gui on either side are the keys from this one to `ANYBOX_KEY_MODIFIER_LAST`. a keyboard
+/// report keeps them in a byte of their own
+pub const ANYBOX_KEY_MODIFIER_FIRST: u8 = 0xE0;
+pub const ANYBOX_KEY_MODIFIER_LAST: u8 = 0xE7;
+
 pub const ANYBOX_KEY_A: u8 = 0x04;
 pub const ANYBOX_KEY_B: u8 = 0x05;
 pub const ANYBOX_KEY_C: u8 = 0x06;

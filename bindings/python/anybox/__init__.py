@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ._device import Connect, Device, Events, Scanned, candidates, connect, scan
+from ._device import Connect, Device, Events, Scanned, candidates, connect, monotonic_ns, scan
 from ._errors import (
     BoxInterruptedError,
     BoxTimeoutError,
@@ -18,6 +18,7 @@ from ._errors import (
     PanicError,
     PermissionDeniedError,
     PortBusyError,
+    RecvClosedError,
     RejectedError,
     UnknownError,
     UnsupportedError,
@@ -25,7 +26,7 @@ from ._errors import (
     WrongFamilyError,
     WrongFerrumApiError,
 )
-from ._mock import Mock, has_mock, mock_medius
+from ._mock import Mock, example_error, example_events, has_mock, mock_medius, mock_medius_manual
 from ._native import ABI_VERSION, lib, text
 from ._types import (
     Action,
@@ -50,6 +51,7 @@ from ._types import (
     Firmware,
     FirmwareKind,
     Info,
+    IoKind,
     Key,
     KeyEvent,
     MediaEvent,
@@ -66,7 +68,7 @@ from ._types import (
     UsbIds,
 )
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 
 
 def version() -> str:
@@ -109,6 +111,7 @@ __all__ = [
     "Info",
     "InvalidArgumentError",
     "IoError",
+    "IoKind",
     "Key",
     "KeyEvent",
     "LibraryTooOldError",
@@ -124,6 +127,7 @@ __all__ = [
     "Quirk",
     "QuirkKind",
     "Reconnected",
+    "RecvClosedError",
     "Rejected",
     "RejectedError",
     "Scanned",
@@ -139,8 +143,12 @@ __all__ = [
     "WrongFerrumApiError",
     "candidates",
     "connect",
+    "example_error",
+    "example_events",
     "has_mock",
     "mock_medius",
+    "mock_medius_manual",
+    "monotonic_ns",
     "scan",
     "version",
 ]

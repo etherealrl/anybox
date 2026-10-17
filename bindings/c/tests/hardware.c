@@ -19,6 +19,9 @@ int main(int argc, char **argv) {
     AnyboxInfo info;
     AnyboxEvent event;
     AnyboxStatus status;
+    AnyboxErrorDetail detail;
+    AnyboxStringList *tried = NULL;
+    const uint32_t can[1] = {ANYBOX_ACTION_MOVE};
     int i;
 
     if (anybox_abi_version() != ANYBOX_ABI_VERSION) {
@@ -26,9 +29,16 @@ int main(int argc, char **argv) {
         return 1;
     }
     anybox_connect_options_default(&options);
-    if (argc > 1) {
-        options.port = argv[1];
+    options.port = "NOPE99";
+    if (anybox_open(&options, &device) != ANYBOX_STATUS_OK && anybox_last_error_detail(&detail) == ANYBOX_STATUS_OK &&
+        anybox_last_error_tried(&tried) == ANYBOX_STATUS_OK) {
+        printf("a port with nothing on it is status %u, %u port tried\n", detail.kind,
+               (unsigned)anybox_string_list_count(tried));
+        anybox_string_list_free(tried);
     }
+    options.port = argc > 1 ? argv[1] : NULL;
+    options.can = can;
+    options.can_len = 1;
     if (anybox_open(&options, &device) != ANYBOX_STATUS_OK) {
         return failed("connect");
     }
@@ -71,7 +81,8 @@ int main(int argc, char **argv) {
         status = anybox_events_recv(events, 20000000, &event);
     } while (status == ANYBOX_STATUS_OK && !(event.kind == ANYBOX_EVENT_BUTTON && event.pressed));
     if (status == ANYBOX_STATUS_OK) {
-        printf("got button %u down\n", event.button);
+        printf("got button %u down, read %llu us ago on the monotonic clock\n", event.button,
+               (unsigned long long)((anybox_monotonic_ns() - event.received_ns) / 1000));
     } else {
         printf("no button came: %s\n", anybox_last_error_message());
     }

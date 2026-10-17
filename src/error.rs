@@ -159,3 +159,86 @@ fn ferrum_api_hint(expected: FerrumApi) -> &'static str {
         _ => ", so open the box's own port (the CP210x one) instead",
     }
 }
+
+#[cfg(feature = "mock")]
+impl Error {
+    /// one of each error with every field it has filled in, for testing how code handles them with no box
+    pub fn examples() -> Vec<Error> {
+        use crate::capability::{Capabilities, Info};
+        let mut makcu = Info::new(Family::MakcuV4);
+        makcu.port = "COM5".into();
+        let found = crate::connect::Found {
+            port: "COM5".into(),
+            info: makcu,
+            capabilities: Capabilities::new(Vec::new()),
+        };
+        vec![
+            Error::NotFound {
+                tried: vec!["COM3".into(), "COM4".into()],
+            },
+            Error::Closed,
+            Error::PortBusy {
+                port: "COM3".into(),
+            },
+            Error::PermissionDenied {
+                port: "/dev/ttyACM0".into(),
+            },
+            Error::NoBoxCan {
+                boxes: vec![(found, vec![Action::KeyTap, Action::LockKey])],
+            },
+            Error::WrongFamily {
+                port: "COM3".into(),
+                expected: Family::Ferrum,
+                found: Some(Family::MakcuV4),
+            },
+            Error::WrongBox {
+                port: "COM3".into(),
+                expected: StableId::UsbSerial("ABC123".into()),
+                found: Some(StableId::Mac([1, 2, 3, 4, 5, 6])),
+            },
+            Error::WrongFerrumApi {
+                port: "COM3".into(),
+                expected: FerrumApi::Software,
+                found: FerrumApi::Legacy,
+            },
+            Error::FirmwareTooOld {
+                family: Family::Medius,
+                found: Firmware::Protocol(8),
+                needed: Firmware::Version {
+                    major: 3,
+                    minor: 4,
+                    patch: 0,
+                },
+            },
+            Error::LibraryTooOld {
+                family: Family::MakcuV4,
+                found: Firmware::Text("V9.9".into()),
+            },
+            Error::Unsupported {
+                action: Action::KeyPress,
+                family: Family::Medius,
+                reason: "no keyboard is plugged into it".into(),
+            },
+            Error::InvalidArgument {
+                action: Action::ScaleAxis,
+                detail: "300 is out of range, a scale goes from -255 to 255".into(),
+            },
+            Error::Rejected {
+                action: Action::Move,
+                detail: "its queue is full".into(),
+            },
+            Error::Timeout {
+                action: Action::LockAxis,
+            },
+            Error::Disconnected,
+            Error::Interrupted {
+                action: Action::Click,
+            },
+            // access denied on Windows, an I/O error on Linux and macOS
+            Error::Io(std::io::Error::from_raw_os_error(5)),
+        ]
+    }
+}
+
+#[cfg(test)]
+mod tests;
