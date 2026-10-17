@@ -29,9 +29,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libudev-dev pkg-config
       - shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
           NAME: anybox-capi-${{ matrix.target }}
-          TAG: ${{ github.event.release.tag_name }}
         run: |
           set -euo pipefail
           # the static library needs the system libraries this prints, so they go in the tarball
@@ -59,4 +57,10 @@ jobs:
             esac
           done
           tar -czf "$NAME.tar.gz" "$NAME"
-          gh release upload "$TAG" "$NAME.tar.gz" --clobber
+      # the token only comes in for the upload, so nothing the build compiled can read it
+      - shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NAME: anybox-capi-${{ matrix.target }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$TAG" "$NAME.tar.gz" --clobber --repo "$GITHUB_REPOSITORY"
