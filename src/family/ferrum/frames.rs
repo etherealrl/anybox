@@ -28,7 +28,7 @@ const CALLBACKS: [&[u8]; 4] = [
 
 /// the prefixes of every command anybox sends, so a line starting with one is an echo
 fn echoed(line: &[u8]) -> bool {
-    [&b"km."[..], b"device.", b"mouse_proxy."]
+    [&b"km."[..], b"device.", b"mouse_proxy.", b"ferrum."]
         .iter()
         .any(|prefix| line.starts_with(prefix))
 }

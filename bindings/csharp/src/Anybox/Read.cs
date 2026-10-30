@@ -9,6 +9,23 @@ internal static unsafe class Read
         ? throw new ArgumentOutOfRangeException(what, $"{what} can't be negative")
         : (ulong)(value.Ticks / TimeSpan.TicksPerMicrosecond);
 
+    // the boxes take whole milliseconds, so anything finer is refused instead of cut
+    internal static uint Millis(TimeSpan value, string what)
+    {
+        if (value < TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(what, $"{what} can't be negative");
+        }
+        if (value.Ticks % TimeSpan.TicksPerMillisecond != 0)
+        {
+            throw new ArgumentException($"{what} has to be whole milliseconds, {value} isn't", what);
+        }
+        var ms = value.Ticks / TimeSpan.TicksPerMillisecond;
+        return ms <= uint.MaxValue
+            ? (uint)ms
+            : throw new ArgumentOutOfRangeException(what, $"{what} is too long for the box");
+    }
+
     static TimeSpan FromMicros(ulong micros) => TimeSpan.FromMicroseconds((long)micros);
 
     static TimeSpan FromNanos(ulong nanos) => TimeSpan.FromTicks((long)(nanos / 100));

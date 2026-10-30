@@ -1,3 +1,6 @@
+// the fake port the crate tests and the mock devices run on
+#![cfg_attr(not(test), allow(dead_code))]
+
 use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::path::{Path, PathBuf};

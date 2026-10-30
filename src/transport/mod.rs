@@ -11,7 +11,7 @@ pub(crate) mod probe;
 #[cfg(feature = "trace")]
 mod trace;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "mock"))]
 pub(crate) mod fake;
 #[cfg(unix)]
 pub(crate) mod unix;

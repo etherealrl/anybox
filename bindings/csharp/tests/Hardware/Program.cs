@@ -1,6 +1,8 @@
 // a manual run through C# on a real box: it connects, prints what it found, moves the cursor right and back, clicks
-// the left button where the cursor is, then waits up to 20 s for you to press any button on the mouse behind the box
-// and closes. on a Medius it also reads the polling rate and the render setting and reconnects through
+// the left button where the cursor is, waits up to 20 s for you to press any button on the mouse behind the box,
+// presses a B with Shift as a chord and a c as a chord tap, types " anybox types 1!" and Enter into whatever has
+// focus, and closes. on a MAKCU it times a move at 50 percent interpolation and sets autorelease and turns it off
+// again. on a Medius it also reads the polling rate and the render setting and reconnects through
 // device.Medius(), and once anybox is closed it goes through medius' own ways in. pass a port to open that one,
 // otherwise it takes the first box it finds. ANYBOX_LIB has to point at a release build of the capi
 using System.Diagnostics;
@@ -61,6 +63,62 @@ using (var device = connect.Open())
     {
         Console.WriteLine("no button came");
     }
+    Console.WriteLine("click into a text field, typing in 3 s");
+    Thread.Sleep(TimeSpan.FromSeconds(3));
+    // chords first, a MAKCU refuses a key write for about 10 ms after a tap and typing waits for it to be done
+    try
+    {
+        device.PressKeys(Key.LeftShift, Key.B);
+        device.ReleaseKeys(Key.LeftShift, Key.B);
+        device.TapKeys(Key.C);
+        Console.WriteLine("pressed the chords");
+    }
+    catch (UnsupportedException error)
+    {
+        Console.WriteLine($"chords: {error.Message}");
+    }
+    try
+    {
+        device.TypeText(" anybox types 1!");
+        device.TapKey(Key.Enter);
+        Console.WriteLine("typed");
+    }
+    catch (UnsupportedException error)
+    {
+        Console.WriteLine($"typing: {error.Message}");
+    }
+    if (device.Makcu() is { } makcu)
+    {
+        var before = makcu.Interpolation();
+        makcu.SetInterpolation(Interpolation.Percent(50));
+        device.MoveBy(100, 0);
+        var paying = Stopwatch.StartNew();
+        while (makcu.Moving())
+        {
+        }
+        Console.WriteLine($"interpolation was {before}, at 50 a move took {paying.ElapsedMilliseconds} ms");
+        device.MoveBy(-100, 0);
+        makcu.SetInterpolation(before);
+        try
+        {
+            makcu.SetAutorelease(TimeSpan.FromMilliseconds(1500));
+            Console.WriteLine($"autorelease set to {makcu.Autorelease()}");
+            makcu.SetAutorelease(null);
+        }
+        catch (UnsupportedException error)
+        {
+            Console.WriteLine($"autorelease: {error.Message}");
+        }
+    }
+    if (device.Ysc() is { } ysc)
+    {
+        Console.WriteLine($"YSC interpolation {ysc.Interpolation()}, serial {ysc.Serial()}");
+    }
+    if (device.Ferrum() is { } ferrum)
+    {
+        Console.WriteLine($"the mouse moved {ferrum.CatchXy(TimeSpan.FromMilliseconds(500))} in the last 500 ms");
+    }
+    Console.WriteLine($"box calls: MAKCU {device.Makcu() is not null}, YSC {device.Ysc() is not null}, Ferrum {device.Ferrum() is not null}");
     using (var medius = device.Medius())
     {
         if (medius is not null)

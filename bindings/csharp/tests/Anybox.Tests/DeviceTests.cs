@@ -461,4 +461,38 @@ public sealed class DeviceTests : IDisposable
         box.Dispose();
         Assert.Throws<ObjectDisposedException>(() => box.PushMotion(1, 1, 1, 1));
     }
+
+    [Fact]
+    public void ABoxHandleWorksUntilItsDeviceCloses()
+    {
+        Assert.Null(device.Makcu());
+        using var makcu = Mock.Makcu();
+        Assert.Null(makcu.Ysc());
+        Assert.Null(makcu.Ferrum());
+        var calls = makcu.Makcu()!;
+        calls.SetAutorelease(TimeSpan.FromMilliseconds(1500));
+        Assert.Equal(TimeSpan.FromMilliseconds(1500), calls.Autorelease());
+        makcu.Close();
+        Assert.Null(makcu.Makcu());
+        Assert.Throws<ClosedException>(() => calls.Moving());
+    }
+
+    [Fact]
+    public void BoxCallsRefuseDurationsTheBoxCantTake()
+    {
+        using var makcu = Mock.Makcu();
+        using var ferrum = Mock.Ferrum();
+        var calls = makcu.Makcu()!;
+        Assert.Contains("whole milliseconds", Assert.Throws<ArgumentException>(() => calls.SetAutorelease(TimeSpan.FromMicroseconds(1500))).Message);
+        Assert.Throws<ArgumentOutOfRangeException>(() => ferrum.Ferrum()!.CatchXy(TimeSpan.FromMilliseconds(-10)));
+        // 0 is off on the C side, a zero asked for must not quietly turn it off
+        calls.SetAutorelease(TimeSpan.FromSeconds(1.5));
+        Assert.Contains("use null", Assert.Throws<ArgumentOutOfRangeException>(() => calls.SetAutorelease(TimeSpan.Zero)).Message);
+        Assert.Equal(TimeSpan.FromSeconds(1.5), calls.Autorelease());
+        Assert.Throws<InvalidArgumentException>(() => calls.SetAutorelease(TimeSpan.FromSeconds(61)));
+        Assert.Equal((-3, 10), ferrum.Ferrum()!.CatchXy(TimeSpan.FromMilliseconds(10)));
+        // a bad argument is refused before the device is looked at, so even a disposed one says what's wrong with it
+        makcu.Dispose();
+        Assert.Throws<ArgumentOutOfRangeException>(() => calls.SetAutorelease(TimeSpan.Zero));
+    }
 }

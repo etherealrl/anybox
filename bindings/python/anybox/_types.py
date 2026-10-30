@@ -134,36 +134,54 @@ class Action(IntEnum):
     LOCK_AXIS = 20
     LOCK_KEY = 21
     SCALE_AXIS = 22
+    TYPE_TEXT = 23
+    KEY_CHORD = 24
+    FORCE_RELEASE_KEY = 25
+    MAKCU_INTERPOLATION = 0x10000
+    MAKCU_MOVING = 0x10001
+    MAKCU_AUTORELEASE = 0x10002
+    YSC_INTERPOLATION = 0x20000
+    YSC_SERIAL = 0x20001
+    FERRUM_CATCH_XY = 0x30000
 
     def __str__(self) -> str:
         return _ACTION_TEXTS[self]
 
 
-_ACTION_TEXTS = (
-    "connect",
-    "move",
-    "move now",
-    "press",
-    "release",
-    "click",
-    "scroll",
-    "scroll sideways",
-    "discard pending moves",
-    "report button events",
-    "report motion events",
-    "report key events",
-    "report media key events",
-    "press a key",
-    "release a key",
-    "tap a key",
-    "press a media key",
-    "release a media key",
-    "tap a media key",
-    "lock or unlock a button",
-    "lock or unlock an axis",
-    "lock or unlock a key",
-    "scale an axis",
-)
+_ACTION_TEXTS = {
+    Action.CONNECT: "connect",
+    Action.MOVE: "move",
+    Action.MOVE_NOW: "move now",
+    Action.PRESS: "press",
+    Action.RELEASE: "release",
+    Action.CLICK: "click",
+    Action.WHEEL: "scroll",
+    Action.PAN: "scroll sideways",
+    Action.DISCARD_PENDING_MOVES: "discard pending moves",
+    Action.BUTTON_EVENTS: "report button events",
+    Action.MOTION_EVENTS: "report motion events",
+    Action.KEY_EVENTS: "report key events",
+    Action.MEDIA_EVENTS: "report media key events",
+    Action.KEY_PRESS: "press a key",
+    Action.KEY_RELEASE: "release a key",
+    Action.KEY_TAP: "tap a key",
+    Action.MEDIA_PRESS: "press a media key",
+    Action.MEDIA_RELEASE: "release a media key",
+    Action.MEDIA_TAP: "tap a media key",
+    Action.LOCK_BUTTON: "lock or unlock a button",
+    Action.LOCK_AXIS: "lock or unlock an axis",
+    Action.LOCK_KEY: "lock or unlock a key",
+    Action.SCALE_AXIS: "scale an axis",
+    Action.TYPE_TEXT: "type text",
+    Action.KEY_CHORD: "press several keys at once",
+    Action.FORCE_RELEASE_KEY: "force a key up or give it back",
+    Action.MAKCU_INTERPOLATION: "read or set the MAKCU's interpolation",
+    Action.MAKCU_MOVING: "ask the MAKCU whether it's still moving",
+    Action.MAKCU_AUTORELEASE: "read or set the MAKCU's autorelease",
+    Action.YSC_INTERPOLATION: "read or set the YSC's interpolation",
+    Action.YSC_SERIAL: "read the serial the YSC gives its mouse",
+    Action.FERRUM_CATCH_XY: "read the Ferrum's recent mouse motion",
+}
 
 
 class Execution(IntEnum):
@@ -186,6 +204,8 @@ class QuirkKind(IntEnum):
     KEEPS_HELD = 8
     MAX_KEYS_HELD = 9
     KEEPS_LOCKED = 10
+    TYPED_TEXT_IGNORES_CAPS_LOCK = 11
+    TYPING_RELEASES_HELD_KEYS = 12
 
 
 class FirmwareKind(IntEnum):
@@ -262,6 +282,22 @@ class EventKinds(IntFlag):
     MEDIA = 8
     ALL = 15
     """everything the box can stream, a kind it can't is left out without a `Rejected`"""
+
+
+class YscProfile(_Open):
+    """the shape a YSC gives a spread move, a number the vendor doesn't name yet is kept as the box sent it"""
+
+    LINEAR = 0
+    EASE_IN_OUT = 1
+    MIN_JERK = 2
+
+    @classmethod
+    def _fits(cls, value: int) -> bool:
+        return 0 <= value <= 0xFFFFFFFF
+
+    @classmethod
+    def _unnamed(cls, value: int) -> str:
+        return f"OTHER_{value}"
 
 
 class Key(_Open):
@@ -473,6 +509,54 @@ class Firmware:
         if self.protocol is not None:
             return f"protocol {self.protocol}"
         return self.text or ""
+
+
+@dataclass(frozen=True)
+class Interpolation:
+    """how long a MAKCU spreads a move, `Interpolation.auto()` or `Interpolation.percent(n)` from 0 to 100"""
+
+    automatic: bool
+    percentage: int = 0
+
+    @classmethod
+    def auto(cls) -> Interpolation:
+        return cls(True)
+
+    @classmethod
+    def percent(cls, n: int) -> Interpolation:
+        return cls(False, n)
+
+
+@dataclass(frozen=True)
+class YscInterpolation:
+    """a YSC's interpolation as the box reports it, in seconds. what the box didn't send is None, the vendor's own
+    app only reads `enabled`, `profile` and the measured interval"""
+
+    enabled: bool
+    profile: YscProfile
+    window: float | None
+    """a fixed window, zero means the box adapts it to how often moves come"""
+    max_window: float | None
+    measured_interval: float | None
+
+
+@dataclass(frozen=True)
+class YscInterpolationSettings:
+    """what `set_interpolation` sends, the windows in seconds and whole milliseconds up to 60 s"""
+
+    enabled: bool
+    profile: YscProfile
+    window: float
+    max_window: float
+
+
+@dataclass(frozen=True)
+class YscSerial:
+    """the serial a YSC gives the mouse behind it, each None when the box didn't send it"""
+
+    custom: str | None
+    physical: str | None
+    active: str | None
 
 
 @dataclass(frozen=True)

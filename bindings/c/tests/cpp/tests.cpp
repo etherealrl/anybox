@@ -324,6 +324,8 @@ void a_moved_device_is_empty_and_a_copy_shares_the_box() {
     auto opened = Mock::medius_manual();
     Device moved = std::move(opened.first);
     throws<ClosedError>([&] { opened.first.get(); }, "a moved-from device", "moved from");
+    throws<ClosedError>([&] { opened.first.close(); }, "close() on a moved-from device", "moved from");
+    throws<ClosedError>([&] { opened.first.makcu(); }, "makcu() on a moved-from device", "moved from");
     std::optional<Device> copy(moved);
     { Device gone = std::move(moved); }
     check(copy->snapshot().info.family == Family::Medius, "the copy still has the box");
@@ -379,6 +381,36 @@ void the_clock() {
 #endif
 }
 
+void a_box_handle_keeps_its_device_and_works_until_close() {
+    std::optional<Makcu> calls;
+    {
+        const auto device = Mock::makcu();
+        check(!device.ysc() && !device.ferrum(), "a MAKCU has no YSC or Ferrum calls");
+        calls = device.makcu();
+        check(calls.has_value(), "a MAKCU has its own calls");
+        // a copy of the device shares whether it's closed
+        const auto copy = device;
+        copy.close();
+        check(!device.makcu(), "no MAKCU calls once a copy closed the device");
+    }
+    throws<ClosedError>([&] { calls->moving(); }, "a MAKCU call after close");
+    const auto medius = Mock::medius_manual(ClickTiming::makcu(), false);
+    check(!medius.first.makcu() && !medius.first.ysc() && !medius.first.ferrum(), "a Medius has none of them");
+}
+
+void box_calls_refuse_durations_the_box_cant_take() {
+    const auto device = Mock::makcu();
+    const auto makcu = *device.makcu();
+    throws<std::invalid_argument>([&] { makcu.set_autorelease(-1ms); }, "a negative autorelease");
+    // 0 is off on the C side, a zero asked for must not quietly turn it off
+    makcu.set_autorelease(1500ms);
+    throws<std::invalid_argument>([&] { makcu.set_autorelease(0ms); }, "a zero autorelease", "empty one");
+    check(makcu.autorelease() == std::optional<std::chrono::milliseconds>(1500ms), "the autorelease stayed");
+    throws<InvalidArgumentError>([&] { makcu.set_autorelease(61s); }, "an autorelease past a minute");
+    const auto ferrum = Mock::ferrum();
+    check(ferrum.ferrum()->catch_xy(10ms) == std::make_pair(-3, 10), "the Ferrum's motion");
+}
+
 #endif
 
 }  // namespace
@@ -398,6 +430,8 @@ int main() {
         {"a moved device is empty and a copy shares the box", a_moved_device_is_empty_and_a_copy_shares_the_box},
         {"the examples", the_examples},
         {"the clock", the_clock},
+        {"a box handle keeps its device and works until close", a_box_handle_keeps_its_device_and_works_until_close},
+        {"box calls refuse durations the box can't take", box_calls_refuse_durations_the_box_cant_take},
 #endif
     };
     for (const auto& test : tests) {

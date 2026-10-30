@@ -77,6 +77,27 @@ public sealed class Device : IDisposable
     public void TapKey(Key key, TimeSpan? hold = null, bool nativeOnly = false) =>
         Library.Check(Native.anybox_device_tap_key_with(Handle, (byte)key, Click(hold, nativeOnly)));
 
+    /// <summary>types the text on the box with the box's own timing, as US layout key presses, and returns once the
+    /// box has typed all of it. it takes printable ASCII only, so tap keys like Enter yourself after it. other calls
+    /// on the device can wait while it types, and a close stops it after the few characters going out. after an
+    /// error part of it may already be typed</summary>
+    public void TypeText(string text) => Library.Check(Native.anybox_device_type_text(Handle, Library.Utf8(text)));
+
+    /// <summary>holds the keys down with one command of the box, up to 14 of them, until
+    /// <see cref="ReleaseKeys"/></summary>
+    public void PressKeys(params ReadOnlySpan<Key> keys) =>
+        Library.Check(Native.anybox_device_press_keys(Handle, Library.KeyBytes(keys), (nuint)keys.Length));
+
+    /// <summary>lets go of the keys with one command of the box, or one at a time like <see cref="ReleaseKey"/> on a
+    /// box that can't, so a key you hold always gets let go. a key you don't hold still has to be one the box can
+    /// let go of, so it can fail as unsupported after the held ones already went</summary>
+    public void ReleaseKeys(params ReadOnlySpan<Key> keys) =>
+        Library.Check(Native.anybox_device_release_keys(Handle, Library.KeyBytes(keys), (nuint)keys.Length));
+
+    /// <summary>presses and lets go of the keys with one command of the box, timed by the box</summary>
+    public void TapKeys(params ReadOnlySpan<Key> keys) =>
+        Library.Check(Native.anybox_device_tap_keys(Handle, Library.KeyBytes(keys), (nuint)keys.Length));
+
     /// <summary>holds a media key down until <see cref="ReleaseMedia"/>. a media key is its HID consumer
     /// usage</summary>
     public void PressMedia(MediaKey key) => Library.Check(Native.anybox_device_press_media(Handle, (ushort)key));
@@ -97,6 +118,16 @@ public sealed class Device : IDisposable
     /// <summary>lets the physical button through again</summary>
     public void UnlockButton(Button button) =>
         Library.Check(Native.anybox_device_unlock_button(Handle, (uint)button));
+
+    /// <summary>the PC sees the key up from now on, whatever the finger does, until <see cref="RestoreKey"/>. key
+    /// events keep reporting the finger, so you can tell whether it's still held. a key anybox holds or has locked
+    /// itself, or one a text needs while it types, is refused, since each box would do something else with
+    /// it</summary>
+    public void ForceReleaseKey(Key key) => Library.Check(Native.anybox_device_force_release_key(Handle, (byte)key));
+
+    /// <summary>gives the PC the finger's state of the key again, so a key that's still held goes down for it. it
+    /// also clears a force another program left, except on a key anybox holds or has locked</summary>
+    public void RestoreKey(Key key) => Library.Check(Native.anybox_device_restore_key(Handle, (byte)key));
 
     /// <summary>keeps the physical key from reaching the PC until <see cref="UnlockKey"/></summary>
     public void LockKey(Key key) => Library.Check(Native.anybox_device_lock_key(Handle, (byte)key));
@@ -144,6 +175,17 @@ public sealed class Device : IDisposable
         Library.Check(Native.anybox_device_events(Handle, (uint)kinds, out var events));
         return new Events(events, this);
     }
+
+    /// <summary>what only a MAKCU has, null on another box and once this device is closed</summary>
+    public Makcu? Makcu() => Is(Family.MakcuV4) ? new Makcu(this) : null;
+
+    /// <summary>what only a YSC8K has, null on another box and once this device is closed</summary>
+    public Ysc? Ysc() => Is(Family.Ysc) ? new Ysc(this) : null;
+
+    /// <summary>what only a Ferrum has, null on another box and once this device is closed</summary>
+    public Ferrum? Ferrum() => Is(Family.Ferrum) ? new Ferrum(this) : null;
+
+    bool Is(Family family) => !closed && !handle.IsClosed && Snapshot().Info.Family == family;
 
     /// <summary>on a Medius, its own device for everything only Medius does (clips, transforms, rendering, the
     /// polling rate and so on), and null on any other box or once this device is closed. it shares this device's

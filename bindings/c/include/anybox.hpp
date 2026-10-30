@@ -19,7 +19,9 @@
 
 #include "anybox.h"
 
+#include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -119,6 +121,15 @@ enum class Action : std::uint32_t {
     LockAxis = ANYBOX_ACTION_LOCK_AXIS,
     LockKey = ANYBOX_ACTION_LOCK_KEY,
     ScaleAxis = ANYBOX_ACTION_SCALE_AXIS,
+    TypeText = ANYBOX_ACTION_TYPE_TEXT,
+    KeyChord = ANYBOX_ACTION_KEY_CHORD,
+    ForceReleaseKey = ANYBOX_ACTION_FORCE_RELEASE_KEY,
+    MakcuInterpolation = ANYBOX_ACTION_MAKCU_INTERPOLATION,
+    MakcuMoving = ANYBOX_ACTION_MAKCU_MOVING,
+    MakcuAutorelease = ANYBOX_ACTION_MAKCU_AUTORELEASE,
+    YscInterpolation = ANYBOX_ACTION_YSC_INTERPOLATION,
+    YscSerial = ANYBOX_ACTION_YSC_SERIAL,
+    FerrumCatchXy = ANYBOX_ACTION_FERRUM_CATCH_XY,
 };
 
 enum class Execution : std::uint32_t {
@@ -141,6 +152,8 @@ enum class QuirkKind : std::uint32_t {
     KeepsHeld = ANYBOX_QUIRK_KEEPS_HELD,
     MaxKeysHeld = ANYBOX_QUIRK_MAX_KEYS_HELD,
     KeepsLocked = ANYBOX_QUIRK_KEEPS_LOCKED,
+    TypedTextIgnoresCapsLock = ANYBOX_QUIRK_TYPED_TEXT_IGNORES_CAPS_LOCK,
+    TypingReleasesHeldKeys = ANYBOX_QUIRK_TYPING_RELEASES_HELD_KEYS,
 };
 
 enum class FirmwareKind : std::uint32_t {
@@ -532,6 +545,24 @@ inline std::string to_string(Action action) {
         return "lock or unlock a key";
     case Action::ScaleAxis:
         return "scale an axis";
+    case Action::TypeText:
+        return "type text";
+    case Action::KeyChord:
+        return "press several keys at once";
+    case Action::ForceReleaseKey:
+        return "force a key up or give it back";
+    case Action::MakcuInterpolation:
+        return "read or set the MAKCU's interpolation";
+    case Action::MakcuMoving:
+        return "ask the MAKCU whether it's still moving";
+    case Action::MakcuAutorelease:
+        return "read or set the MAKCU's autorelease";
+    case Action::YscInterpolation:
+        return "read or set the YSC's interpolation";
+    case Action::YscSerial:
+        return "read the serial the YSC gives its mouse";
+    case Action::FerrumCatchXy:
+        return "read the Ferrum's recent mouse motion";
     }
     throw std::invalid_argument("anybox has no such action");
 }
@@ -1196,6 +1227,15 @@ inline std::optional<std::string> optional_text(const char* value) {
     return std::string(value);
 }
 
+inline std::vector<std::uint8_t> key_bytes(const std::vector<Key>& keys) {
+    std::vector<std::uint8_t> bytes;
+    bytes.reserve(keys.size());
+    for (const auto key : keys) {
+        bytes.push_back(key.value);
+    }
+    return bytes;
+}
+
 // a NUL inside would cut the text short on the C side
 inline const std::string& c_text(const std::string& value) {
     if (value.find('\0') != std::string::npos) {
@@ -1206,11 +1246,15 @@ inline const std::string& c_text(const std::string& value) {
 
 // a cast would take any number without a word, and a value this header has no name for means it's older than the
 // library
+inline Error unknown(std::uint32_t value, const char* what) {
+    return Error(std::string("the library sent ") + what + " this header doesn't know (" + std::to_string(value) +
+                 "), so build against the anybox.hpp that came with the library");
+}
+
 template <class T>
 T known(std::uint32_t value, std::uint32_t first, std::uint32_t last, const char* what) {
     if (value < first || value > last) {
-        throw Error(std::string("the library sent ") + what + " this header doesn't know (" + std::to_string(value) +
-                    "), so build against the anybox.hpp that came with the library");
+        throw unknown(value, what);
     }
     return static_cast<T>(value);
 }
@@ -1230,8 +1274,27 @@ inline FerrumApi ferrum_api(std::uint32_t value) {
     return known<FerrumApi>(value, ANYBOX_FERRUM_API_SOFTWARE, ANYBOX_FERRUM_API_LEGACY, "a Ferrum API");
 }
 
+// the common actions run from CONNECT to FORCE_RELEASE_KEY, each family's own from its own base
+inline const std::vector<std::uint32_t>& action_numbers() {
+    static const std::vector<std::uint32_t> numbers = [] {
+        std::vector<std::uint32_t> out;
+        for (std::uint32_t number = ANYBOX_ACTION_CONNECT; number <= ANYBOX_ACTION_FORCE_RELEASE_KEY; number++) {
+            out.push_back(number);
+        }
+        out.insert(out.end(), {ANYBOX_ACTION_MAKCU_INTERPOLATION, ANYBOX_ACTION_MAKCU_MOVING,
+                               ANYBOX_ACTION_MAKCU_AUTORELEASE, ANYBOX_ACTION_YSC_INTERPOLATION,
+                               ANYBOX_ACTION_YSC_SERIAL, ANYBOX_ACTION_FERRUM_CATCH_XY});
+        return out;
+    }();
+    return numbers;
+}
+
 inline Action action(std::uint32_t value) {
-    return known<Action>(value, ANYBOX_ACTION_CONNECT, ANYBOX_ACTION_SCALE_AXIS, "an action");
+    const auto& numbers = action_numbers();
+    if (std::find(numbers.begin(), numbers.end(), value) == numbers.end()) {
+        throw unknown(value, "an action");
+    }
+    return static_cast<Action>(value);
 }
 
 inline ClickTiming click_timing(const AnyboxClickTiming& raw) {
@@ -1313,7 +1376,7 @@ inline std::chrono::microseconds micros_of(std::uint64_t value) {
 
 inline Quirk quirk(const AnyboxQuirk& raw) {
     Quirk out;
-    out.kind = known<QuirkKind>(raw.kind, ANYBOX_QUIRK_FORCED_UP_ON_RELEASE, ANYBOX_QUIRK_KEEPS_LOCKED, "a quirk");
+    out.kind = known<QuirkKind>(raw.kind, ANYBOX_QUIRK_FORCED_UP_ON_RELEASE, ANYBOX_QUIRK_TYPING_RELEASES_HELD_KEYS, "a quirk");
     switch (out.kind) {
     case QuirkKind::ForcedUpOnRelease:
     case QuirkKind::BoxClickTiming:
@@ -1518,7 +1581,7 @@ inline Snapshot snapshot(AnyboxSnapshot* raw) {
     Snapshot out;
     out.info = info(raw_info);
     std::map<Action, Capability> actions;
-    for (std::uint32_t number = ANYBOX_ACTION_CONNECT; number <= ANYBOX_ACTION_SCALE_AXIS; number++) {
+    for (const auto number : action_numbers()) {
         AnyboxCapability raw_capability{};
         check(anybox_snapshot_capability(owned.get(), number, &raw_capability));
         Capability capability;
@@ -1764,6 +1827,233 @@ private:
     std::unique_ptr<State> state_;
 };
 
+/// how long a MAKCU spreads a move, `Interpolation::automatic()` or `Interpolation::percent(n)` with n from 0 to 100
+struct Interpolation {
+    bool is_automatic = true;
+    std::uint8_t percentage = 0;
+
+    static Interpolation automatic() { return {true, 0}; }
+    static Interpolation percent(std::uint8_t n) { return {false, n}; }
+    bool operator==(const Interpolation& other) const {
+        return is_automatic == other.is_automatic && percentage == other.percentage;
+    }
+    bool operator!=(const Interpolation& other) const { return !(*this == other); }
+};
+
+/// the shape a YSC gives a spread move, a number the vendor doesn't name yet is kept as the box sent it
+enum class YscProfile : std::uint32_t {
+    Linear = 0,
+    EaseInOut = 1,
+    MinJerk = 2,
+};
+
+/// a YSC's interpolation as the box reports it. what the box didn't send is empty, the vendor's own app only reads
+/// `enabled`, `profile` and the measured interval. a `window` of zero means the box adapts it
+struct YscInterpolation {
+    bool enabled = false;
+    YscProfile profile = YscProfile::Linear;
+    std::optional<std::chrono::milliseconds> window;
+    std::optional<std::chrono::milliseconds> max_window;
+    std::optional<std::chrono::microseconds> measured_interval;
+};
+
+/// what `Ysc::set_interpolation` sends, the windows up to 60 s
+struct YscInterpolationSettings {
+    // the vendor's reset, on and linear with an adaptive window
+    bool enabled = true;
+    YscProfile profile = YscProfile::Linear;
+    std::chrono::milliseconds window{0};
+    std::chrono::milliseconds max_window{50};
+};
+
+/// the serial a YSC gives the mouse behind it, each empty when the box didn't send it
+struct YscSerial {
+    std::optional<std::string> custom;
+    std::optional<std::string> physical;
+    std::optional<std::string> active;
+};
+
+namespace detail {
+
+inline std::uint32_t millis(std::chrono::milliseconds value, const char* what) {
+    if (value.count() < 0 || value.count() > (std::numeric_limits<std::uint32_t>::max)()) {
+        throw std::invalid_argument(std::string(what) + " is out of range for the box");
+    }
+    return static_cast<std::uint32_t>(value.count());
+}
+
+inline YscInterpolation ysc_interpolation(const AnyboxYscInterpolation& raw) {
+    YscInterpolation out;
+    out.enabled = raw.enabled;
+    out.profile = static_cast<YscProfile>(raw.profile);
+    if (raw.has_window) {
+        out.window = std::chrono::milliseconds(raw.window_ms);
+    }
+    if (raw.has_max_window) {
+        out.max_window = std::chrono::milliseconds(raw.max_window_ms);
+    }
+    if (raw.has_measured_interval) {
+        out.measured_interval = std::chrono::microseconds(raw.measured_interval_us);
+    }
+    return out;
+}
+
+// 0 is off on the C side, so a zero asked for has to fail here like it does in Rust
+inline std::uint32_t ms_or_off(std::optional<std::chrono::milliseconds> value, const char* what) {
+    if (!value) {
+        return 0;
+    }
+    const auto ms = millis(*value, what);
+    if (ms == 0) {
+        throw std::invalid_argument(std::string(what) + " can't be 0, use an empty one to turn it off");
+    }
+    return ms;
+}
+
+inline std::optional<std::chrono::milliseconds> optional_ms(std::uint32_t ms) {
+    return ms ? std::optional<std::chrono::milliseconds>(ms) : std::nullopt;
+}
+
+inline AnyboxMakcuInterpolation raw(const Interpolation& value) {
+    return {value.is_automatic, value.is_automatic ? std::uint8_t{0} : value.percentage};
+}
+
+inline Interpolation interpolation(const AnyboxMakcuInterpolation& raw) {
+    return raw.automatic ? Interpolation::automatic() : Interpolation::percent(raw.percent);
+}
+
+inline AnyboxYscInterpolationSettings raw(const YscInterpolationSettings& settings) {
+    return {settings.enabled, static_cast<std::uint32_t>(settings.profile), millis(settings.window, "the window"),
+            millis(settings.max_window, "the max window")};
+}
+
+// reads the serial and frees it
+inline YscSerial ysc_serial(AnyboxYscSerial* raw) {
+    const std::unique_ptr<AnyboxYscSerial, Freer<AnyboxYscSerial, anybox_ysc_serial_free>> owner(raw);
+    return {optional_text(anybox_ysc_serial_custom(raw)), optional_text(anybox_ysc_serial_physical(raw)),
+            optional_text(anybox_ysc_serial_active(raw))};
+}
+
+}  // namespace detail
+
+/// what only a MAKCU has. it keeps the device alive, and each call checks what the box can do right now
+class Makcu {
+public:
+    explicit Makcu(std::shared_ptr<AnyboxDevice> device) : device_(std::move(device)) {}
+
+    // made by bindings/gen from its call table (makcu_methods), change the table and run cargo run -p anybox-gen
+    /// how long the box spreads a move, read fresh from the box. it's global to the box and every program on it
+    /// shares it
+    Interpolation interpolation() const {
+        AnyboxMakcuInterpolation out{};
+        detail::check(anybox_makcu_interpolation(device_.get(), &out));
+        return detail::interpolation(out);
+    }
+
+    /// sets it and reads it back, a box that didn't take it throws `RejectedError`. it changes how moves land for
+    /// every program on the box, and anybox leaves it set when you close
+    void set_interpolation(const Interpolation& value) const {
+        const auto raw_value = detail::raw(value);
+        detail::check(anybox_makcu_set_interpolation(device_.get(), &raw_value));
+    }
+
+    /// whether injected motion is still queued or being spread
+    bool moving() const {
+        bool out = false;
+        detail::check(anybox_makcu_moving(device_.get(), &out));
+        return out;
+    }
+
+    /// how long the box waits with nothing coming in before it lets go of injected mouse buttons, an empty one when
+    /// it's off
+    std::optional<std::chrono::milliseconds> autorelease() const {
+        std::uint32_t ms = 0;
+        detail::check(anybox_makcu_autorelease(device_.get(), &ms));
+        return detail::optional_ms(ms);
+    }
+
+    /// turns autorelease on for 1 ms to 60 s (whole milliseconds), or off with an empty one. anybox asks the box
+    /// something about every 250 ms, so with more than that it only fires once your app dies or hangs, and a button
+    /// it held gets let go instead of staying down. the box shares the timer with every program on it and forgets it
+    /// when it loses power, so anybox sends it again after a reconnect. needs V4.108
+    void set_autorelease(std::optional<std::chrono::milliseconds> after) const {
+        detail::check(anybox_makcu_set_autorelease(device_.get(), detail::ms_or_off(after, "autorelease")));
+    }
+
+    // the end of what bindings/gen makes (makcu_methods)
+
+private:
+    std::shared_ptr<AnyboxDevice> device_;
+};
+
+/// what only a YSC8K has. it keeps the device alive, and each call checks what the box can do right now
+class Ysc {
+public:
+    explicit Ysc(std::shared_ptr<AnyboxDevice> device) : device_(std::move(device)) {}
+
+    // made by bindings/gen from its call table (ysc_methods), change the table and run cargo run -p anybox-gen
+    /// how the box spreads moves. it's on by default and kept on the box, so another app may have changed it
+    YscInterpolation interpolation() const {
+        AnyboxYscInterpolation out{};
+        detail::check(anybox_ysc_interpolation(device_.get(), &out));
+        return detail::ysc_interpolation(out);
+    }
+
+    /// sets it and reads it back, a box that didn't take it throws `RejectedError`. the box keeps it, anybox leaves
+    /// it set when you close
+    void set_interpolation(const YscInterpolationSettings& settings) const {
+        const auto raw_settings = detail::raw(settings);
+        detail::check(anybox_ysc_set_interpolation(device_.get(), &raw_settings));
+    }
+
+    /// puts it back to the box's default and gives you what that is
+    YscInterpolation reset_interpolation() const {
+        AnyboxYscInterpolation out{};
+        detail::check(anybox_ysc_reset_interpolation(device_.get(), &out));
+        return detail::ysc_interpolation(out);
+    }
+
+    /// the serial the box gives the mouse behind it
+    YscSerial serial() const {
+        AnyboxYscSerial* out = nullptr;
+        detail::check(anybox_ysc_serial(device_.get(), &out));
+        return detail::ysc_serial(out);
+    }
+
+    // the end of what bindings/gen makes (ysc_methods)
+
+private:
+    std::shared_ptr<AnyboxDevice> device_;
+};
+
+/// what only a Ferrum has. it keeps the device alive, and each call checks what the box can do right now
+class Ferrum {
+public:
+    explicit Ferrum(std::shared_ptr<AnyboxDevice> device) : device_(std::move(device)) {}
+
+    // made by bindings/gen from its call table (ferrum_methods), change the table and run cargo run -p anybox-gen
+    /// the mouse's own motion summed over the last `window` (whole milliseconds, up to a second), and what software
+    /// sent too with `with_software`. y is positive down like `move_by` per the vendor's first example, its second
+    /// says the opposite and nobody checked it on a box yet. what a 0 window does isn't documented
+    std::pair<std::int32_t, std::int32_t> catch_xy(
+        std::chrono::milliseconds window, bool with_software = false) const {
+        std::int32_t x = 0;
+        std::int32_t y = 0;
+        detail::check(anybox_ferrum_catch_xy(
+            device_.get(),
+            detail::millis(window, "the window"),
+            with_software,
+            &x,
+            &y));
+        return {x, y};
+    }
+
+    // the end of what bindings/gen makes (ferrum_methods)
+
+private:
+    std::shared_ptr<AnyboxDevice> device_;
+};
+
 /// one open box. every method can be called from any thread at the same time, and a copy shares the box. the last
 /// copy to go lets go of what you held, unlocks and closes the port, `close()` does it now and throws when that
 /// didn't work
@@ -1821,6 +2111,31 @@ public:
         detail::check(anybox_device_tap_key_with(get(), key.value, tap.get()));
     }
 
+    /// types the text on the box with the box's own timing, as US layout key presses, and returns once the box has
+    /// typed all of it. it takes printable ASCII only, so tap keys like Enter yourself after it. other calls on the
+    /// device can wait while it types, and a close stops it after the few characters going out. after an error part
+    /// of it may already be typed
+    void type_text(const std::string& text) const {
+        detail::check(anybox_device_type_text(get(), detail::c_text(text).c_str()));
+    }
+
+    /// holds the keys down with one command of the box, up to 14 of them, until `release_keys`
+    void press_keys(const std::vector<Key>& keys) const {
+        detail::check(anybox_device_press_keys(get(), detail::key_bytes(keys).data(), keys.size()));
+    }
+
+    /// lets go of the keys with one command of the box, or one at a time like `release_key` on a box that can't, so
+    /// a key you hold always gets let go. a key you don't hold still has to be one the box can let go of, so it can
+    /// fail as unsupported after the held ones already went
+    void release_keys(const std::vector<Key>& keys) const {
+        detail::check(anybox_device_release_keys(get(), detail::key_bytes(keys).data(), keys.size()));
+    }
+
+    /// presses and lets go of the keys with one command of the box, timed by the box
+    void tap_keys(const std::vector<Key>& keys) const {
+        detail::check(anybox_device_tap_keys(get(), detail::key_bytes(keys).data(), keys.size()));
+    }
+
     /// holds a media key down until `release_media`. a media key is its HID consumer usage
     void press_media(MediaKey key) const { detail::check(anybox_device_press_media(get(), key.value)); }
 
@@ -1839,6 +2154,15 @@ public:
 
     /// lets the physical button through again
     void unlock_button(Button button) const { detail::check(anybox_device_unlock_button(get(), button.value)); }
+
+    /// the PC sees the key up from now on, whatever the finger does, until `restore_key`. key events keep reporting
+    /// the finger, so you can tell whether it's still held. a key anybox holds or has locked itself, or one a text
+    /// needs while it types, is refused, since each box would do something else with it
+    void force_release_key(Key key) const { detail::check(anybox_device_force_release_key(get(), key.value)); }
+
+    /// gives the PC the finger's state of the key again, so a key that's still held goes down for it. it also clears
+    /// a force another program left, except on a key anybox holds or has locked
+    void restore_key(Key key) const { detail::check(anybox_device_restore_key(get(), key.value)); }
 
     /// keeps the physical key from reaching the PC until `unlock_key`
     void lock_key(Key key) const { detail::check(anybox_device_lock_key(get(), key.value)); }
@@ -1909,10 +2233,35 @@ public:
     /// 2 s when the box doesn't answer. after it every command throws ClosedError and the receivers end once they're
     /// read empty, `events()` gives one that's already ended, `medius()` nothing, and `snapshot()` still works. a
     /// second close throws ClosedError, like in Rust
-    void close() const { detail::check(anybox_device_close(get())); }
+    void close() const {
+        // get() first, a moved from device has no closed_ and throws there
+        const AnyboxDevice* handle = get();
+        *closed_ = true;
+        detail::check(anybox_device_close(handle));
+    }
+
+    /// what only a MAKCU has, nothing on another box and once this device is closed
+    std::optional<Makcu> makcu() const {
+        return is(Family::MakcuV4) ? std::optional<Makcu>(Makcu(handle_)) : std::nullopt;
+    }
+
+    /// what only a YSC8K has, nothing on another box and once this device is closed
+    std::optional<Ysc> ysc() const { return is(Family::Ysc) ? std::optional<Ysc>(Ysc(handle_)) : std::nullopt; }
+
+    /// what only a Ferrum has, nothing on another box and once this device is closed
+    std::optional<Ferrum> ferrum() const {
+        return is(Family::Ferrum) ? std::optional<Ferrum>(Ferrum(handle_)) : std::nullopt;
+    }
 
 private:
+    bool is(Family family) const {
+        get();
+        return !*closed_ && snapshot().info.family == family;
+    }
+
     std::shared_ptr<AnyboxDevice> handle_;
+    // shared by every copy of this device, like the handle
+    std::shared_ptr<std::atomic<bool>> closed_ = std::make_shared<std::atomic<bool>>(false);
 };
 
 /// one port a scan looked at, with the box on it in `found`, or in `error` why a search of just that port fails.
@@ -2120,6 +2469,22 @@ public:
         return open(anybox_mock_medius_open, click_timing, keyboard);
     }
 
+    /// a device over anybox's own model of a MAKCU V4.108 with a mouse and a keyboard behind it, running the exact code
+    /// a real one gets over a fake port, for testing the `makcu()` calls with no box
+    static Device makcu(const ClickTiming& click_timing = ClickTiming::makcu()) {
+        return open_family(anybox_mock_makcu_open, click_timing);
+    }
+
+    /// a device over anybox's own model of a YSC8K V1, for testing the `ysc()` calls with no box
+    static Device ysc(const ClickTiming& click_timing = ClickTiming::makcu()) {
+        return open_family(anybox_mock_ysc_open, click_timing);
+    }
+
+    /// a device over anybox's own model of a Ferrum on the app's port, for testing the `ferrum()` calls with no box
+    static Device ferrum(const ClickTiming& click_timing = ClickTiming::makcu()) {
+        return open_family(anybox_mock_ferrum_open, click_timing);
+    }
+
     /// the same as `medius()`, except that the link only gets checked on `tick()`, so a test decides when a link
     /// event gets noticed and nothing lands between the frames it records
     static std::pair<Device, Mock> medius_manual(const ClickTiming& click_timing = ClickTiming::makcu(),
@@ -2209,6 +2574,15 @@ private:
     using Open = AnyboxStatus (*)(const AnyboxClickTiming*, bool, AnyboxMock**, AnyboxDevice**);
 
     explicit Mock(Owner handle) noexcept : handle_(std::move(handle)) {}
+
+    static Device open_family(AnyboxStatus (*call)(const AnyboxClickTiming*, AnyboxDevice**),
+                              const ClickTiming& click_timing) {
+        detail::ensure();
+        const auto timing = click_timing.to_c();
+        AnyboxDevice* raw = nullptr;
+        detail::check(call(&timing, &raw));
+        return Device(raw);
+    }
 
     static std::pair<Device, Mock> open(Open call, const ClickTiming& click_timing, bool keyboard) {
         detail::ensure();

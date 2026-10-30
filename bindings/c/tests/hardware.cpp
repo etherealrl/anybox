@@ -1,6 +1,8 @@
 // a manual run through C++ on a real box: it connects, prints what it found, moves the cursor right and back,
-// clicks the left button where the cursor is, then waits up to 20 s for you to press any button on the mouse
-// behind the box and closes. on a Medius it also reads the polling rate and reconnects through device.medius(), and
+// clicks the left button where the cursor is, waits up to 20 s for you to press any button on the mouse behind
+// the box, presses a B with Shift as a chord and a c as a chord tap, types " anybox types 1!" and Enter into
+// whatever has focus, and closes. on a MAKCU it times a move at 50 percent interpolation and sets autorelease and
+// turns it off again. on a Medius it also reads the polling rate and reconnects through device.medius(), and
 // once anybox is closed it goes through medius' own ways in. pass a port to open that one, otherwise it takes the
 // first box it finds
 
@@ -9,6 +11,7 @@
 #include <chrono>
 #include <cstdio>
 #include <functional>
+#include <thread>
 #include <utility>
 
 namespace {
@@ -91,6 +94,55 @@ int main(int argc, char** argv) {
         if (!pressed) {
             std::printf("no button came\n");
         }
+        std::printf("click into a text field, typing in 3 s\n");
+        std::this_thread::sleep_for(3s);
+        // chords first, a MAKCU refuses a key write for about 10 ms after a tap and typing waits for it to be done
+        try {
+            device.press_keys({anybox::Key::LEFT_SHIFT, anybox::Key::B});
+            device.release_keys({anybox::Key::LEFT_SHIFT, anybox::Key::B});
+            device.tap_keys({anybox::Key::C});
+            std::printf("pressed the chords\n");
+        } catch (const anybox::UnsupportedError& error) {
+            std::printf("chords: %s\n", error.what());
+        }
+        try {
+            device.type_text(" anybox types 1!");
+            device.tap_key(anybox::Key::ENTER);
+            std::printf("typed\n");
+        } catch (const anybox::UnsupportedError& error) {
+            std::printf("typing: %s\n", error.what());
+        }
+        if (const auto makcu = device.makcu()) {
+            const auto before = makcu->interpolation();
+            makcu->set_interpolation(anybox::Interpolation::percent(50));
+            device.move_by(100, 0);
+            const auto started = std::chrono::steady_clock::now();
+            while (makcu->moving()) {
+            }
+            const auto took = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() -
+                                                                                    started);
+            std::printf("interpolation was %s, at 50 a move took %lld ms\n",
+                        before.is_automatic ? "AUTO" : std::to_string(before.percentage).c_str(),
+                        static_cast<long long>(took.count()));
+            device.move_by(-100, 0);
+            makcu->set_interpolation(before);
+            try {
+                makcu->set_autorelease(1500ms);
+                std::printf("autorelease set to %lld ms\n", static_cast<long long>(makcu->autorelease().value_or(0ms).count()));
+                makcu->set_autorelease(std::nullopt);
+            } catch (const anybox::UnsupportedError& error) {
+                std::printf("autorelease: %s\n", error.what());
+            }
+        }
+        if (const auto ysc = device.ysc()) {
+            std::printf("YSC serial %s\n", ysc->serial().active.value_or("none").c_str());
+        }
+        if (const auto ferrum = device.ferrum()) {
+            const auto xy = ferrum->catch_xy(500ms);
+            std::printf("the mouse moved (%d, %d) in the last 500 ms\n", xy.first, xy.second);
+        }
+        std::printf("box calls: MAKCU %d, YSC %d, Ferrum %d\n", device.makcu().has_value(), device.ysc().has_value(),
+                    device.ferrum().has_value());
         if (const auto medius = device.medius()) {
             // the rescan finds this box again by its serial and MAC
             const auto before = medius->query_version();

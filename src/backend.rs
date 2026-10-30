@@ -3,8 +3,9 @@ use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
 use crate::capability::{Action, Axis, Button, Snapshot};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::event::{BoxTime, DropSource};
+use crate::extension::{Extension, ExtensionReply};
 use crate::key::{Key, MediaKey};
 
 /// what the core asks a backend to do on the box. it never sends one the box's capabilities don't list
@@ -39,6 +40,57 @@ pub(crate) enum Command {
         slot: LockSlot,
         keep: i16,
     },
+    KeyChord {
+        kind: ChordKind,
+        keys: Keys,
+    },
+    /// `force` makes the PC see the key up whatever the finger does, otherwise the PC gets the finger's state back
+    KeyForce {
+        key: Key,
+        force: bool,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ChordKind {
+    Press,
+    Release,
+    Tap,
+}
+
+/// the keys of one chord, at most `MAX_CHORD`, kept in the command so it stays `Copy`
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Keys {
+    keys: [Key; MAX_CHORD],
+    len: u8,
+}
+
+/// anybox's own limit for every box, MAKCU's chord command takes 1 to 14
+pub(crate) const MAX_CHORD: usize = 14;
+
+impl Keys {
+    /// none when there are more than `MAX_CHORD`
+    pub(crate) fn new(keys: &[Key]) -> Option<Self> {
+        let mut all = [Key(0); MAX_CHORD];
+        all.get_mut(..keys.len())?.copy_from_slice(keys);
+        Some(Self {
+            keys: all,
+            len: u8::try_from(keys.len()).ok()?,
+        })
+    }
+
+    pub(crate) fn as_slice(&self) -> &[Key] {
+        &self.keys[..usize::from(self.len)]
+    }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct Typing {
+    /// the link generation the text's first request went out on. every later one may only go out on it, so after
+    /// a reconnect nothing more of the text is typed
+    pub(crate) generation: Option<u64>,
+    /// set by the backend once any of the text went to the box, from then on the box may have typed some of it
+    pub(crate) sent: bool,
 }
 
 pub(crate) const UNLOCKED: i16 = 100;
@@ -124,6 +176,8 @@ impl Command {
             Self::MediaRelease(_) => Action::MediaRelease,
             Self::MediaTap { .. } => Action::MediaTap,
             Self::Lock { slot, keep } => slot.action(keep),
+            Self::KeyChord { .. } => Action::KeyChord,
+            Self::KeyForce { .. } => Action::ForceReleaseKey,
         }
     }
 
@@ -144,7 +198,9 @@ impl Command {
             | Self::DiscardPendingMoves
             | Self::KeyTap { .. }
             | Self::MediaTap { .. }
-            | Self::Lock { .. } => None,
+            | Self::Lock { .. }
+            | Self::KeyChord { .. }
+            | Self::KeyForce { .. } => None,
         }
     }
 }
@@ -198,14 +254,38 @@ pub(crate) trait Backend: Send + Sync + 'static {
     /// switches back on the one stream the box switched off, the others are left alone
     fn restart_stream(&self, kind: InputKind) -> Result<()>;
     fn release_all(&self, held: &[Usage]) -> Result<()>;
+    /// types one piece of printable ASCII and returns once the box is done with it, all of it within
+    /// `WRITE_DEADLINE`. a box that doesn't type answers `Unsupported`, the core never gets that far on one
+    fn type_piece(&self, piece: &[u8], typing: &mut Typing) -> Result<()>;
     /// unlocks each slot, and once one comes back `Disconnected` it doesn't wait on the rest. Medius still queues
     /// them, MAKCU leaves them to its last check at shutdown, which only gets to them if the box answers in time
     fn unlock_all(&self, slots: &[LockSlot]) -> Result<()>;
+    /// gives back each key `force_release_key` held up, on drop and close. every one goes out even after one fails,
+    /// a box that queues its writes overrides this to stop waiting once one ran out of time
+    fn restore_all(&self, keys: &[Key]) -> Result<()> {
+        let mut first = Ok(());
+        for &key in keys {
+            let restored = self.send(Command::KeyForce { key, force: false });
+            if first.is_ok() {
+                first = restored;
+            }
+        }
+        first
+    }
     fn shutdown(&self, deadline: Duration);
     /// lets explicit close report a failed final write, while drop can still give it a best effort
     fn close(&self, deadline: Duration) -> Result<()> {
         self.shutdown(deadline);
         Ok(())
+    }
+    /// one call only this family has. the core checks the capability first, so a backend without extensions
+    /// never gets here, this answer is for one that does by mistake
+    fn extension(&self, request: Extension) -> Result<ExtensionReply> {
+        Err(Error::Unsupported {
+            action: request.action(),
+            family: crate::extension::family(request),
+            reason: "this backend has no calls of its own".into(),
+        })
     }
     fn as_any(&self) -> &dyn Any;
 }

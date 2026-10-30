@@ -127,6 +127,57 @@ fn every_plain_device_function_is_a_call_and_every_call_is_in_a_scenario() {
 }
 
 #[test]
+fn every_box_function_is_an_extension_call_and_every_one_is_in_a_scenario() {
+    let text = std::fs::read_to_string(root().join("bindings/c/include/anybox.h")).unwrap();
+    let mut declared: Vec<String> = Vec::new();
+    for (prefix, accessor) in [
+        ("anybox_makcu_", "makcu"),
+        ("anybox_ysc_", "ysc"),
+        ("anybox_ferrum_", "ferrum"),
+    ] {
+        declared.extend(
+            text.split(prefix)
+                .skip(1)
+                .filter_map(|rest| rest.split_once('(').map(|(name, _)| name))
+                .filter(|name| name.chars().all(|c| c.is_ascii_lowercase() || c == '_'))
+                // the serial's getters and its free work on the serial, not on the device
+                .filter(|name| {
+                    ![
+                        "serial_custom",
+                        "serial_physical",
+                        "serial_active",
+                        "serial_free",
+                    ]
+                    .contains(name)
+                })
+                .map(|name| format!("{accessor}.{name}")),
+        );
+    }
+    declared.sort_unstable();
+    declared.dedup();
+    let mut extensions: Vec<String> = EXTENSIONS.iter().map(|name| name.to_string()).collect();
+    extensions.sort_unstable();
+    assert_eq!(
+        declared, extensions,
+        "a box function in anybox.h that isn't an extension call"
+    );
+    let used: Vec<String> = scenarios()
+        .iter()
+        .flat_map(|scenario| scenario["steps"].as_array().unwrap().clone())
+        .filter_map(|step| {
+            step.get("extension")
+                .map(|name| name.as_str().unwrap().to_string())
+        })
+        .collect();
+    for name in EXTENSIONS {
+        assert!(
+            used.iter().any(|used| used == name),
+            "no scenario calls {name}"
+        );
+    }
+}
+
+#[test]
 fn every_error_and_every_event_is_in_a_scenario() {
     let header = header();
     let steps: Vec<Value> = scenarios()

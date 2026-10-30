@@ -83,6 +83,15 @@ public enum BoxAction : uint
     LockAxis = 20,
     LockKey = 21,
     ScaleAxis = 22,
+    TypeText = 23,
+    KeyChord = 24,
+    ForceReleaseKey = 25,
+    MakcuInterpolation = 0x10000,
+    MakcuMoving = 0x10001,
+    MakcuAutorelease = 0x10002,
+    YscInterpolation = 0x20000,
+    YscSerial = 0x20001,
+    FerrumCatchXy = 0x30000,
 }
 
 public enum Execution : uint
@@ -107,6 +116,8 @@ public enum QuirkKind : uint
     KeepsHeld = 8,
     MaxKeysHeld = 9,
     KeepsLocked = 10,
+    TypedTextIgnoresCapsLock = 11,
+    TypingReleasesHeldKeys = 12,
 }
 
 public enum FirmwareKind : uint
@@ -423,6 +434,15 @@ public static class ValueTexts
             BoxAction.LockAxis => "lock or unlock an axis",
             BoxAction.LockKey => "lock or unlock a key",
             BoxAction.ScaleAxis => "scale an axis",
+            BoxAction.TypeText => "type text",
+            BoxAction.KeyChord => "press several keys at once",
+            BoxAction.ForceReleaseKey => "force a key up or give it back",
+            BoxAction.MakcuInterpolation => "read or set the MAKCU's interpolation",
+            BoxAction.MakcuMoving => "ask the MAKCU whether it's still moving",
+            BoxAction.MakcuAutorelease => "read or set the MAKCU's autorelease",
+            BoxAction.YscInterpolation => "read or set the YSC's interpolation",
+            BoxAction.YscSerial => "read the serial the YSC gives its mouse",
+            BoxAction.FerrumCatchXy => "read the Ferrum's recent mouse motion",
             _ => throw new ArgumentOutOfRangeException(nameof(action), action, "anybox has no such action"),
         };
     }

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ._device import Connect, Device, Events, Scanned, candidates, connect, monotonic_ns, scan
+from ._device import Connect, Device, Events, Ferrum, Makcu, Scanned, Ysc, candidates, connect, monotonic_ns, scan
 from ._errors import (
     BoxInterruptedError,
     BoxTimeoutError,
@@ -26,7 +26,17 @@ from ._errors import (
     WrongFamilyError,
     WrongFerrumApiError,
 )
-from ._mock import Mock, example_error, example_events, has_mock, mock_medius, mock_medius_manual
+from ._mock import (
+    Mock,
+    example_error,
+    example_events,
+    has_mock,
+    mock_ferrum,
+    mock_makcu,
+    mock_medius,
+    mock_medius_manual,
+    mock_ysc,
+)
 from ._native import ABI_VERSION, lib, text
 from ._types import (
     Action,
@@ -51,6 +61,7 @@ from ._types import (
     Firmware,
     FirmwareKind,
     Info,
+    Interpolation,
     IoKind,
     Key,
     KeyEvent,
@@ -66,9 +77,13 @@ from ._types import (
     StableId,
     Stamp,
     UsbIds,
+    YscInterpolation,
+    YscInterpolationSettings,
+    YscProfile,
+    YscSerial,
 )
 
-__version__ = "0.10.0"
+__version__ = "0.11.0"
 
 
 def version() -> str:
@@ -104,17 +119,20 @@ __all__ = [
     "Events",
     "Execution",
     "Family",
+    "Ferrum",
     "FerrumApi",
     "Firmware",
     "FirmwareKind",
     "FirmwareTooOldError",
     "Info",
+    "Interpolation",
     "InvalidArgumentError",
     "IoError",
     "IoKind",
     "Key",
     "KeyEvent",
     "LibraryTooOldError",
+    "Makcu",
     "MediaEvent",
     "MediaKey",
     "Mock",
@@ -138,6 +156,11 @@ __all__ = [
     "UnknownError",
     "UnsupportedError",
     "UsbIds",
+    "Ysc",
+    "YscInterpolation",
+    "YscInterpolationSettings",
+    "YscProfile",
+    "YscSerial",
     "WrongBoxError",
     "WrongFamilyError",
     "WrongFerrumApiError",
@@ -146,8 +169,11 @@ __all__ = [
     "example_error",
     "example_events",
     "has_mock",
+    "mock_ferrum",
+    "mock_makcu",
     "mock_medius",
     "mock_medius_manual",
+    "mock_ysc",
     "monotonic_ns",
     "scan",
     "version",

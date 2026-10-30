@@ -45,13 +45,14 @@ mod connect;
 mod device;
 mod error;
 mod event;
+mod extension;
 mod family;
 mod key;
 mod transport;
 
 pub use capability::{
-    Action, Axis, Button, Capabilities, Capability, Direction, Execution, Family, FerrumApi,
-    Firmware, Info, Quirk, Snapshot, StableId, UsbIds,
+    Action, Axis, Button, Capabilities, Capability, Direction, Execution, Family, FerrumAction,
+    FerrumApi, Firmware, Info, MakcuAction, Quirk, Snapshot, StableId, UsbIds, YscAction,
 };
 pub use click::{Click, ClickTiming, Timing};
 pub use connect::{Connect, Found, Scanned, candidates, connect, scan};
@@ -60,6 +61,10 @@ pub use error::{Error, Result};
 pub use event::{
     BoxTime, Clock, Closed, DropSource, Event, EventKinds, Events, RecvTimeoutError, Stamp,
     TryRecvError, monotonic_ns,
+};
+pub use extension::{
+    Ferrum, Interpolation, Makcu, Ysc, YscInterpolation, YscInterpolationSettings, YscProfile,
+    YscSerial,
 };
 #[cfg(feature = "mock")]
 pub use family::medius::mock::MockPoller;

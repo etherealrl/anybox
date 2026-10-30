@@ -411,6 +411,7 @@ mod writer {
                 id: 1,
                 bytes: b"command\n".to_vec(),
                 expect: None,
+                on: None,
                 deadline,
                 given_up: Arc::new(AtomicBool::new(given_up)),
                 reply,
@@ -418,7 +419,10 @@ mod writer {
             .unwrap();
         drop(queue);
         write_loop(&shared, &requests);
-        let told = answer.try_recv().ok().map(|result| result.map(|_| ()));
+        let told = answer.try_iter().find_map(|answer| match answer {
+            super::super::Answer::Done(result) => Some(result.map(|_| ())),
+            super::super::Answer::Written => None,
+        });
         (fake.written(), told)
     }
 
@@ -484,7 +488,10 @@ mod writer {
         }
         shared.complete(7, 3, b"R7".to_vec());
         assert!(stale_answer.try_recv().is_err());
-        assert!(matches!(fresh_answer.try_recv(), Ok(Ok(Some(_)))));
+        assert!(matches!(
+            fresh_answer.try_recv(),
+            Ok(super::super::Answer::Done(Ok((Some(_), 3))))
+        ));
     }
 
     #[test]
@@ -762,4 +769,156 @@ fn every_reconnect_opens_a_new_generation() {
     assert_eq!(next_link_event(&setup.signals), "reconnected");
     let second = generation();
     assert!(first.is_some() && second.is_some() && first != second);
+}
+
+#[test]
+fn silence_within_the_window_is_an_answer_and_keeps_the_link_up() {
+    let setup = setup(echo);
+    let started = Instant::now();
+    let (reply, generation) = setup
+        .link
+        .request_or_silence(
+            b"S1\n".to_vec(),
+            1,
+            Duration::from_millis(40),
+            None,
+            Instant::now() + WRITE_DEADLINE,
+        )
+        .unwrap();
+    assert!(reply.is_none());
+    assert!(started.elapsed() >= Duration::from_millis(40));
+    // the same opening still answers
+    let (reply, again) = setup
+        .link
+        .request_on(
+            b"Q2\n".to_vec(),
+            Some(2),
+            Some(generation),
+            Instant::now() + WRITE_DEADLINE,
+        )
+        .unwrap();
+    assert_eq!(reply.as_deref(), Some(&b"R2"[..]));
+    assert_eq!(again, generation);
+    assert_eq!(next_link_event(&setup.signals), "nothing");
+}
+
+#[test]
+fn a_reply_within_the_window_is_the_answer() {
+    let setup = setup(echo);
+    let (reply, _) = setup
+        .link
+        .request_or_silence(
+            b"Q3\n".to_vec(),
+            3,
+            Duration::from_millis(40),
+            None,
+            Instant::now() + WRITE_DEADLINE,
+        )
+        .unwrap();
+    assert_eq!(reply.as_deref(), Some(&b"R3"[..]));
+}
+
+#[test]
+fn a_silence_check_not_written_by_its_deadline_takes_the_link_down() {
+    let setup = setup(echo);
+    setup.fake.stall_writes();
+    let started = Instant::now();
+    assert!(matches!(
+        setup.link.request_or_silence(
+            b"S7\n".to_vec(),
+            7,
+            Duration::from_millis(40),
+            None,
+            Instant::now() + Duration::from_millis(50),
+        ),
+        Err(Error::Disconnected)
+    ));
+    // its own deadline and not a fresh WRITE_DEADLINE
+    assert!(started.elapsed() < WRITE_DEADLINE / 2);
+    assert_eq!(next_link_event(&setup.signals), "disconnected");
+}
+
+#[test]
+fn a_late_answer_nobody_waits_for_is_dropped_and_the_next_waiting_check_takes_one() {
+    let setup = setup(echo);
+    let check = |window| {
+        setup.link.request_or_silence(
+            b"S8\n".to_vec(),
+            8,
+            window,
+            None,
+            Instant::now() + WRITE_DEADLINE,
+        )
+    };
+    let (first, _) = check(Duration::from_millis(40)).unwrap();
+    assert!(first.is_none());
+    setup.fake.send(b"R8\n");
+    thread::sleep(Duration::from_millis(50));
+    let (second, _) = check(Duration::from_millis(40)).unwrap();
+    assert!(second.is_none());
+    let fake = setup.fake.clone();
+    let late = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(30));
+        fake.send(b"R8\n");
+    });
+    let (third, _) = check(Duration::from_millis(300)).unwrap();
+    late.join().unwrap();
+    assert_eq!(third.as_deref(), Some(&b"R8"[..]));
+    assert_eq!(next_link_event(&setup.signals), "nothing");
+}
+
+#[test]
+fn losing_the_port_in_the_window_is_a_disconnect() {
+    let setup = setup(echo);
+    let fake = setup.fake.clone();
+    let gone = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(30));
+        fake.vanish();
+    });
+    assert!(matches!(
+        setup.link.request_or_silence(
+            b"S9\n".to_vec(),
+            9,
+            Duration::from_millis(300),
+            None,
+            Instant::now() + WRITE_DEADLINE,
+        ),
+        Err(Error::Disconnected)
+    ));
+    gone.join().unwrap();
+}
+
+#[test]
+fn a_request_for_an_older_opening_is_never_written() {
+    let setup = setup(echo);
+    let (_, generation) = setup
+        .link
+        .request_on(
+            b"Q4\n".to_vec(),
+            Some(4),
+            None,
+            Instant::now() + WRITE_DEADLINE,
+        )
+        .unwrap();
+    setup.fake.clear_written();
+    assert!(matches!(
+        setup.link.request_on(
+            b"Q5\n".to_vec(),
+            Some(5),
+            Some(generation + 1),
+            Instant::now() + WRITE_DEADLINE
+        ),
+        Err(Error::Disconnected)
+    ));
+    assert!(matches!(
+        setup.link.request_or_silence(
+            b"S6\n".to_vec(),
+            6,
+            Duration::from_millis(40),
+            Some(generation + 1),
+            Instant::now() + WRITE_DEADLINE
+        ),
+        Err(Error::Disconnected)
+    ));
+    assert!(setup.fake.written().is_empty());
 }

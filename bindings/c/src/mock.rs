@@ -338,3 +338,48 @@ pub unsafe extern "C" fn anybox_mock_free(mock: *mut AnyboxMock) {
         }
     });
 }
+
+/// a device over anybox's own model of a MAKCU V4.108 with a mouse and a keyboard behind it, for testing the
+/// `anybox_makcu_` calls with no box. null `click_timing` is the default. free it with `anybox_device_free`
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn anybox_mock_makcu_open(
+    click_timing: *const AnyboxClickTiming,
+    out: *mut *mut AnyboxDevice,
+) -> AnyboxStatus {
+    unsafe { open_family(click_timing, out, Device::mock_makcu) }
+}
+
+/// a device over anybox's own model of a YSC8K V1, for testing the `anybox_ysc_` calls with no box
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn anybox_mock_ysc_open(
+    click_timing: *const AnyboxClickTiming,
+    out: *mut *mut AnyboxDevice,
+) -> AnyboxStatus {
+    unsafe { open_family(click_timing, out, Device::mock_ysc) }
+}
+
+/// a device over anybox's own model of a Ferrum on the app's port, for testing the `anybox_ferrum_` calls with no box
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn anybox_mock_ferrum_open(
+    click_timing: *const AnyboxClickTiming,
+    out: *mut *mut AnyboxDevice,
+) -> AnyboxStatus {
+    unsafe { open_family(click_timing, out, Device::mock_ferrum) }
+}
+
+unsafe fn open_family(
+    click_timing: *const AnyboxClickTiming,
+    out: *mut *mut AnyboxDevice,
+    open: fn(anybox::ClickTiming) -> anybox::Result<Device>,
+) -> AnyboxStatus {
+    guard(|| {
+        // SAFETY: the header says a non-null click timing points at a whole `AnyboxClickTiming`
+        let timing = match unsafe { click_timing.as_ref() } {
+            Some(timing) => crate::values::click_timing(timing)?,
+            None => anybox::ClickTiming::default(),
+        };
+        let out = write(out, "out")?;
+        out.set(AnyboxDevice::boxed(open(timing).map_err(error)?));
+        Ok(())
+    })
+}

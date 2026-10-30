@@ -98,7 +98,7 @@ fn names_iap(value: &Value) -> bool {
     }
 }
 
-fn data(value: &Value) -> Option<Value> {
+pub(super) fn data(value: &Value) -> Option<Value> {
     match value.get("data")? {
         Value::Object(_) => Some(value["data"].clone()),
         Value::String(text) if text.len() <= MAX_PAYLOAD => {
@@ -153,10 +153,11 @@ fn known_reply(value: &Value) -> bool {
         || value
             .get("code")
             .and_then(Value::as_u64)
-            .is_some_and(|code| matches!(code, 200 | 404 | 100..=104 | 700..=715))
+            .is_some_and(|code| matches!(code, 200 | 404 | 409 | 100..=104 | 700..=715))
 }
 
-/// what a cmd 45 waits for. the answer doesn't name the key, which is fine because only one goes out at a time
+/// what a cmd 45, 47 or 48 waits for. the answer doesn't name its command, which is fine because the requests go
+/// out one at a time
 pub(super) fn key_reply() -> codec::ReplyKey {
     key(b"cmd 45")
 }
@@ -380,6 +381,7 @@ impl Codec for YscFrames {
                         Action::KeyRelease,
                         Action::KeyTap,
                         Action::KeyEvents,
+                        Action::TypeText,
                     ] {
                         state.snapshot.capabilities = state
                             .snapshot
@@ -410,13 +412,21 @@ impl Codec for YscFrames {
                 return Incoming::Reply(key_reply());
             }
             let code = value.get("code").and_then(Value::as_u64);
-            // a 400 is the box failing to read the last command. requests go out one at a time, so while a key
-            // waits it's that key's, and a text command waiting for its echo never takes this key
-            if code == Some(400)
+            // a 400 is the box failing to read the last command and a 409 the box still typing. requests go out one
+            // at a time, so while a key or a text waits it's that one's, and a text command waiting for its echo
+            // never takes this key. the async type_done isn't anyone's answer, cmd 48 is
+            if matches!(code, Some(400 | 409))
                 || (code == Some(200)
                     && matches!(
                         value.get("message").and_then(Value::as_str),
-                        Some("key_down" | "key_up")
+                        Some(
+                            "key_down"
+                                | "key_up"
+                                | "typing_started"
+                                | "type_status"
+                                | "interp"
+                                | "sn"
+                        )
                     ))
             {
                 return Incoming::Reply(key_reply());
