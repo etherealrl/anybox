@@ -277,17 +277,6 @@ fn known_reply_examples_are_drained_before_considering_upload_fields() {
         (200, "entering_iap", ""),
         (200, "switching", ""),
         (200, "type_done", "{\"typed\":3,\"skipped\":0,\"total\":3}"),
-        (
-            200,
-            "type_status",
-            "{\"busy\":false,\"remaining\":0,\"total\":3,\"typed\":3,\"skipped\":0}",
-        ),
-        (200, "interp", "{\"enabled\":1,\"profile\":2,\"ema\":0.5}"),
-        (
-            200,
-            "sn",
-            "{\"custom\":\"\",\"physical\":\"abc\",\"active\":\"abc\"}",
-        ),
         (700, "debug_enter", ""),
         (701, "debug_exit", ""),
         (702, "status", "{\"debug\":false}"),

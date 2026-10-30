@@ -149,6 +149,31 @@ def mock_medius_manual(
     return _open("anybox_mock_medius_open_manual", click_timing, keyboard)
 
 
+def mock_makcu(click_timing: ClickTiming = ClickTiming.MAKCU) -> Device:
+    """a device over anybox's own model of a MAKCU V4.108 with a mouse and a keyboard behind it, running the exact
+    code a real one gets over a fake port, for testing the `makcu()` calls with no box"""
+    return _open_family("anybox_mock_makcu_open", click_timing)
+
+
+def mock_ysc(click_timing: ClickTiming = ClickTiming.MAKCU) -> Device:
+    """a device over anybox's own model of a YSC8K V1, for testing the `ysc()` calls with no box"""
+    return _open_family("anybox_mock_ysc_open", click_timing)
+
+
+def mock_ferrum(click_timing: ClickTiming = ClickTiming.MAKCU) -> Device:
+    """a device over anybox's own model of a Ferrum on the app's port, for testing the `ferrum()` calls with no
+    box"""
+    return _open_family("anybox_mock_ferrum_open", click_timing)
+
+
+def _open_family(function: str, click_timing: ClickTiming) -> Device:
+    _need_mock()
+    device = ctypes.c_void_p()
+    timing = _click_timing_in(click_timing)
+    check(getattr(lib, function)(ctypes.byref(timing), ctypes.byref(device)))
+    return Device(device.value)  # type: ignore[arg-type]
+
+
 def _open(function: str, click_timing: ClickTiming, keyboard: bool) -> tuple[Device, Mock]:
     # a library without the mock has no such function, so the check that says so goes first
     _need_mock()

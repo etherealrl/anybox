@@ -57,6 +57,7 @@ Device::events | anybox_device_events | Device.events | Device.Events | Device::
 Device::events_of | anybox_device_events | Device.events | Device.Events | Device::events | the kinds are an argument of events
 Device::lock_axis | anybox_device_lock_axis | Device.lock_axis | Device.LockAxis | Device::lock_axis
 Device::lock_button | anybox_device_lock_button | Device.lock_button | Device.LockButton | Device::lock_button
+Device::force_release_key | anybox_device_force_release_key | Device.force_release_key | Device.ForceReleaseKey | Device::force_release_key
 Device::lock_key | anybox_device_lock_key | Device.lock_key | Device.LockKey | Device::lock_key
 Device::medius (medius) | anybox_device_medius | Device.medius | Device.Medius | Device::medius
 Device::mock_example_events (mock) | anybox_mock_example_events | example_events | Mock.ExampleEvents | example_events
@@ -67,16 +68,21 @@ Device::move_now | anybox_device_move_now | Device.move_now | Device.MoveNow | D
 Device::pan | anybox_device_pan | Device.pan | Device.Pan | Device::pan
 Device::press | anybox_device_press | Device.press | Device.Press | Device::press
 Device::press_key | anybox_device_press_key | Device.press_key | Device.PressKey | Device::press_key
+Device::press_keys | anybox_device_press_keys | Device.press_keys | Device.PressKeys | Device::press_keys
 Device::press_media | anybox_device_press_media | Device.press_media | Device.PressMedia | Device::press_media
 Device::release | anybox_device_release | Device.release | Device.Release | Device::release
 Device::release_key | anybox_device_release_key | Device.release_key | Device.ReleaseKey | Device::release_key
+Device::release_keys | anybox_device_release_keys | Device.release_keys | Device.ReleaseKeys | Device::release_keys
 Device::release_media | anybox_device_release_media | Device.release_media | Device.ReleaseMedia | Device::release_media
+Device::restore_key | anybox_device_restore_key | Device.restore_key | Device.RestoreKey | Device::restore_key
 Device::scale_axis | anybox_device_scale_axis | Device.scale_axis | Device.ScaleAxis | Device::scale_axis
 Device::snapshot | anybox_device_snapshot | Device.snapshot | Device.Snapshot | Device::snapshot
 Device::tap_key | anybox_device_tap_key | Device.tap_key | Device.TapKey | Device::tap_key
 Device::tap_key_with | anybox_device_tap_key_with | Device.tap_key | Device.TapKey | Device::tap_key | the Click is an argument of tap_key
+Device::tap_keys | anybox_device_tap_keys | Device.tap_keys | Device.TapKeys | Device::tap_keys
 Device::tap_media | anybox_device_tap_media | Device.tap_media | Device.TapMedia | Device::tap_media
 Device::tap_media_with | anybox_device_tap_media_with | Device.tap_media | Device.TapMedia | Device::tap_media | the Click is an argument of tap_media
+Device::type_text | anybox_device_type_text | Device.type_text | Device.TypeText | Device::type_text
 Device::unlock_axis | anybox_device_unlock_axis | Device.unlock_axis | Device.UnlockAxis | Device::unlock_axis
 Device::unlock_button | anybox_device_unlock_button | Device.unlock_button | Device.UnlockButton | Device::unlock_button
 Device::unlock_key | anybox_device_unlock_key | Device.unlock_key | Device.UnlockKey | Device::unlock_key
@@ -159,3 +165,30 @@ candidates | anybox_candidates | candidates | Device.Candidates | candidates
 connect | anybox_connect | connect | Device.Connect | connect
 monotonic_ns | anybox_monotonic_ns | monotonic_ns | Monotonic.NowNs | monotonic_ns
 scan | anybox_scan | scan | Device.Scan | scan
+Device::makcu | anybox_makcu_interpolation | Device.makcu | Device.Makcu | Device::makcu | the C calls take the device, on another box they answer unsupported naming it
+Device::ysc | anybox_ysc_interpolation | Device.ysc | Device.Ysc | Device::ysc | the C calls take the device, on another box they answer unsupported naming it
+Device::ferrum | anybox_ferrum_catch_xy | Device.ferrum | Device.Ferrum | Device::ferrum | the C calls take the device, on another box they answer unsupported naming it
+Device::mock_makcu (mock) | anybox_mock_makcu_open | mock_makcu | Mock.Makcu | Mock::makcu
+Device::mock_ysc (mock) | anybox_mock_ysc_open | mock_ysc | Mock.Ysc | Mock::ysc
+Device::mock_ferrum (mock) | anybox_mock_ferrum_open | mock_ferrum | Mock.Ferrum | Mock::ferrum
+Makcu | anybox_makcu_interpolation | Makcu | Makcu | Makcu | the C calls are on the device
+Makcu::interpolation | anybox_makcu_interpolation | Makcu.interpolation | Makcu.Interpolation | Makcu::interpolation
+Makcu::set_interpolation | anybox_makcu_set_interpolation | Makcu.set_interpolation | Makcu.SetInterpolation | Makcu::set_interpolation
+Makcu::moving | anybox_makcu_moving | Makcu.moving | Makcu.Moving | Makcu::moving
+Makcu::autorelease | anybox_makcu_autorelease | Makcu.autorelease | Makcu.Autorelease | Makcu::autorelease | 0 is off in C
+Makcu::set_autorelease | anybox_makcu_set_autorelease | Makcu.set_autorelease | Makcu.SetAutorelease | Makcu::set_autorelease | 0 is off in C
+MakcuAction | ANYBOX_ACTION_MAKCU_INTERPOLATION | Action | BoxAction | Action | the extension actions are members of the one action enum, from 0x10000 in C
+Interpolation | AnyboxMakcuInterpolation | Interpolation | Interpolation | Interpolation
+Ysc | anybox_ysc_interpolation | Ysc | Ysc | Ysc | the C calls are on the device
+Ysc::interpolation | anybox_ysc_interpolation | Ysc.interpolation | Ysc.Interpolation | Ysc::interpolation
+Ysc::set_interpolation | anybox_ysc_set_interpolation | Ysc.set_interpolation | Ysc.SetInterpolation | Ysc::set_interpolation
+Ysc::reset_interpolation | anybox_ysc_reset_interpolation | Ysc.reset_interpolation | Ysc.ResetInterpolation | Ysc::reset_interpolation
+Ysc::serial | anybox_ysc_serial | Ysc.serial | Ysc.Serial | Ysc::serial
+YscAction | ANYBOX_ACTION_YSC_INTERPOLATION | Action | BoxAction | Action | the extension actions are members of the one action enum, from 0x20000 in C
+YscInterpolation | AnyboxYscInterpolation | YscInterpolation | YscInterpolation | YscInterpolation | each field the box may leave out has a has_ flag in C
+YscInterpolationSettings | AnyboxYscInterpolationSettings | YscInterpolationSettings | YscInterpolationSettings | YscInterpolationSettings
+YscProfile | AnyboxYscInterpolation.profile | YscProfile | YscProfile | YscProfile | a number in C, one the vendor doesn't name is kept
+YscSerial | AnyboxYscSerial | YscSerial | YscSerial | YscSerial | an owned handle with a getter per field in C
+Ferrum | anybox_ferrum_catch_xy | Ferrum | Ferrum | Ferrum | the C calls are on the device
+Ferrum::catch_xy | anybox_ferrum_catch_xy | Ferrum.catch_xy | Ferrum.CatchXy | Ferrum::catch_xy | the window in ms in C
+FerrumAction | ANYBOX_ACTION_FERRUM_CATCH_XY | Action | BoxAction | Action | the extension actions are members of the one action enum, from 0x30000 in C

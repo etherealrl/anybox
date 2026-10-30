@@ -102,7 +102,7 @@ public sealed class HeaderTests
     }
 
     [Theory]
-    [InlineData("bindings/c/tests/layout.txt", "Anybox", 8)]
+    [InlineData("bindings/c/tests/layout.txt", "Anybox", 11)]
     // written by a test in the capi crate from the real medius-capi structs
     [InlineData("bindings/c/tests/medius-layout.txt", "Anybox.Medius", 51)]
     public void TheStructsMatchTheCommittedLayout(string file, string space, int count)
@@ -145,9 +145,26 @@ public sealed class HeaderTests
 
     static string Normalize(string type) => Regex.Replace(Regex.Replace(type.Trim(), @"\s+", " "), @"\s*\*", "*");
 
-    static readonly string[] Handles = ["Device", "Events", "Mock", "ScanList", "Snapshot", "StringList"];
+    static readonly string[] Handles = ["Device", "Events", "Mock", "ScanList", "Snapshot", "StringList", "YscSerial"];
+
+    // the calls only one box has, which go through the seam like a device call does
+    static bool Extension(string function) =>
+        (function.StartsWith("anybox_makcu_") || function.StartsWith("anybox_ysc_") || function.StartsWith("anybox_ferrum_"))
+        && !function.StartsWith("anybox_ysc_serial_");
 
     // what each C type has to be on this side, `in` and `out` for a pointer to one value
+    // a device call goes through the seam the recording test swaps out, and DispatchProxy can't take a pointer, so a
+    // text or a key list is an array there, which LibraryImport pins
+    // an extension call writes one value through each pointer it takes, so those are `out`
+    static string Parameter(string function, string type) => (function, type) switch
+    {
+        _ when function.StartsWith("anybox_device_") && type is "const char*" or "const uint8_t*" => "Byte[]",
+        _ when Extension(function) && type == "uint32_t*" => "out UInt32",
+        _ when Extension(function) && type == "bool*" => "out Byte",
+        _ when Extension(function) && type == "int32_t*" => "out Int32",
+        _ => Expected(type),
+    };
+
     static string Expected(string type)
     {
         if (Regex.Match(type, @"^const struct Anybox(\w+)\*$") is { Success: true } input)
@@ -226,7 +243,7 @@ public sealed class HeaderTests
             string[] expected =
             [
                 Expected(declaration.Return),
-                .. declaration.Parameters.Select(parameter => $"{Expected(parameter.Type)} {parameter.Name}"),
+                .. declaration.Parameters.Select(parameter => $"{Parameter(method.Name, parameter.Type)} {parameter.Name}"),
             ];
             Assert.Equal(expected, Signature(method));
         }
@@ -237,7 +254,7 @@ public sealed class HeaderTests
     {
         var seam = typeof(INative).GetMethods();
         Assert.Equal(
-            Bound.Where(method => method.Name.StartsWith("anybox_device_") && method.Name != "anybox_device_free").Select(method => method.Name).Order(),
+            Bound.Where(method => (method.Name.StartsWith("anybox_device_") && method.Name != "anybox_device_free") || Extension(method.Name)).Select(method => method.Name).Order(),
             seam.Select(method => method.Name).Order());
         foreach (var method in seam)
         {

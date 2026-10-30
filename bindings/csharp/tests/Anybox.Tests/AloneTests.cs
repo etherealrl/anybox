@@ -8,11 +8,30 @@ public class Recorder : DispatchProxy
 {
     public List<string> Calls { get; } = [];
 
+    // an array is a key list when its length comes right after it, and a NUL terminated text otherwise
     protected override object? Invoke(MethodInfo? method, object?[]? args)
     {
-        var values = args!.Skip(1).Select(value => value is AnyboxClick click
-            ? $"({click.hold_us}, {click.has_hold}, {click.native_only})"
-            : $"{value}");
+        var given = args!.Skip(1).ToArray();
+        List<string> values = [];
+        for (var index = 0; index < given.Length; index++)
+        {
+            switch (given[index])
+            {
+                case byte[] keys when index + 1 < given.Length && given[index + 1] is nuint:
+                    values.Add($"[{string.Join(',', keys)}]");
+                    index++;
+                    break;
+                case byte[] text:
+                    values.Add($"\"{System.Text.Encoding.UTF8.GetString(text).TrimEnd('\0')}\"");
+                    break;
+                case AnyboxClick click:
+                    values.Add($"({click.hold_us}, {click.has_hold}, {click.native_only})");
+                    break;
+                case var value:
+                    values.Add($"{value}");
+                    break;
+            }
+        }
         Calls.Add(string.Join(' ', [method!.Name["anybox_device_".Length..], .. values]));
         return 0u;
     }
@@ -41,6 +60,10 @@ public sealed class AloneTests
             device.PressKey(Key.B);
             device.ReleaseKey((Key)0x64);
             device.TapKey(Key.C, TimeSpan.FromMilliseconds(2));
+            device.TypeText("a\"b");
+            device.PressKeys(Key.LeftCtrl, Key.A);
+            device.ReleaseKeys(Key.LeftCtrl);
+            device.TapKeys();
             device.PressMedia(MediaKey.Mute);
             device.ReleaseMedia(MediaKey.VolumeUp);
             device.TapMedia(MediaKey.Play, nativeOnly: true);
@@ -48,6 +71,8 @@ public sealed class AloneTests
             device.UnlockButton(Button.Side2);
             device.LockKey(Key.D);
             device.UnlockKey(Key.E);
+            device.ForceReleaseKey(Key.F);
+            device.RestoreKey(Key.G);
             device.LockAxis(Axis.Y, Direction.Negative);
             device.UnlockAxis(Axis.Wheel);
             device.ScaleAxis(Axis.Pan, Direction.Positive, -100);
@@ -71,6 +96,10 @@ public sealed class AloneTests
                 "press_key 5",
                 "release_key 100",
                 "tap_key_with 6 (2000, 1, 0)",
+                "type_text \"a\"b\"",
+                "press_keys [224,4]",
+                "release_keys [224]",
+                "tap_keys []",
                 "press_media 226",
                 "release_media 233",
                 "tap_media_with 176 (0, 0, 1)",
@@ -78,6 +107,8 @@ public sealed class AloneTests
                 "unlock_button 4",
                 "lock_key 7",
                 "unlock_key 8",
+                "force_release_key 9",
+                "restore_key 10",
                 "lock_axis 1 2",
                 "unlock_axis 2 0",
                 "scale_axis 3 1 -100",
@@ -87,5 +118,17 @@ public sealed class AloneTests
                 "close",
             ],
             ((Recorder)recording).Calls);
+    }
+}
+
+public sealed class TypedTextTests
+{
+    [Fact]
+    public void ATextWithANulIsRefusedBeforeC()
+    {
+        var (device, box) = Mock.Medius();
+        using var _ = box;
+        using var __ = device;
+        Assert.Contains("NUL", Assert.Throws<ArgumentException>(() => device.TypeText("a\0b")).Message);
     }
 }

@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "anybox-capi"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anybox-rs",
  "medius",
@@ -15,11 +15,11 @@ dependencies = [
 
 [[package]]
 name = "anybox-gen"
-version = "0.10.0"
+version = "0.11.0"
 
 [[package]]
 name = "anybox-rs"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "libc",
  "medius",

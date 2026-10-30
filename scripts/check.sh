@@ -1,13 +1,20 @@
 #!/usr/bin/env bash
-# the gates every commit and push has to pass, the same ones CI runs
+# the whole gate, which the release commit and CI run. --quick only checks the formatting, that's what a commit in
+# the dev repo runs
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
+if [ "${1:-}" = "--quick" ]; then
+  exec cargo fmt --all --check
+fi
 if [ "${OS:-}" = "Windows_NT" ]; then
   # cargo can't link anything on Windows without Visual Studio, so this one stops instead of skipping like the
   # other missing tools
   source scripts/msvc.sh
 fi
-if [ -f scripts/tests/git-identity.sh ]; then
+# the hook test takes a minute and a half on Windows and only tests the hooks and the release script, so it runs when
+# one of them changed since what's on GitHub
+if [ -f scripts/tests/git-identity.sh ] &&
+  ! git diff --quiet origin/main -- .githooks scripts/tests/git-identity.sh scripts/release.sh 2>/dev/null; then
   bash scripts/tests/git-identity.sh
 fi
 cargo fmt --all --check

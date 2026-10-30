@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
@@ -6,198 +6,25 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use super::frames::{self, MakcuFrames, frame};
+use super::mock::{SERIAL, Shared, State, makcu_usb, respond};
 use super::{MakcuBackend, Poller, attach};
 use crate::backend::{
     Backend, Command, Input, InputKind, InputKinds, LockSlot, Sign, Signal, Sink, Usage,
 };
-use crate::capability::{Action, Axis, Button, Execution, Family, Firmware, Snapshot, StableId};
+use crate::capability::{
+    Action, Axis, Button, Execution, Family, Firmware, MakcuAction, Snapshot, StableId,
+};
 use crate::click::{Click, ClickTiming, Holds};
 use crate::device::{Device, Start};
 use crate::error::Error;
 use crate::event::{DropSource, Event};
+use crate::extension::{Extension, Interpolation};
 use crate::key::Key;
 use crate::transport::codec::{Codec, Incoming};
 use crate::transport::fake::{FakeBox, FakeSystem};
 use crate::transport::{Candidate, PortUsb, System};
 
 const PORT: &str = "COM11";
-const SERIAL: &str = "SERIAL0001";
-
-/// what the fake box knows, in the shape the vendor documents it. a test can change it while the box runs
-struct State {
-    baud: u32,
-    /// what `km.version()` answers, none for a box that doesn't speak km text
-    text: Option<&'static [u8]>,
-    /// what FIRMWARE_VERSION answers, none for V3 because it ignores binary frames
-    build: Option<u32>,
-    kinds: u8,
-    stream: u8,
-    key_stream: u8,
-    injected: u8,
-    /// opcodes the box refuses with `FF`
-    refuse: HashSet<u8>,
-    /// how many identity queries the box ignores before it answers
-    silent_versions: usize,
-    silent_versions_left: usize,
-    /// how many firmware queries the box ignores before it answers
-    silent_builds_left: usize,
-    /// a malformed payload the firmware reply sends instead of the build
-    build_reply: Option<Vec<u8>>,
-    /// opcodes the box refuses once and then takes
-    refuse_once: HashSet<u8>,
-    /// false makes presses wait forever, like they're still queued behind moves
-    apply_presses: bool,
-    /// the injected keys the box is holding, by usage
-    keys: HashSet<u8>,
-    /// which LOCK targets are on, bit n for target n
-    locks: u16,
-    masks: HashSet<u8>,
-    /// how long the box takes to answer each of these opcodes
-    slow: HashMap<u8, Duration>,
-}
-
-impl State {
-    fn makcu(build: u32) -> Self {
-        Self {
-            baud: 4_000_000,
-            text: Some(b"km.MAKCU\r\n>>> "),
-            build: Some(build),
-            kinds: 0x03,
-            stream: 0,
-            key_stream: 0,
-            injected: 0,
-            refuse: HashSet::new(),
-            silent_versions: 0,
-            silent_versions_left: 0,
-            silent_builds_left: 0,
-            build_reply: None,
-            refuse_once: HashSet::new(),
-            apply_presses: true,
-            keys: HashSet::new(),
-            locks: 0,
-            masks: HashSet::new(),
-            slow: HashMap::new(),
-        }
-    }
-}
-
-type Shared = Arc<Mutex<State>>;
-
-fn respond(shared: &Shared, baud: u32, bytes: &[u8]) -> Vec<Vec<u8>> {
-    let mut state = shared.lock().unwrap();
-    if baud != state.baud {
-        return Vec::new();
-    }
-    if bytes == frames::VERSION_QUERY {
-        if state.silent_versions_left > 0 {
-            state.silent_versions_left -= 1;
-            return Vec::new();
-        }
-        return state
-            .text
-            .map(|text| vec![text.to_vec()])
-            .unwrap_or_default();
-    }
-    let Some((command, payload)) = frames::parts(bytes) else {
-        return Vec::new();
-    };
-    if let Some(&delay) = state.slow.get(&command) {
-        drop(state);
-        thread::sleep(delay);
-        state = shared.lock().unwrap();
-    }
-    if state.refuse.contains(&command) || state.refuse_once.remove(&command) {
-        return vec![frame(command, &[0xFF])];
-    }
-    match (command, payload) {
-        (frames::FIRMWARE_VERSION, []) if state.silent_builds_left > 0 => {
-            state.silent_builds_left -= 1;
-            Vec::new()
-        }
-        (frames::FIRMWARE_VERSION, []) if state.build_reply.is_some() => {
-            vec![frame(command, state.build_reply.as_deref().unwrap())]
-        }
-        (frames::FIRMWARE_VERSION, []) => state
-            .build
-            .map(|build| vec![frame(command, &build.to_le_bytes())])
-            .unwrap_or_default(),
-        (frames::DEVICE, []) => vec![frame(command, &[state.kinds])],
-        (frames::INPUT_STREAM, [1, on]) => {
-            state.stream = *on;
-            Vec::new()
-        }
-        (frames::INPUT_STREAM, [1]) => vec![frame(command, &[state.stream])],
-        (frames::INPUT_STREAM, [2, on]) => {
-            state.key_stream = *on;
-            Vec::new()
-        }
-        (frames::INPUT_STREAM, [2]) => vec![frame(command, &[state.key_stream])],
-        (frames::INJECT_SNAPSHOT, []) => {
-            let mut snapshot = vec![0u8; 40];
-            snapshot[0] = state.injected;
-            snapshot[1..3].copy_from_slice(&state.locks.to_le_bytes());
-            // offset 3 holds the modifiers and the key bitmap starts at offset 4. that's worked out from the vendor's
-            // field order and was checked on a V4.094 box
-            for &key in &state.keys {
-                if (0xE0..=0xE7).contains(&key) {
-                    snapshot[3] |= 1 << (key - 0xE0);
-                } else {
-                    snapshot[4 + usize::from(key / 8)] |= 1 << (key % 8);
-                }
-            }
-            vec![frame(command, &snapshot)]
-        }
-        // a click that's still running shows as held. a physical release can cut one short, which shows the
-        // box tracks it
-        (frames::CLICK, [button, ..]) => {
-            state.injected |= 1 << (button - 1);
-            Vec::new()
-        }
-        (frames::LOCK, [target, on]) => {
-            if *on == 1 {
-                state.locks |= 1 << target;
-            } else {
-                state.locks &= !(1 << target);
-            }
-            Vec::new()
-        }
-        (frames::KEY_MASK, [key, on]) => {
-            if *on == 1 {
-                state.masks.insert(*key);
-            } else {
-                state.masks.remove(key);
-            }
-            Vec::new()
-        }
-        (frames::KEY_DOWN, [key]) => {
-            state.keys.insert(*key);
-            Vec::new()
-        }
-        (frames::KEY_UP, [key]) => {
-            state.keys.remove(key);
-            Vec::new()
-        }
-        (0x11..=0x15, [1]) if !state.apply_presses => Vec::new(),
-        (0x11..=0x15, [on]) => {
-            let bit = 1 << (command - 0x11);
-            if *on == 1 {
-                state.injected |= bit;
-            } else {
-                state.injected &= !bit;
-            }
-            Vec::new()
-        }
-        _ => Vec::new(),
-    }
-}
-
-fn makcu_usb() -> Option<PortUsb> {
-    Some(PortUsb {
-        vid: 0x1A86,
-        pid: 0x55D3,
-        serial: Some(SERIAL.into()),
-    })
-}
 
 struct Rig {
     system: FakeSystem,
@@ -472,11 +299,11 @@ fn a_corrupt_length_is_skipped_and_the_next_frame_still_parses() {
 
 #[test]
 fn a_v4_box_opens_with_its_identity() {
-    let rig = rig(State::makcu(4094));
+    let rig = rig(State::makcu(4108));
     let (_backend, snapshot, _poller, _signals) = rig.attach().unwrap();
     assert_eq!(snapshot.info.family, Family::MakcuV4);
     assert_eq!(snapshot.info.model.as_deref(), Some("MAKCU"));
-    assert_eq!(snapshot.info.firmware, Some(Firmware::Build(4094)));
+    assert_eq!(snapshot.info.firmware, Some(Firmware::Build(4108)));
     assert_eq!(snapshot.info.id, Some(StableId::UsbSerial(SERIAL.into())));
     assert_eq!(
         snapshot.capabilities.buttons(),
@@ -587,10 +414,15 @@ fn the_firmware_gate_sits_at_4085_and_below_5000() {
             ..
         })
     ));
-    let (_backend, snapshot, _poller, _signals) = rig(State::makcu(4085)).attach().unwrap();
+    // move_now from the first official build that sends it in the next report, autorelease from V4.108
+    let (_backend, snapshot, _poller, _signals) = rig(State::makcu(4096)).attach().unwrap();
     assert!(!snapshot.capabilities.get(Action::MoveNow).is_supported());
-    let (_backend, snapshot, _poller, _signals) = rig(State::makcu(4086)).attach().unwrap();
+    let (_backend, snapshot, _poller, _signals) = rig(State::makcu(4097)).attach().unwrap();
     assert!(snapshot.capabilities.get(Action::MoveNow).is_supported());
+    let autorelease = Action::Makcu(MakcuAction::Autorelease);
+    assert!(!snapshot.capabilities.get(autorelease).is_supported());
+    let (_backend, snapshot, _poller, _signals) = rig(State::makcu(4108)).attach().unwrap();
+    assert!(snapshot.capabilities.get(autorelease).is_supported());
     assert!(matches!(
         rig(State::makcu(5000)).attach().err(),
         Some(Error::LibraryTooOld {
@@ -657,7 +489,7 @@ fn without_a_mouse_routed_mouse_output_says_so() {
 
 #[test]
 fn each_command_is_its_own_frame() {
-    let rig = rig(State::makcu(4094));
+    let rig = rig(State::makcu(4108));
     let (device, _poller) = rig.device();
     rig.clear();
     device.move_by(10, -20).unwrap();
@@ -2678,4 +2510,426 @@ fn a_receiver_made_right_after_a_refused_one_gets_its_own_single_rejected() {
     drop(first);
     let second = device.events_of(crate::event::EventKinds::BUTTONS);
     assert_eq!(rejected(&second), 1);
+}
+
+fn typing_rig() -> (Rig, Device, Poller) {
+    let rig = rig(State::makcu(4094));
+    let (device, poller) = rig.device();
+    rig.clear();
+    (rig, device, poller)
+}
+
+fn strings(written: &[Vec<u8>]) -> Vec<Vec<u8>> {
+    written
+        .iter()
+        .filter_map(|bytes| frames::parts(bytes))
+        .filter(|(command, payload)| *command == frames::KEY_STRING && !payload.is_empty())
+        .map(|(_, payload)| payload.to_vec())
+        .collect()
+}
+
+#[test]
+fn a_text_waits_for_the_box_to_type_each_piece() {
+    let (rig, device, _poller) = typing_rig();
+    let started = Instant::now();
+    device.type_text("hello").unwrap();
+    // 5 characters at 30 ms each, the call only returns once the box is done
+    assert!(started.elapsed() >= Duration::from_millis(150));
+    assert_eq!(rig.state.lock().unwrap().typed, b"hello");
+    assert_eq!(
+        strings(&rig.written()),
+        vec![b"he".to_vec(), b"ll".to_vec(), b"o".to_vec()]
+    );
+    // a key right after the text goes out once the box takes keys again, so it isn't refused
+    device.tap_key(Key::ENTER).unwrap();
+    assert!(
+        !rig.written()
+            .iter()
+            .any(|bytes| bytes == &frame(frames::KEY_PRESS, &[0xFF]))
+    );
+}
+
+#[test]
+fn a_piece_the_box_never_types_is_rejected_and_never_sent_again() {
+    let (rig, device, _poller) = typing_rig();
+    rig.state.lock().unwrap().ignores_text = true;
+    match device.type_text("abcd") {
+        Err(Error::Rejected {
+            action: Action::TypeText,
+            ..
+        }) => {}
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(strings(&rig.written()), vec![b"ab".to_vec()]);
+}
+
+#[test]
+fn a_box_that_never_gets_done_typing_takes_the_link_down() {
+    let (rig, device, _poller) = typing_rig();
+    rig.state.lock().unwrap().per_character = Duration::from_secs(10);
+    assert!(matches!(device.type_text("ab"), Err(Error::Disconnected)));
+}
+
+#[test]
+fn a_piece_waits_for_a_tap_thats_still_running() {
+    let (rig, device, _poller) = typing_rig();
+    // the box is still busy for a bit, like after its own tap
+    rig.state.lock().unwrap().typing_until = Some(Instant::now() + Duration::from_millis(80));
+    device.type_text("ab").unwrap();
+    assert_eq!(rig.state.lock().unwrap().typed, b"ab");
+}
+
+#[test]
+fn a_box_still_busy_past_the_bound_is_rejected_and_nothing_is_typed() {
+    let (rig, device, _poller) = typing_rig();
+    device.tap_key(Key::A).unwrap();
+    rig.state.lock().unwrap().types_forever = true;
+    assert!(matches!(
+        device.type_text("ab"),
+        Err(Error::Rejected {
+            action: Action::TypeText,
+            ..
+        })
+    ));
+    assert!(strings(&rig.written()).is_empty());
+}
+
+#[test]
+fn typing_takes_a_typed_key_off_what_anybox_holds_and_the_poller_leaves_it() {
+    let (rig, device, mut poller) = typing_rig();
+    device.press_key(Key::A).unwrap();
+    device.press_key(Key::F1).unwrap();
+    device.type_text("a").unwrap();
+    assert_eq!(device.held(), HashSet::from([Usage::Key(Key::F1)]));
+    rig.clear();
+    poller.tick();
+    assert!(!rig.written().iter().any(|bytes| frames::parts(bytes).is_some_and(|(command, _)| command == frames::KEY_UP)));
+}
+
+#[test]
+fn a_snapshot_the_poller_read_during_a_piece_never_lets_go_of_the_typed_key() {
+    let (rig, device, mut poller) = typing_rig();
+    rig.state.lock().unwrap().per_character = Duration::from_millis(200);
+    thread::scope(|scope| {
+        let typing = scope.spawn(|| device.type_text("a"));
+        while rig.state.lock().unwrap().typed.is_empty() {
+            thread::sleep(Duration::from_millis(1));
+        }
+        rig.clear();
+        // reads the count and a snapshot with A down, then waits for the piece to let go of `buttons`
+        poller.tick();
+        typing.join().unwrap().unwrap();
+    });
+    assert!(!rig.written().contains(&frame(frames::KEY_UP, &[Key::A.0])));
+}
+
+#[test]
+fn a_chord_is_one_multi_key_command() {
+    let (rig, device, _poller) = typing_rig();
+    device.press_keys(&[Key::LEFT_CTRL, Key::A]).unwrap();
+    device.release_keys(&[Key::LEFT_CTRL, Key::A]).unwrap();
+    device.tap_keys(&[Key::B, Key::C]).unwrap();
+    assert_eq!(
+        rig.state.lock().unwrap().chords,
+        vec![
+            (frames::KEY_MULTI_DOWN, vec![0xE0, 0x04]),
+            (frames::KEY_MULTI_UP, vec![0xE0, 0x04]),
+            (frames::KEY_MULTI_PRESS, vec![0x05, 0x06]),
+        ]
+    );
+}
+
+#[test]
+fn a_box_with_a_keyboard_types_and_presses_chords_and_one_without_says_why() {
+    let snapshot = super::snapshot(4094, 0x03, None);
+    let typing = snapshot.capabilities.get(Action::TypeText);
+    assert_eq!(typing.execution, Execution::Native);
+    assert!(
+        typing
+            .quirks
+            .contains(&crate::capability::Quirk::TypedTextIgnoresCapsLock)
+    );
+    assert!(
+        typing
+            .quirks
+            .contains(&crate::capability::Quirk::TypingReleasesHeldKeys)
+    );
+    assert!(snapshot.capabilities.get(Action::KeyChord).is_supported());
+    let snapshot = super::snapshot(4094, 0x01, None);
+    for action in [Action::TypeText, Action::KeyChord] {
+        assert_eq!(
+            snapshot.capabilities.get(action).reason(),
+            super::NO_KEYBOARD
+        );
+    }
+}
+
+// the MAKCU's own calls
+
+#[test]
+fn interpolation_reads_off_the_snapshot_and_a_set_is_checked_against_it() {
+    let rig = rig(State::makcu(4108));
+    let (device, _poller) = rig.device();
+    let makcu = device.makcu().unwrap();
+    assert_eq!(makcu.interpolation().unwrap(), Interpolation::Auto);
+    for value in [
+        Interpolation::Percent(0),
+        Interpolation::Percent(100),
+        Interpolation::Auto,
+    ] {
+        makcu.set_interpolation(value).unwrap();
+        assert_eq!(makcu.interpolation().unwrap(), value);
+    }
+    rig.clear();
+    assert!(matches!(
+        makcu.set_interpolation(Interpolation::Percent(101)),
+        Err(Error::InvalidArgument { .. })
+    ));
+    assert!(rig.written().is_empty());
+    rig.set(|state| state.ignores_spread = true);
+    assert!(matches!(
+        makcu.set_interpolation(Interpolation::Percent(40)),
+        Err(Error::Rejected {
+            action: Action::Makcu(MakcuAction::Interpolation),
+            ..
+        })
+    ));
+}
+
+#[test]
+fn a_refused_interpolation_is_rejected_even_for_auto() {
+    let rig = rig(State::makcu(4108));
+    let (device, _poller) = rig.device();
+    rig.set(|state| {
+        state.spread = 20;
+        state.refuse.insert(frames::INTERPOLATE);
+    });
+    let makcu = device.makcu().unwrap();
+    for value in [Interpolation::Percent(30), Interpolation::Auto] {
+        assert!(matches!(
+            makcu.set_interpolation(value),
+            Err(Error::Rejected { .. })
+        ));
+    }
+}
+
+#[test]
+fn moving_says_what_the_box_says_and_a_refusal_is_rejected() {
+    let rig = rig(State::makcu(4108));
+    let (device, _poller) = rig.device();
+    let makcu = device.makcu().unwrap();
+    assert!(!makcu.moving().unwrap());
+    rig.set(|state| state.moving = 1);
+    assert!(makcu.moving().unwrap());
+    rig.set(|state| {
+        state.refuse.insert(frames::MOVING);
+    });
+    assert!(matches!(makcu.moving(), Err(Error::Rejected { .. })));
+}
+
+#[test]
+fn autorelease_takes_whole_ms_up_to_a_minute_and_none_turns_it_off() {
+    let rig = rig(State::makcu(4108));
+    let (device, _poller) = rig.device();
+    let makcu = device.makcu().unwrap();
+    assert_eq!(makcu.autorelease().unwrap(), None);
+    makcu
+        .set_autorelease(Some(Duration::from_millis(1500)))
+        .unwrap();
+    assert_eq!(rig.state.lock().unwrap().autorelease, 1500);
+    assert_eq!(
+        makcu.autorelease().unwrap(),
+        Some(Duration::from_millis(1500))
+    );
+    makcu.set_autorelease(None).unwrap();
+    assert_eq!(makcu.autorelease().unwrap(), None);
+    rig.clear();
+    for bad in [
+        Duration::from_secs(61),
+        Duration::from_micros(1500),
+        Duration::ZERO,
+    ] {
+        assert!(matches!(
+            makcu.set_autorelease(Some(bad)),
+            Err(Error::InvalidArgument { .. })
+        ));
+    }
+    assert!(rig.written().is_empty());
+}
+
+#[test]
+fn autorelease_goes_out_again_after_a_reconnect_and_not_once_it_was_turned_off() {
+    let rig = rig(State::makcu(4108));
+    let (device, _poller) = rig.device();
+    let events = device.events();
+    device
+        .makcu()
+        .unwrap()
+        .set_autorelease(Some(Duration::from_secs(2)))
+        .unwrap();
+    let replug = |rig: &Rig| {
+        // the box forgets it when it loses power
+        rig.set(|state| state.autorelease = 0);
+        rig.fake.vanish();
+        rig.system.unplug(PORT);
+        let fake = FakeBox::by_baud({
+            let state = rig.state.clone();
+            move |baud, bytes| respond(&state, baud, bytes)
+        });
+        rig.system.plug(PORT, makcu_usb(), fake);
+    };
+    let reconnected = || {
+        until(|| {
+            std::iter::from_fn(|| events.try_recv().ok())
+                .any(|event| matches!(event, Event::Reconnected))
+        })
+    };
+    replug(&rig);
+    reconnected();
+    assert_eq!(rig.state.lock().unwrap().autorelease, 2000);
+    // the reconnect read the box's echo of it, so the first request after doesn't get it as its own answer
+    let makcu = device.makcu().unwrap();
+    makcu.set_autorelease(Some(Duration::from_secs(3))).unwrap();
+    assert_eq!(makcu.autorelease().unwrap(), Some(Duration::from_secs(3)));
+    device.makcu().unwrap().set_autorelease(None).unwrap();
+    replug(&rig);
+    reconnected();
+    assert_eq!(rig.state.lock().unwrap().autorelease, 0);
+}
+
+#[test]
+fn autorelease_needs_v4_108_and_the_calls_need_a_mouse() {
+    let old = rig(State::makcu(4107));
+    let (device, _poller) = old.device();
+    assert!(matches!(
+        device.makcu().unwrap().autorelease(),
+        Err(Error::Unsupported {
+            action: Action::Makcu(MakcuAction::Autorelease),
+            ..
+        })
+    ));
+    let mut state = State::makcu(4108);
+    state.kinds = 0x02;
+    let rig = rig(state);
+    let (device, _poller) = rig.device();
+    assert!(matches!(
+        device.makcu().unwrap().interpolation(),
+        Err(Error::Unsupported { .. })
+    ));
+    assert!(device.ysc().is_none() && device.ferrum().is_none());
+}
+
+#[test]
+fn a_refused_set_nobody_waits_for_names_the_makcu_call() {
+    for (command, action) in [
+        (frames::INTERPOLATE, MakcuAction::Interpolation),
+        (frames::MOVING, MakcuAction::Moving),
+        (frames::AUTORELEASE, MakcuAction::Autorelease),
+    ] {
+        let mut codec = MakcuFrames::binary(Arc::default());
+        assert!(matches!(
+            codec.classify(&frame(command, &[0xFF])),
+            Incoming::Refused { action: Some(Action::Makcu(got)), .. } if got == action
+        ));
+    }
+}
+
+#[test]
+fn a_session_reset_puts_the_autorelease_back_and_none_forgets_it() {
+    let rig = rig(State::makcu(4108));
+    let (backend, _snapshot, mut poller, signals) = rig.attach().unwrap();
+    let reset = |poller: &mut Poller| {
+        backend.send(Command::Press(Button::Left)).unwrap();
+        poller.tick();
+        // the box rebooted by itself and forgot it with the rest
+        rig.set(|state| {
+            state.injected = 0;
+            state.autorelease = 0;
+        });
+        poller.tick();
+        poller.tick();
+        assert_eq!(link_events(&signals), vec!["session reset"]);
+    };
+    backend
+        .extension(Extension::MakcuSetAutorelease(Some(Duration::from_secs(2))))
+        .unwrap();
+    reset(&mut poller);
+    assert_eq!(rig.state.lock().unwrap().autorelease, 2000);
+    backend
+        .extension(Extension::MakcuSetAutorelease(None))
+        .unwrap();
+    rig.fake.clear_written();
+    reset(&mut poller);
+    // not even a 0, none means anybox has nothing to put back
+    assert!(
+        !rig.fake
+            .written()
+            .iter()
+            .any(|written| frames::parts(written)
+                .is_some_and(|(cmd, payload)| cmd == frames::AUTORELEASE && payload.len() == 4)),
+        "it was turned off, so nothing goes back"
+    );
+}
+
+fn force(backend: &MakcuBackend, key: Key, force: bool) -> crate::error::Result<()> {
+    backend.send(Command::KeyForce { key, force })
+}
+
+#[test]
+fn a_forced_key_is_the_key_mask_and_the_poller_masks_it_again() {
+    let rig = rig(State::makcu(4094));
+    let (backend, snapshot, mut poller, _signals) = rig.attach().unwrap();
+    assert!(
+        snapshot
+            .capabilities
+            .get(Action::ForceReleaseKey)
+            .is_supported()
+    );
+    rig.clear();
+    force(&backend, Key::W, true).unwrap();
+    assert!(rig.written().contains(&frame(0x29, &[0x1A, 1])));
+    rig.set(|state| state.masks.clear());
+    for _ in 0..4 {
+        poller.tick();
+    }
+    assert!(rig.state.lock().unwrap().masks.contains(&0x1A));
+    force(&backend, Key::W, false).unwrap();
+    assert!(!rig.state.lock().unwrap().masks.contains(&0x1A));
+    rig.clear();
+    for _ in 0..4 {
+        poller.tick();
+    }
+    assert!(!rig.written().contains(&frame(0x29, &[0x1A, 1])));
+}
+
+#[test]
+fn a_refused_mask_names_the_force_or_the_lock_that_wrote_it() {
+    let rig = rig(State::makcu(4094));
+    let (backend, _snapshot, mut poller, _signals) = rig.attach().unwrap();
+    let mut codec = MakcuFrames::binary(backend.shared.last.clone());
+    let refused = |codec: &mut MakcuFrames| match codec.classify(&frame(0x29, &[0xFF])) {
+        Incoming::Refused { action, .. } => action,
+        other => panic!("{other:?}"),
+    };
+    force(&backend, Key::W, true).unwrap();
+    assert_eq!(refused(&mut codec), Some(Action::ForceReleaseKey));
+    lock(&backend, LockSlot::Key(Key::A), 0).unwrap();
+    assert_eq!(refused(&mut codec), Some(Action::LockKey));
+    force(&backend, Key::W, false).unwrap();
+    assert_eq!(refused(&mut codec), Some(Action::ForceReleaseKey));
+    // the poller's own re-send of a lock names the lock
+    for _ in 0..4 {
+        poller.tick();
+    }
+    assert_eq!(refused(&mut codec), Some(Action::LockKey));
+    // and of a force the force
+    lock(&backend, LockSlot::Key(Key::A), 100).unwrap();
+    force(&backend, Key::B, true).unwrap();
+    lock(&backend, LockSlot::Key(Key::C), 0).unwrap();
+    lock(&backend, LockSlot::Key(Key::C), 100).unwrap();
+    assert_eq!(refused(&mut codec), Some(Action::LockKey));
+    for _ in 0..4 {
+        poller.tick();
+    }
+    assert_eq!(refused(&mut codec), Some(Action::ForceReleaseKey));
 }

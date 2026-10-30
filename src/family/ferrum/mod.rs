@@ -6,14 +6,15 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::backend::{
-    Backend, Command, InputKind, InputKinds, LOCKED, LockSlot, Sign, Sink, StreamFailure, UNLOCKED,
-    Usage,
+    Backend, ChordKind, Command, InputKind, InputKinds, LOCKED, LockSlot, Sign, Sink,
+    StreamFailure, Typing, UNLOCKED, Usage,
 };
 use crate::capability::{
-    Action, Axis, Button, Capabilities, Capability, Family, FerrumApi, Info, Quirk, Snapshot,
-    UsbIds,
+    Action, Axis, Button, Capabilities, Capability, Family, FerrumAction, FerrumApi, Firmware,
+    Info, Quirk, Snapshot, UsbIds,
 };
 use crate::error::{Error, Result};
+use crate::extension::{Extension, ExtensionReply};
 use crate::transport::link::{Link, Target};
 use crate::transport::probe::Probe;
 use crate::transport::{Candidate, Port, System, is_ch343, is_ysc};
@@ -35,6 +36,7 @@ pub(crate) const BAUDS: [u32; 11] = [
 const WAIT: Duration = Duration::from_millis(300);
 /// the box clamps the wheel to -128..127, so anything past this wouldn't do what was asked
 const NOTCHES: u16 = 127;
+const NO_TYPING: &str = "Ferrum has no command to type text, tap the keys yourself instead";
 /// the box's own press for `km.click` and `km.press`, a random hold in this range
 const CLICK_HOLD: (Duration, Duration) = (Duration::from_millis(75), Duration::from_millis(125));
 /// after a release the box keeps it up for a random while in this range, then the physical button counts again
@@ -51,12 +53,14 @@ fn not_found(path: &Path) -> Error {
 }
 
 /// what the box has behind it right now, and whether the app knows the directional axis locks
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Roles {
     pub(crate) mouse: bool,
     pub(crate) keyboard: bool,
     pub(crate) directional: bool,
     pub(crate) peripheral: Option<UsbIds>,
+    /// the Ferrum API version, none on the legacy port and on an app too old to say
+    pub(crate) firmware: Option<Firmware>,
 }
 
 /// opens a Ferrum on one port, or returns `NotFound` when what's there isn't one
@@ -118,7 +122,7 @@ fn start(
     target: Target,
     sink: Sink,
 ) -> Result<(FerrumBackend, Snapshot, Option<Poller>)> {
-    let snapshot = snapshot(api, roles);
+    let snapshot = snapshot(api, &roles);
     let shared = Arc::new(Shared {
         api,
         snapshot: RwLock::new(snapshot.clone()),
@@ -135,7 +139,7 @@ fn start(
                 return Err(Error::Disconnected);
             }
             let roles = describe(probe, shared.api)?;
-            let snapshot = self::snapshot(shared.api, roles);
+            let snapshot = self::snapshot(shared.api, &roles);
             // the callbacks just got switched off, so the core's stream switch after Reconnected starts clean
             *lock(&shared.streams) = InputKinds::default();
             shared.generation.fetch_add(1, Ordering::AcqRel);
@@ -214,6 +218,7 @@ fn describe(probe: &Probe<'_>, api: FerrumApi) -> Result<Roles> {
                 keyboard: false,
                 directional: false,
                 peripheral: None,
+                firmware: None,
             })
         }
         FerrumApi::Software => {
@@ -242,6 +247,12 @@ fn describe(probe: &Probe<'_>, api: FerrumApi) -> Result<Roles> {
                 // the read form only gets a result from an app that knows the command
                 directional: bit(query(probe, "km.lock_mx+()")?.as_deref()).is_some(),
                 peripheral: None,
+                // documented since app 2.0.6, an older app may not answer at all
+                firmware: match query(probe, "ferrum.version()") {
+                    Ok(result) => app_version(result.as_deref()),
+                    Err(Error::Timeout { .. }) => None,
+                    Err(error) => return Err(error),
+                },
             };
             roles.peripheral = peripheral(&roles, |command| query(probe, command))?;
             Ok(roles)
@@ -280,6 +291,24 @@ pub(crate) fn usb_id(result: Option<&[u8]>, name: &str) -> Option<u16> {
         .flatten()
 }
 
+/// `v2.0.6` for `ferrum.version()`, the Ferrum API version, kept as text when it isn't three numbers
+pub(crate) fn app_version(result: Option<&[u8]>) -> Option<Firmware> {
+    let text = std::str::from_utf8(result?).ok()?.trim();
+    let numbers: Option<Vec<u16>> = text
+        .strip_prefix('v')
+        .and_then(|rest| rest.split('.').map(|n| n.parse().ok()).collect());
+    match numbers.as_deref() {
+        Some(&[major, minor, patch]) => Some(Firmware::Version {
+            major,
+            minor,
+            patch,
+        }),
+        // anything without the v isn't a version, an older app could answer with whatever
+        _ if text.starts_with('v') => Some(Firmware::Text(text.to_owned())),
+        _ => None,
+    }
+}
+
 /// a `1` or `0` result, none for no result or anything else
 pub(crate) fn bit(result: Option<&[u8]>) -> Option<bool> {
     match result? {
@@ -289,10 +318,11 @@ pub(crate) fn bit(result: Option<&[u8]>) -> Option<bool> {
     }
 }
 
-pub(crate) fn snapshot(api: FerrumApi, roles: Roles) -> Snapshot {
+pub(crate) fn snapshot(api: FerrumApi, roles: &Roles) -> Snapshot {
     let mut info = Info::new(Family::Ferrum);
     info.ferrum_api = Some(api);
     info.peripheral = roles.peripheral;
+    info.firmware = roles.firmware.clone();
     info.model = Some(
         match api {
             FerrumApi::Software => "Ferrum",
@@ -331,6 +361,7 @@ pub(crate) fn snapshot(api: FerrumApi, roles: Roles) -> Snapshot {
         Action::KeyTap,
         Action::KeyEvents,
         Action::LockKey,
+        Action::KeyChord,
     ];
     let mut capabilities = if roles.mouse {
         Capabilities::new(BUTTONS.to_vec())
@@ -377,6 +408,18 @@ pub(crate) fn snapshot(api: FerrumApi, roles: Roles) -> Snapshot {
     if roles.mouse {
         capabilities = capabilities.with_axes(vec![Axis::X, Axis::Y, Axis::Wheel]);
     }
+    capabilities = capabilities.set(
+        Action::Ferrum(FerrumAction::CatchXy),
+        match (api, roles.mouse) {
+            (FerrumApi::Legacy, _) => Capability::unsupported(
+                "the legacy port has no catch_xy, it needs the Ferrum app's port",
+            ),
+            (FerrumApi::Software, true) => Capability::native(),
+            (FerrumApi::Software, false) => Capability::unsupported(
+                "the Ferrum app has no device set as a mouse right now, set one and it shows up by itself",
+            ),
+        },
+    );
     capabilities = match api {
         FerrumApi::Software if roles.keyboard => capabilities
             .set(
@@ -386,7 +429,15 @@ pub(crate) fn snapshot(api: FerrumApi, roles: Roles) -> Snapshot {
             .set(Action::KeyRelease, released())
             .set(Action::KeyTap, tap())
             .set(Action::KeyEvents, Capability::native())
-            .set(Action::LockKey, Capability::native()),
+            .set(Action::LockKey, Capability::native())
+            // km.multipress holds each key for its own random while, so they can come up one after the other
+            .set(
+                Action::KeyChord,
+                released().with(Quirk::BoxClickTiming {
+                    min: CLICK_HOLD.0,
+                    max: CLICK_HOLD.1,
+                }),
+            ),
         FerrumApi::Software => {
             let none = Capability::unsupported(
                 "the Ferrum app has no device set as a keyboard right now, or the box isn't plugged into this PC, set one or plug the box back in and it shows up by itself",
@@ -410,6 +461,13 @@ pub(crate) fn snapshot(api: FerrumApi, roles: Roles) -> Snapshot {
     };
     let no_media = Capability::unsupported("Ferrum has no media keys, only keyboard keys");
     let capabilities = capabilities
+        .set(Action::TypeText, Capability::unsupported(NO_TYPING))
+        .set(
+            Action::ForceReleaseKey,
+            Capability::unsupported(
+                "it isn't known yet whether Ferrum's key mask lets go of a key that's already held",
+            ),
+        )
         .set(Action::MediaPress, no_media.clone())
         .set(Action::MediaRelease, no_media.clone())
         .set(Action::MediaTap, no_media.clone())
@@ -551,7 +609,13 @@ impl FerrumBackend {
     fn check(&self, command: Command) -> Result<()> {
         if matches!(
             command,
-            Command::Release(_) | Command::KeyRelease(_) | Command::Lock { keep: UNLOCKED, .. }
+            Command::Release(_)
+                | Command::KeyRelease(_)
+                | Command::Lock { keep: UNLOCKED, .. }
+                | Command::KeyChord {
+                    kind: ChordKind::Release,
+                    ..
+                }
         ) {
             return Ok(());
         }
@@ -586,6 +650,19 @@ impl FerrumBackend {
             Command::KeyPress(key) => format!("km.down({})", key.0),
             Command::KeyRelease(key) => format!("km.up({})", key.0),
             Command::KeyTap { key, hold: None } => format!("km.press({})", key.0),
+            Command::KeyChord { kind, keys } => format!(
+                "km.{}({})",
+                match kind {
+                    ChordKind::Press => "multidown",
+                    ChordKind::Release => "multiup",
+                    ChordKind::Tap => "multipress",
+                },
+                keys.as_slice()
+                    .iter()
+                    .map(|key| key.0.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
             Command::Lock {
                 slot: LockSlot::Key(key),
                 keep,
@@ -688,6 +765,14 @@ impl Backend for FerrumBackend {
         }
     }
 
+    fn type_piece(&self, _piece: &[u8], _typing: &mut Typing) -> Result<()> {
+        Err(Error::Unsupported {
+            action: Action::TypeText,
+            family: Family::Ferrum,
+            reason: NO_TYPING.into(),
+        })
+    }
+
     fn release_all(&self, held: &[Usage]) -> Result<()> {
         let mut first = Ok(());
         for &usage in held {
@@ -739,10 +824,46 @@ impl Backend for FerrumBackend {
             .shutdown(until.saturating_duration_since(Instant::now()));
     }
 
+    fn extension(&self, request: Extension) -> Result<ExtensionReply> {
+        let Extension::FerrumCatchXy {
+            window,
+            with_software,
+        } = request
+        else {
+            return Err(Error::Unsupported {
+                action: request.action(),
+                family: Family::Ferrum,
+                reason: "a Ferrum doesn't have this".into(),
+            });
+        };
+        // always both arguments in this exact form, the reply waits on the echo of the line
+        let command = format!("km.catch_xy({}, {with_software})", window.as_millis());
+        let reply = self
+            .link
+            .request(line(&command), Some(frames::key(command.as_bytes())))?
+            .ok_or(Error::Disconnected)?;
+        frames::result(&reply, true)
+            .and_then(xy)
+            .map(|(x, y)| ExtensionReply::Xy(x, y))
+            .ok_or_else(|| Error::Rejected {
+                action: request.action(),
+                detail: "it answered something that isn't an (x, y)".into(),
+            })
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }
 }
 
+/// `(500, -500)` for `km.catch_xy`
+pub(crate) fn xy(result: &[u8]) -> Option<(i32, i32)> {
+    let text = std::str::from_utf8(result).ok()?.trim();
+    let (x, y) = text.strip_prefix('(')?.strip_suffix(')')?.split_once(',')?;
+    Some((x.trim().parse().ok()?, y.trim().parse().ok()?))
+}
+
+#[cfg(any(test, feature = "mock"))]
+pub(crate) mod mock;
 #[cfg(test)]
 mod tests;

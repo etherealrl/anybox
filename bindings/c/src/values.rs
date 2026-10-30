@@ -1,7 +1,8 @@
 use std::time::Duration;
 
 use anybox::{
-    Action, Axis, Button, Click, ClickTiming, Direction, EventKinds, Execution, Family, FerrumApi,
+    Action, Axis, Button, Click, ClickTiming, Direction, EventKinds, Execution, Family,
+    FerrumAction, FerrumApi, Key, MakcuAction, YscAction,
 };
 
 use crate::status::{AnyboxStatus, invalid, slice};
@@ -62,6 +63,18 @@ pub const ANYBOX_ACTION_LOCK_BUTTON: u32 = 19;
 pub const ANYBOX_ACTION_LOCK_AXIS: u32 = 20;
 pub const ANYBOX_ACTION_LOCK_KEY: u32 = 21;
 pub const ANYBOX_ACTION_SCALE_AXIS: u32 = 22;
+pub const ANYBOX_ACTION_TYPE_TEXT: u32 = 23;
+pub const ANYBOX_ACTION_KEY_CHORD: u32 = 24;
+pub const ANYBOX_ACTION_FORCE_RELEASE_KEY: u32 = 25;
+/// what only a MAKCU has, from 0x10000, through the `anybox_makcu_` calls
+pub const ANYBOX_ACTION_MAKCU_INTERPOLATION: u32 = 0x10000;
+pub const ANYBOX_ACTION_MAKCU_MOVING: u32 = 0x10001;
+pub const ANYBOX_ACTION_MAKCU_AUTORELEASE: u32 = 0x10002;
+/// what only a YSC8K has, from 0x20000, through the `anybox_ysc_` calls
+pub const ANYBOX_ACTION_YSC_INTERPOLATION: u32 = 0x20000;
+pub const ANYBOX_ACTION_YSC_SERIAL: u32 = 0x20001;
+/// what only a Ferrum has, from 0x30000, through the `anybox_ferrum_` calls
+pub const ANYBOX_ACTION_FERRUM_CATCH_XY: u32 = 0x30000;
 
 pub const ANYBOX_EXECUTION_NATIVE: u32 = 0;
 pub const ANYBOX_EXECUTION_HOST: u32 = 1;
@@ -114,7 +127,7 @@ const DIRECTIONS: [(u32, Direction); 3] = [
     (ANYBOX_DIRECTION_NEGATIVE, Direction::Negative),
 ];
 
-pub(crate) const ACTIONS: [(u32, Action); 23] = [
+pub(crate) const ACTIONS: [(u32, Action); 32] = [
     (ANYBOX_ACTION_CONNECT, Action::Connect),
     (ANYBOX_ACTION_MOVE, Action::Move),
     (ANYBOX_ACTION_MOVE_NOW, Action::MoveNow),
@@ -141,6 +154,30 @@ pub(crate) const ACTIONS: [(u32, Action); 23] = [
     (ANYBOX_ACTION_LOCK_AXIS, Action::LockAxis),
     (ANYBOX_ACTION_LOCK_KEY, Action::LockKey),
     (ANYBOX_ACTION_SCALE_AXIS, Action::ScaleAxis),
+    (ANYBOX_ACTION_TYPE_TEXT, Action::TypeText),
+    (ANYBOX_ACTION_KEY_CHORD, Action::KeyChord),
+    (ANYBOX_ACTION_FORCE_RELEASE_KEY, Action::ForceReleaseKey),
+    (
+        ANYBOX_ACTION_MAKCU_INTERPOLATION,
+        Action::Makcu(MakcuAction::Interpolation),
+    ),
+    (
+        ANYBOX_ACTION_MAKCU_MOVING,
+        Action::Makcu(MakcuAction::Moving),
+    ),
+    (
+        ANYBOX_ACTION_MAKCU_AUTORELEASE,
+        Action::Makcu(MakcuAction::Autorelease),
+    ),
+    (
+        ANYBOX_ACTION_YSC_INTERPOLATION,
+        Action::Ysc(YscAction::Interpolation),
+    ),
+    (ANYBOX_ACTION_YSC_SERIAL, Action::Ysc(YscAction::Serial)),
+    (
+        ANYBOX_ACTION_FERRUM_CATCH_XY,
+        Action::Ferrum(FerrumAction::CatchXy),
+    ),
 ];
 
 const EVENT_KINDS: [(u32, EventKinds); 4] = [
@@ -301,6 +338,10 @@ pub(crate) fn click_timing_struct(timing: ClickTiming) -> AnyboxClickTiming {
         other => panic!("the C ABI has no number for {other:?} yet"),
     };
     AnyboxClickTiming { kind, fixed_us }
+}
+
+pub(crate) fn keys(keys: &[u8]) -> Vec<Key> {
+    keys.iter().map(|&key| Key(key)).collect()
 }
 
 pub(crate) fn click(click: &AnyboxClick) -> Click {

@@ -13,6 +13,7 @@ use anybox::{
 use crate::connect::*;
 use crate::device::*;
 use crate::events::*;
+use crate::extension::*;
 use crate::failure::*;
 use crate::keys::{ANYBOX_KEY_A, ANYBOX_KEY_LEFT_SHIFT, ANYBOX_MEDIA_VOLUME_UP};
 use crate::mock::*;
@@ -293,7 +294,7 @@ fn out_params_stay_as_they_were_when_a_call_fails() {
             quirk_count: 4242,
         };
         assert_eq!(
-            anybox_snapshot_capability(snapshot, 23, &mut capability),
+            anybox_snapshot_capability(snapshot, ACTIONS.len() as u32, &mut capability),
             ANYBOX_STATUS_INVALID_ARGUMENT
         );
         assert_eq!((capability.execution, capability.quirk_count), (4242, 4242));
@@ -344,7 +345,7 @@ fn values_anybox_doesnt_know_are_refused() {
             ..AnyboxConnectOptions::default()
         },
         AnyboxConnectOptions {
-            can: [23].as_ptr(),
+            can: [ACTIONS.len() as u32].as_ptr(),
             can_len: 1,
             ..AnyboxConnectOptions::default()
         },
@@ -631,6 +632,20 @@ fn every_quirk_has_its_fields() {
         (Quirk::KeepsHeld, ANYBOX_QUIRK_KEEPS_HELD, 0, 0, 0),
         (Quirk::MaxKeysHeld(6), ANYBOX_QUIRK_MAX_KEYS_HELD, 0, 0, 6),
         (Quirk::KeepsLocked, ANYBOX_QUIRK_KEEPS_LOCKED, 0, 0, 0),
+        (
+            Quirk::TypedTextIgnoresCapsLock,
+            ANYBOX_QUIRK_TYPED_TEXT_IGNORES_CAPS_LOCK,
+            0,
+            0,
+            0,
+        ),
+        (
+            Quirk::TypingReleasesHeldKeys,
+            ANYBOX_QUIRK_TYPING_RELEASES_HELD_KEYS,
+            0,
+            0,
+            0,
+        ),
     ];
     for (quirk, kind, min_us, max_us, count) in quirks {
         assert_eq!(
@@ -1158,6 +1173,11 @@ fn every_output_call_reaches_the_box() {
             ),
             ("lock_key", anybox_device_lock_key(device, Key::A.0)),
             ("unlock_key", anybox_device_unlock_key(device, Key::A.0)),
+            (
+                "force_release_key",
+                anybox_device_force_release_key(device, Key::A.0),
+            ),
+            ("restore_key", anybox_device_restore_key(device, Key::A.0)),
             ("pan", anybox_device_pan(device, 1)),
         ] {
             assert_eq!(
@@ -1326,6 +1346,27 @@ fn layout_table() -> String {
         io_kind,
         has_os_error,
         os_error
+    );
+    layout!(out, AnyboxMakcuInterpolation, automatic, percent);
+    layout!(
+        out,
+        AnyboxYscInterpolation,
+        enabled,
+        profile,
+        has_window,
+        window_ms,
+        has_max_window,
+        max_window_ms,
+        has_measured_interval,
+        measured_interval_us
+    );
+    layout!(
+        out,
+        AnyboxYscInterpolationSettings,
+        enabled,
+        profile,
+        window_ms,
+        max_window_ms
     );
     out
 }
@@ -1523,7 +1564,7 @@ fn frames_of(call: impl FnOnce(&AnyboxDevice)) -> Vec<(String, Vec<u8>)> {
     )
     .unwrap();
     mock.clear_recorded();
-    let device = AnyboxDevice(device);
+    let device = AnyboxDevice(device, Default::default());
     call(&device);
     mock.recorded_frames()
         .into_iter()
@@ -1634,6 +1675,16 @@ fn every_output_call_sends_what_the_rust_call_sends() {
             "unlock_key",
             Box::new(|d| unsafe { anybox_device_unlock_key(d, Key::G.0) }),
             Box::new(|d| d.unlock_key(Key::G)),
+        ),
+        (
+            "force_release_key",
+            Box::new(|d| unsafe { anybox_device_force_release_key(d, Key::H.0) }),
+            Box::new(|d| d.force_release_key(Key::H)),
+        ),
+        (
+            "restore_key",
+            Box::new(|d| unsafe { anybox_device_restore_key(d, Key::I.0) }),
+            Box::new(|d| d.restore_key(Key::I)),
         ),
         (
             "lock_axis",
@@ -2207,11 +2258,11 @@ fn a_snapshot_finds_a_capability_by_its_action_number() {
             ANYBOX_STATUS_OK
         );
         assert_eq!(
-            anybox_snapshot_capability(snapshot, 0x10000, &mut capability),
+            anybox_snapshot_capability(snapshot, 0x40000, &mut capability),
             ANYBOX_STATUS_INVALID_ARGUMENT
         );
         assert!(
-            last_error().contains("65536 isn't an action"),
+            last_error().contains("262144 isn't an action"),
             "{}",
             last_error()
         );
@@ -2309,5 +2360,128 @@ fn the_mock_pushes_keys_media_a_link_loss_and_a_restart() {
         until(ANYBOX_EVENT_DISCONNECTED);
         until(ANYBOX_EVENT_RECONNECTED);
         anybox_events_free(events);
+    }
+}
+
+// the calls only one box has
+
+fn family_mock(
+    open: unsafe extern "C" fn(*const AnyboxClickTiming, *mut *mut AnyboxDevice) -> AnyboxStatus,
+) -> *mut AnyboxDevice {
+    let mut device = ptr::null_mut();
+    assert_eq!(
+        unsafe { open(ptr::null(), &mut device) },
+        ANYBOX_STATUS_OK,
+        "{}",
+        last_error()
+    );
+    device
+}
+
+#[test]
+fn a_call_for_another_box_is_unsupported_naming_the_action() {
+    let medius = mock();
+    let ysc = family_mock(anybox_mock_ysc_open);
+    unsafe {
+        let mut moving = true;
+        assert_eq!(
+            anybox_makcu_moving(medius.device, &mut moving),
+            ANYBOX_STATUS_UNSUPPORTED
+        );
+        assert!(moving, "the out param stays as it was");
+        assert!(
+            last_error().contains("only a MAKCU V4 has this"),
+            "{}",
+            last_error()
+        );
+        let failed = detail();
+        assert!(failed.has_action);
+        assert_eq!(failed.action, ANYBOX_ACTION_MAKCU_MOVING);
+        let (mut x, mut y) = (7, 7);
+        assert_eq!(
+            anybox_ferrum_catch_xy(ysc, 10, false, &mut x, &mut y),
+            ANYBOX_STATUS_UNSUPPORTED
+        );
+        assert_eq!((x, y), (7, 7));
+        assert_eq!(detail().action, ANYBOX_ACTION_FERRUM_CATCH_XY);
+        assert_eq!(
+            anybox_makcu_moving(ptr::null(), &mut moving),
+            ANYBOX_STATUS_INVALID_ARGUMENT
+        );
+        assert_eq!(
+            anybox_ysc_interpolation(ysc, ptr::null_mut()),
+            ANYBOX_STATUS_INVALID_ARGUMENT
+        );
+        assert_eq!(last_error(), "out is null");
+        assert_eq!(
+            anybox_ysc_set_interpolation(ysc, ptr::null()),
+            ANYBOX_STATUS_INVALID_ARGUMENT
+        );
+        assert_eq!(last_error(), "settings is null");
+        assert_eq!(
+            anybox_makcu_set_interpolation(medius.device, ptr::null()),
+            ANYBOX_STATUS_INVALID_ARGUMENT
+        );
+        assert_eq!(last_error(), "value is null");
+        anybox_device_free(ysc);
+    }
+}
+
+#[test]
+fn the_box_calls_work_until_close() {
+    let makcu = family_mock(anybox_mock_makcu_open);
+    let ysc = family_mock(anybox_mock_ysc_open);
+    let ferrum = family_mock(anybox_mock_ferrum_open);
+    unsafe {
+        let set = AnyboxMakcuInterpolation {
+            automatic: false,
+            percent: 40,
+        };
+        assert_eq!(
+            anybox_makcu_set_interpolation(makcu, &set),
+            ANYBOX_STATUS_OK
+        );
+        let mut read = AnyboxMakcuInterpolation::default();
+        assert_eq!(
+            anybox_makcu_interpolation(makcu, &mut read),
+            ANYBOX_STATUS_OK
+        );
+        assert_eq!((read.automatic, read.percent), (false, 40));
+        let mut ms = 9;
+        assert_eq!(anybox_makcu_autorelease(makcu, &mut ms), ANYBOX_STATUS_OK);
+        assert_eq!(ms, 0, "off is 0");
+
+        let mut serial = ptr::null_mut();
+        assert_eq!(anybox_ysc_serial(ysc, &mut serial), ANYBOX_STATUS_OK);
+        assert_eq!(text(anybox_ysc_serial_physical(serial)), "PHYS01");
+        assert_eq!(text(anybox_ysc_serial_active(serial)), "PHYS01");
+        anybox_ysc_serial_free(serial);
+        anybox_ysc_serial_free(ptr::null_mut());
+        assert!(anybox_ysc_serial_custom(ptr::null()).is_null());
+
+        let (mut x, mut y) = (0, 0);
+        assert_eq!(
+            anybox_ferrum_catch_xy(ferrum, 10, true, &mut x, &mut y),
+            ANYBOX_STATUS_OK
+        );
+        assert_eq!((x, y), (-3, 10));
+
+        for device in [makcu, ysc, ferrum] {
+            anybox_device_close(device);
+        }
+        assert_eq!(
+            anybox_makcu_autorelease(makcu, &mut ms),
+            ANYBOX_STATUS_CLOSED
+        );
+        assert_eq!(anybox_ysc_serial(ysc, &mut serial), ANYBOX_STATUS_CLOSED);
+        // closed comes before the family, so a closed MAKCU asked for a YSC call is closed too
+        assert_eq!(anybox_ysc_serial(makcu, &mut serial), ANYBOX_STATUS_CLOSED);
+        assert_eq!(
+            anybox_ferrum_catch_xy(ferrum, 10, true, &mut x, &mut y),
+            ANYBOX_STATUS_CLOSED
+        );
+        for device in [makcu, ysc, ferrum] {
+            anybox_device_free(device);
+        }
     }
 }

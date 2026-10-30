@@ -10,6 +10,7 @@ from ctypes import (
     c_bool,
     c_char_p,
     c_int16,
+    c_int32,
     c_int64,
     c_size_t,
     c_uint8,
@@ -22,7 +23,7 @@ from ctypes.util import find_library
 from pathlib import Path
 
 # the header's ANYBOX_ABI_VERSION, the tests hold it to the header and import refuses any other library
-ABI_VERSION = 2
+ABI_VERSION = 3
 
 _LIBRARY = {"win32": "anybox.dll", "darwin": "libanybox.dylib"}.get(sys.platform, "libanybox.so")
 
@@ -43,6 +44,27 @@ class ConnectOptions(ctypes.Structure):
         ("id_serial", c_char_p),
         ("click_timing", ClickTiming),
     ]
+
+
+class MakcuInterpolation(ctypes.Structure):
+    _fields_ = [("automatic", c_bool), ("percent", c_uint8)]
+
+
+class YscInterpolation(ctypes.Structure):
+    _fields_ = [
+        ("enabled", c_bool),
+        ("profile", c_uint32),
+        ("has_window", c_bool),
+        ("window_ms", c_uint32),
+        ("has_max_window", c_bool),
+        ("max_window_ms", c_uint32),
+        ("has_measured_interval", c_bool),
+        ("measured_interval_us", c_uint64),
+    ]
+
+
+class YscInterpolationSettings(ctypes.Structure):
+    _fields_ = [("enabled", c_bool), ("profile", c_uint32), ("window_ms", c_uint32), ("max_window_ms", c_uint32)]
 
 
 class Click(ctypes.Structure):
@@ -158,6 +180,9 @@ STRUCTS = {
     "AnyboxQuirk": Quirk,
     "AnyboxEvent": Event,
     "AnyboxErrorDetail": ErrorDetail,
+    "AnyboxMakcuInterpolation": MakcuInterpolation,
+    "AnyboxYscInterpolation": YscInterpolation,
+    "AnyboxYscInterpolationSettings": YscInterpolationSettings,
 }
 
 _status = c_uint32
@@ -196,11 +221,17 @@ _FUNCTIONS = {
     "anybox_device_press_key": (_status, [_handle, c_uint8]),
     "anybox_device_release_key": (_status, [_handle, c_uint8]),
     "anybox_device_tap_key_with": (_status, [_handle, c_uint8, POINTER(Click)]),
+    "anybox_device_type_text": (_status, [_handle, c_char_p]),
+    "anybox_device_press_keys": (_status, [_handle, POINTER(c_uint8), c_size_t]),
+    "anybox_device_release_keys": (_status, [_handle, POINTER(c_uint8), c_size_t]),
+    "anybox_device_tap_keys": (_status, [_handle, POINTER(c_uint8), c_size_t]),
     "anybox_device_press_media": (_status, [_handle, c_uint16]),
     "anybox_device_release_media": (_status, [_handle, c_uint16]),
     "anybox_device_tap_media_with": (_status, [_handle, c_uint16, POINTER(Click)]),
     "anybox_device_lock_button": (_status, [_handle, c_uint32]),
     "anybox_device_unlock_button": (_status, [_handle, c_uint32]),
+    "anybox_device_force_release_key": (_status, [_handle, c_uint8]),
+    "anybox_device_restore_key": (_status, [_handle, c_uint8]),
     "anybox_device_lock_key": (_status, [_handle, c_uint8]),
     "anybox_device_unlock_key": (_status, [_handle, c_uint8]),
     "anybox_device_lock_axis": (_status, [_handle, c_uint32, c_uint32]),
@@ -223,11 +254,34 @@ _FUNCTIONS = {
     "anybox_snapshot_buttons": (_status, [_handle, POINTER(c_uint32), c_size_t, POINTER(c_size_t)]),
     "anybox_snapshot_axes": (_status, [_handle, POINTER(c_uint32), c_size_t, POINTER(c_size_t)]),
     "anybox_snapshot_free": (None, [_handle]),
+    # made by bindings/gen from its call table (makcu_signatures), change the table and run cargo run -p anybox-gen
+    "anybox_makcu_interpolation": (_status, [_handle, POINTER(MakcuInterpolation)]),
+    "anybox_makcu_set_interpolation": (_status, [_handle, POINTER(MakcuInterpolation)]),
+    "anybox_makcu_moving": (_status, [_handle, POINTER(c_bool)]),
+    "anybox_makcu_autorelease": (_status, [_handle, POINTER(c_uint32)]),
+    "anybox_makcu_set_autorelease": (_status, [_handle, c_uint32]),
+    # the end of what bindings/gen makes (makcu_signatures)
+    # made by bindings/gen from its call table (ysc_signatures), change the table and run cargo run -p anybox-gen
+    "anybox_ysc_interpolation": (_status, [_handle, POINTER(YscInterpolation)]),
+    "anybox_ysc_set_interpolation": (_status, [_handle, POINTER(YscInterpolationSettings)]),
+    "anybox_ysc_reset_interpolation": (_status, [_handle, POINTER(YscInterpolation)]),
+    "anybox_ysc_serial": (_status, [_handle, _out]),
+    # the end of what bindings/gen makes (ysc_signatures)
+    "anybox_ysc_serial_custom": (c_char_p, [_handle]),
+    "anybox_ysc_serial_physical": (c_char_p, [_handle]),
+    "anybox_ysc_serial_active": (c_char_p, [_handle]),
+    "anybox_ysc_serial_free": (None, [_handle]),
+    # made by bindings/gen from its call table (ferrum_signatures), change the table, then cargo run -p anybox-gen
+    "anybox_ferrum_catch_xy": (_status, [_handle, c_uint32, c_bool, POINTER(c_int32), POINTER(c_int32)]),
+    # the end of what bindings/gen makes (ferrum_signatures)
 }
 
 _MOCK_FUNCTIONS = {
     "anybox_mock_medius_open": (_status, [POINTER(ClickTiming), c_bool, _out, _out]),
     "anybox_mock_medius_open_manual": (_status, [POINTER(ClickTiming), c_bool, _out, _out]),
+    "anybox_mock_makcu_open": (_status, [POINTER(ClickTiming), _out]),
+    "anybox_mock_ysc_open": (_status, [POINTER(ClickTiming), _out]),
+    "anybox_mock_ferrum_open": (_status, [POINTER(ClickTiming), _out]),
     "anybox_mock_subscribed": (c_bool, [_handle, c_uint32]),
     "anybox_mock_push_motion": (
         _status,

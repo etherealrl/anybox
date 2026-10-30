@@ -38,6 +38,8 @@ pub const ANYBOX_QUIRK_KEEPS_HELD: u32 = 8;
 /// `count`
 pub const ANYBOX_QUIRK_MAX_KEYS_HELD: u32 = 9;
 pub const ANYBOX_QUIRK_KEEPS_LOCKED: u32 = 10;
+pub const ANYBOX_QUIRK_TYPED_TEXT_IGNORES_CAPS_LOCK: u32 = 11;
+pub const ANYBOX_QUIRK_TYPING_RELEASES_HELD_KEYS: u32 = 12;
 
 /// who the box is and what it can do, read from one connection, see `anybox_device_snapshot`
 pub struct AnyboxSnapshot {
@@ -274,6 +276,8 @@ pub(crate) fn quirk_struct(quirk: &Quirk) -> AnyboxQuirk {
             ..plain(ANYBOX_QUIRK_MAX_KEYS_HELD)
         },
         Quirk::KeepsLocked => plain(ANYBOX_QUIRK_KEEPS_LOCKED),
+        Quirk::TypedTextIgnoresCapsLock => plain(ANYBOX_QUIRK_TYPED_TEXT_IGNORES_CAPS_LOCK),
+        Quirk::TypingReleasesHeldKeys => plain(ANYBOX_QUIRK_TYPING_RELEASES_HELD_KEYS),
         other => panic!("the C ABI has no number for {other:?} yet"),
     }
 }

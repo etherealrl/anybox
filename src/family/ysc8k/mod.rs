@@ -5,13 +5,17 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use crate::backend::{
-    Backend, Command, InputKind, InputKinds, LOCKED, LockSlot, Sign, Sink, StreamFailure, UNLOCKED,
-    Usage, WRITE_DEADLINE,
+    Backend, Command, InputKind, InputKinds, LOCKED, LockSlot, Sign, Sink, StreamFailure, Typing,
+    UNLOCKED, Usage, WRITE_DEADLINE,
 };
 use crate::capability::{
     Action, Axis, Button, Capabilities, Capability, Family, Firmware, Info, Quirk, Snapshot,
+    YscAction,
 };
 use crate::error::{Error, Result};
+use crate::extension::{
+    Extension, ExtensionReply, YscInterpolation, YscInterpolationSettings, YscProfile, YscSerial,
+};
 use crate::transport::link::{Link, Target};
 use crate::transport::probe::Probe;
 use crate::transport::{Candidate, Port, System, is_ysc};
@@ -30,6 +34,8 @@ const BOOTLOADER: &str = "the YSC box is in its bootloader, finish or leave the 
 const KEYBOARD: &str =
     "the YSC box says there's no keyboard behind it, so plug one in and connect again";
 const MEDIA: &str = "YSC has no media keys";
+/// how often cmd 48 asks whether the box is done typing, the vendor's own recipe polls at this rate
+const TYPE_POLL: Duration = Duration::from_millis(20);
 const BUTTONS: [Button; 5] = [
     Button::Left,
     Button::Right,
@@ -303,6 +309,21 @@ fn snapshot(version: String, variant: Variant) -> Snapshot {
         .set(
             Action::LockKey,
             Capability::unsupported("YSC has no way to lock a key"),
+        )
+        .set(
+            Action::ForceReleaseKey,
+            Capability::unsupported("YSC has no way to mask a key"),
+        )
+        .set(Action::TypeText, Capability::native())
+        // nothing documents what a firmware without them answers, so they stay on and a box that never answers
+        // is a missed reply
+        .set(Action::Ysc(YscAction::Interpolation), Capability::native())
+        .set(Action::Ysc(YscAction::Serial), Capability::native())
+        .set(
+            Action::KeyChord,
+            Capability::unsupported(
+                "YSC presses keys one at a time, so it can't press several with one command",
+            ),
         );
     let no_media = Capability::unsupported(MEDIA);
     let capabilities = [
@@ -489,6 +510,85 @@ impl YscBackend {
             .map(|_| ())
     }
 
+    /// cmd 52, what the box reads back. a field it didn't send stays none
+    fn interpolation(&self, until: Instant) -> Result<YscInterpolation> {
+        let action = Action::Ysc(YscAction::Interpolation);
+        let data = self.ask("{\"cmd\":52}", "interp", action, until)?;
+        let number = |name: &str| {
+            data.get(name)
+                .and_then(|value| value.as_u64().or_else(|| value.as_bool().map(u64::from)))
+        };
+        // the measured interval can be a fraction of a ms, the vendor's own example has 0.5
+        let ms = |name: &str| {
+            data.get(name)
+                .and_then(serde_json::Value::as_f64)
+                .and_then(|ms| Duration::try_from_secs_f64(ms / 1000.0).ok())
+        };
+        let (Some(enabled), Some(profile)) = (number("enabled"), number("profile")) else {
+            return Err(Error::Rejected {
+                action,
+                detail: "it answered without saying whether interpolation is on".into(),
+            });
+        };
+        Ok(YscInterpolation {
+            enabled: enabled != 0,
+            profile: YscProfile::from_number(u32::try_from(profile).unwrap_or(u32::MAX)),
+            window: ms("window"),
+            max_window: ms("maxw"),
+            measured_interval: ms("ema"),
+        })
+    }
+
+    /// sends one JSON command and returns the data of its answer, which has to carry `message`. a 400 is the box
+    /// failing to read it
+    fn ask(
+        &self,
+        payload: &str,
+        message: &str,
+        action: Action,
+        until: Instant,
+    ) -> Result<serde_json::Value> {
+        let reply = self
+            .link
+            .request_until(packet(payload)?, Some(frames::key_reply()), until)?;
+        let value = reply
+            .as_deref()
+            .and_then(frames::object)
+            .ok_or(Error::Disconnected)?;
+        let code = value.get("code").and_then(serde_json::Value::as_u64);
+        if code == Some(200)
+            && value.get("message").and_then(serde_json::Value::as_str) == Some(message)
+        {
+            // the data is JSON inside a string, like type_status
+            return Ok(value
+                .get("data")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|data| serde_json::from_str(data).ok())
+                .unwrap_or_default());
+        }
+        Err(Error::Rejected {
+            action,
+            detail: format!("it answered {value} instead"),
+        })
+    }
+
+    /// a cmd 47 or 48 reply, anything but a 200 is an error
+    fn typing_reply(&self, reply: Option<&[u8]>) -> Result<serde_json::Value> {
+        let value = reply.and_then(frames::object).ok_or(Error::Disconnected)?;
+        match value.get("code").and_then(serde_json::Value::as_u64) {
+            Some(200) => Ok(value),
+            Some(404) => Err(self.unsupported(Action::TypeText, KEYBOARD)),
+            Some(409) => Err(Error::Rejected {
+                action: Action::TypeText,
+                detail: "the YSC box is already typing something else".into(),
+            }),
+            _ => Err(Error::Rejected {
+                action: Action::TypeText,
+                detail: "the YSC box couldn't read the text".into(),
+            }),
+        }
+    }
+
     fn upload(&self, on: bool, until: Instant) -> Result<()> {
         self.link
             .request_until(
@@ -544,6 +644,73 @@ impl Backend for YscBackend {
         Ok(())
     }
 
+    /// cmd 47 with the piece, then cmd 48 until the box isn't busy any more, the vendor's own recipe for text
+    /// in chunks. every request waits for its answer, so the requests lock keeps a key or another text out
+    fn type_piece(&self, piece: &[u8], typing: &mut Typing) -> Result<()> {
+        let until = Instant::now() + WRITE_DEADLINE;
+        let _request = lock(&self.shared.requests);
+        {
+            let mut state = lock(&self.shared.state);
+            if !state.keys {
+                return Err(self.unsupported(Action::TypeText, KEYBOARD));
+            }
+            // a no_keyboard refusal after this can't be told apart from one for a key
+            state.pressed_keys = true;
+            state.released_keys = true;
+        }
+        let text = String::from_utf8_lossy(piece);
+        let escaped = serde_json::Value::from(text.as_ref()).to_string();
+        let (reply, generation) = self.link.request_on(
+            packet(&format!("{{\"cmd\":47,\"s\":{escaped}}}"))?,
+            Some(frames::key_reply()),
+            typing.generation,
+            until,
+        )?;
+        typing.generation.get_or_insert(generation);
+        self.typing_reply(reply.as_deref())?;
+        typing.sent = true;
+        loop {
+            std::thread::sleep(TYPE_POLL);
+            if Instant::now() >= until {
+                self.link.take_down(generation);
+                return Err(Error::Disconnected);
+            }
+            let (reply, _) = self.link.request_on(
+                packet("{\"cmd\":48}")?,
+                Some(frames::key_reply()),
+                Some(generation),
+                until,
+            )?;
+            let value = self.typing_reply(reply.as_deref())?;
+            let status: serde_json::Value = value
+                .get("data")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|data| serde_json::from_str(data).ok())
+                .unwrap_or_default();
+            let count = |name: &str| status.get(name).and_then(serde_json::Value::as_u64);
+            // the vendor documents 0 or 1 and its own host only checks it's falsy, so false counts too
+            let busy = status.get("busy").is_none_or(|busy| {
+                busy.as_u64()
+                    .map_or(busy.as_bool() != Some(false), |n| n != 0)
+            });
+            if busy {
+                continue;
+            }
+            return match (count("typed"), count("total"), count("skipped")) {
+                (Some(typed), Some(total), Some(0)) if typed == total => Ok(()),
+                (typed, total, skipped) => Err(Error::Rejected {
+                    action: Action::TypeText,
+                    detail: format!(
+                        "it says it typed {} of {} characters and skipped {}",
+                        typed.unwrap_or(0),
+                        total.unwrap_or(0),
+                        skipped.unwrap_or(0)
+                    ),
+                }),
+            };
+        }
+    }
+
     fn release_all(&self, held: &[Usage]) -> Result<()> {
         let mut first = Ok(());
         for &usage in held {
@@ -594,6 +761,53 @@ impl Backend for YscBackend {
         stopped
     }
 
+    fn extension(&self, request: Extension) -> Result<ExtensionReply> {
+        let until = Instant::now() + WRITE_DEADLINE * 2;
+        // one request at a time, the JSON answers share a key and don't name their command
+        let _request = lock(&self.shared.requests);
+        match request {
+            Extension::YscInterpolation => self
+                .interpolation(until)
+                .map(ExtensionReply::YscInterpolation),
+            Extension::YscSetInterpolation(settings) => {
+                self.link
+                    .request_until(packet(&interpolation_json(settings))?, None, until)?;
+                let now = self.interpolation(until)?;
+                if !matches(&now, &settings) {
+                    return Err(Error::Rejected {
+                        action: request.action(),
+                        detail: format!("it didn't take the interpolation, it reads back {now:?}"),
+                    });
+                }
+                Ok(ExtensionReply::Done)
+            }
+            Extension::YscResetInterpolation => {
+                self.link
+                    .request_until(packet("{\"cmd\":53}")?, None, until)?;
+                self.interpolation(until)
+                    .map(ExtensionReply::YscInterpolation)
+            }
+            Extension::YscSerial => {
+                let data = self.ask("{\"cmd\":54}", "sn", request.action(), until)?;
+                let text = |name: &str| {
+                    data.get(name)
+                        .and_then(serde_json::Value::as_str)
+                        .map(String::from)
+                };
+                Ok(ExtensionReply::YscSerial(YscSerial {
+                    custom: text("custom"),
+                    physical: text("physical"),
+                    active: text("active"),
+                }))
+            }
+            _ => Err(Error::Unsupported {
+                action: request.action(),
+                family: Family::Ysc,
+                reason: "a YSC doesn't have this".into(),
+            }),
+        }
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -605,5 +819,25 @@ impl Drop for YscBackend {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
+pub(crate) mod mock;
 #[cfg(test)]
 mod tests;
+
+fn interpolation_json(settings: YscInterpolationSettings) -> String {
+    format!(
+        "{{\"cmd\":51,\"e\":{},\"p\":{},\"w\":{},\"mx\":{}}}",
+        u8::from(settings.enabled),
+        settings.profile.number(),
+        settings.window.as_millis(),
+        settings.max_window.as_millis()
+    )
+}
+
+/// what the box read back against what was set, the windows only when it sent them
+fn matches(now: &YscInterpolation, settings: &YscInterpolationSettings) -> bool {
+    now.enabled == settings.enabled
+        && now.profile == settings.profile
+        && now.window.is_none_or(|window| window == settings.window)
+        && now.max_window.is_none_or(|max| max == settings.max_window)
+}

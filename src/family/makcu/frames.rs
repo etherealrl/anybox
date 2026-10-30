@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 
 use crate::backend::{Input, InputKind, LockSlot, Sign};
 use crate::capability::Axis;
-use crate::capability::{Action, Button};
+use crate::capability::{Action, Button, MakcuAction};
 use crate::key::Key;
 use crate::transport::codec::{Codec, Frame, Incoming};
 
@@ -22,16 +22,25 @@ pub(crate) const FIRMWARE_VERSION: u8 = 0x04;
 pub(crate) const KEY_DOWN: u8 = 0x20;
 pub(crate) const KEY_UP: u8 = 0x21;
 pub(crate) const KEY_PRESS: u8 = 0x23;
+pub(crate) const KEY_STRING: u8 = 0x24;
+pub(crate) const KEY_MULTI_DOWN: u8 = 0x26;
+pub(crate) const KEY_MULTI_UP: u8 = 0x27;
+pub(crate) const KEY_MULTI_PRESS: u8 = 0x28;
 pub(crate) const KEY_MASK: u8 = 0x29;
 pub(crate) const LEFT: u8 = 0x11;
 pub(crate) const MOVE: u8 = 0x18;
+pub(crate) const INTERPOLATE: u8 = 0x1F;
 pub(crate) const WHEEL: u8 = 0x19;
 pub(crate) const INPUT_STREAM: u8 = 0x52;
 const INPUT_CHANGE: u8 = 0x53;
 pub(crate) const INJECT_SNAPSHOT: u8 = 0x56;
 pub(crate) const LOCK: u8 = 0x60;
 pub(crate) const CLICK: u8 = 0x61;
+pub(crate) const MOVING: u8 = 0x66;
 pub(crate) const MOVE_NOW: u8 = 0x67;
+pub(crate) const AUTORELEASE: u8 = 0x6E;
+/// INJECT_SNAPSHOT's spread byte, 255 is AUTO (checked on V4.094)
+pub(crate) const SPREAD: usize = 36;
 
 /// the mouse's kind in INPUT_CHANGE and INPUT_STREAM
 pub(crate) const MOUSE: u8 = 1;
@@ -100,6 +109,8 @@ pub(crate) struct LastSent {
     lock_writes: [AtomicU32; 14],
     /// the LOCK target written last, because a refusal only says LOCK and this tells a button from an axis
     lock_target: AtomicU8,
+    /// whether the KEY_MASK written last was a force and not a lock, because a refusal only says KEY_MASK
+    mask_forced: AtomicBool,
 }
 
 impl Default for LastSent {
@@ -111,6 +122,7 @@ impl Default for LastSent {
             locks: Default::default(),
             lock_writes: Default::default(),
             lock_target: AtomicU8::new(0),
+            mask_forced: AtomicBool::new(false),
         }
     }
 }
@@ -144,6 +156,11 @@ impl LastSent {
         self.locks[usize::from(target)].store(state, Ordering::Release);
         self.lock_writes[usize::from(target)].fetch_add(1, Ordering::AcqRel);
         self.name_lock(target);
+    }
+
+    /// whether a refusal of the next KEY_MASK gets blamed on a force or on a lock
+    pub(crate) fn name_mask(&self, forced: bool) {
+        self.mask_forced.store(forced, Ordering::Release);
     }
 
     /// the target that a refusal of the next LOCK gets blamed on
@@ -198,10 +215,15 @@ impl MakcuFrames {
             INPUT_STREAM => Action::ButtonEvents,
             LOCK if self.last.lock_target.load(Ordering::Acquire) < 5 => Action::LockButton,
             LOCK => Action::LockAxis,
+            KEY_MASK if self.last.mask_forced.load(Ordering::Acquire) => Action::ForceReleaseKey,
             KEY_MASK => Action::LockKey,
             KEY_DOWN => Action::KeyPress,
             KEY_UP => Action::KeyRelease,
             KEY_PRESS => Action::KeyTap,
+            KEY_MULTI_DOWN..=KEY_MULTI_PRESS => Action::KeyChord,
+            INTERPOLATE => Action::Makcu(MakcuAction::Interpolation),
+            MOVING => Action::Makcu(MakcuAction::Moving),
+            AUTORELEASE => Action::Makcu(MakcuAction::Autorelease),
             LEFT..=0x15 if self.last.get(command - LEFT) == 1 => Action::Press,
             LEFT..=0x15 => Action::Release,
             _ => return None,

@@ -99,3 +99,20 @@ AnyboxErrorDetail size 160 align 8
   io_kind 144
   has_os_error 148
   os_error 152
+AnyboxMakcuInterpolation size 2 align 1
+  automatic 0
+  percent 1
+AnyboxYscInterpolation size 40 align 8
+  enabled 0
+  profile 4
+  has_window 8
+  window_ms 12
+  has_max_window 16
+  max_window_ms 20
+  has_measured_interval 24
+  measured_interval_us 32
+AnyboxYscInterpolationSettings size 16 align 4
+  enabled 0
+  profile 4
+  window_ms 8
+  max_window_ms 12

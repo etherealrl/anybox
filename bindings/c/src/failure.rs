@@ -3,13 +3,13 @@ use std::io::ErrorKind;
 use std::ptr;
 use std::sync::Arc;
 
-use anybox::{Action, Error, FerrumApi, Firmware, Found};
+use anybox::{Action, Error, Family, FerrumApi, Firmware, Found};
 
 use crate::connect::{AnyboxScanList, AnyboxStringList, Entry};
 use crate::snapshot::{ANYBOX_FIRMWARE_NONE, ANYBOX_ID_NONE, firmware_fields, id_fields};
 use crate::status::{
-    ANYBOX_STATUS_INVALID_ARGUMENT, ANYBOX_STATUS_OK, AnyboxStatus, c_string, last_failure,
-    status_of,
+    ANYBOX_STATUS_INVALID_ARGUMENT, ANYBOX_STATUS_OK, ANYBOX_STATUS_UNSUPPORTED, AnyboxStatus,
+    c_string, last_failure, status_of,
 };
 use crate::values::{
     ANYBOX_FAMILY_ANY, ANYBOX_FERRUM_API_NONE, action_number, family_number, ferrum_api_number,
@@ -186,6 +186,25 @@ impl Failure {
             message: c_string(message.into()),
             detail: AnyboxErrorDetail::empty(status),
             _strings: Vec::new(),
+            tried: Vec::new(),
+            incapable: Vec::new(),
+        })
+    }
+
+    /// a call only one family has, made on another box. the core never gets it, so there's no `Error` to take the
+    /// detail from, it's filled in the same way one would be
+    pub(crate) fn unsupported(action: Action, family: Family, reason: String) -> Arc<Self> {
+        let message = format!("{family} can't {action}, {reason}");
+        let reason = c_string(reason);
+        let mut detail = AnyboxErrorDetail::empty(ANYBOX_STATUS_UNSUPPORTED);
+        with_action(&mut detail, &action);
+        detail.family = family_number(family);
+        detail.text = reason.as_ptr();
+        Arc::new(Self {
+            status: ANYBOX_STATUS_UNSUPPORTED,
+            message: c_string(message),
+            detail,
+            _strings: vec![reason],
             tried: Vec::new(),
             incapable: Vec::new(),
         })

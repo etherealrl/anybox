@@ -1259,6 +1259,31 @@ fn the_crate_presses_held_keys_again_after_a_session_release() {
 }
 
 #[test]
+fn the_crate_forces_a_key_up_again_after_a_session_release() {
+    let mock = keyboard(6, false);
+    let (device, mut poller) = device(&mock);
+    device.force_release_key(Key::W).unwrap();
+    mock.clear_recorded();
+    mock.detach(true);
+    poller.tick();
+    device.settle();
+    until(|| injects_of(&mock, 1).contains(&(0x1A, 2)));
+    assert!(!injects_of(&mock, 1).contains(&(0x1A, 0)));
+}
+
+#[test]
+fn a_kept_crate_device_doesnt_keep_a_force_past_close() {
+    let mock = keyboard(6, false);
+    let (device, _poller) = device(&mock);
+    let kept = device.medius().unwrap();
+    device.force_release_key(Key::W).unwrap();
+    mock.clear_recorded();
+    device.close().unwrap();
+    assert_eq!(injects_of(&mock, 1), vec![(0x1A, 0)]);
+    drop(kept);
+}
+
+#[test]
 fn a_keyboard_plugged_in_after_the_box_gives_a_fresh_snapshot() {
     // the HEALTH bits are 0x07 for the link, mouse and clone, and 0x80 for a keyboard attached, like in the
     // medius crate's source
@@ -1875,6 +1900,33 @@ fn unlocks_after_one_that_ran_out_of_time_still_reach_the_crate() {
 }
 
 #[test]
+fn restores_after_one_that_ran_out_of_time_still_reach_the_crate() {
+    let mock = keyboard(6, false);
+    let (backend, _snapshot, _poller, _signals) = backend(&mock);
+    let backend = Arc::new(backend);
+    mock.clear_recorded();
+    let held = backend
+        .shared()
+        .hold
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let restorer = thread::spawn({
+        let backend = backend.clone();
+        move || {
+            let started = Instant::now();
+            let restored = backend.restore_all(&[Key::A, Key::B, Key::C]);
+            (restored, started.elapsed())
+        }
+    });
+    let (restored, took) = restorer.join().unwrap();
+    assert!(matches!(restored, Err(Error::Disconnected)));
+    assert!(took < WRITE_DEADLINE * 2, "{took:?}");
+    drop(held);
+    until(|| injects_of(&mock, 1).len() == 3);
+    assert_eq!(injects_of(&mock, 1), vec![(0x04, 0), (0x05, 0), (0x06, 0)]);
+}
+
+#[test]
 fn releases_after_one_that_ran_out_of_time_still_reach_the_crate() {
     let mock = mouse(5, true);
     let (backend, _snapshot, _poller, _signals) = backend(&mock);
@@ -2120,4 +2172,49 @@ fn the_clone_s_usb_ids_are_the_peripheral_and_no_clone_is_none() {
     );
     let (_, snapshot, _, _) = backend(&mouse(5, true));
     assert_eq!(snapshot.info.peripheral, None);
+}
+
+#[test]
+fn a_forced_key_is_inject_force_release_and_its_restore_the_soft_release() {
+    let (_backend, snapshot, _poller, _signals) = backend(&mouse(5, true));
+    assert!(
+        !snapshot
+            .capabilities
+            .get(Action::ForceReleaseKey)
+            .is_supported()
+    );
+    let mock = keyboard(6, true);
+    let (device, _poller) = device(&mock);
+    let force = device
+        .snapshot()
+        .capabilities
+        .get(Action::ForceReleaseKey)
+        .clone();
+    assert_eq!(force.execution, Execution::Native);
+    assert!(force.quirks.contains(&Quirk::KeepsLocked));
+    mock.clear_recorded();
+    device.force_release_key(Key::A).unwrap();
+    device.restore_key(Key::A).unwrap();
+    device.force_release_key(Key::B).unwrap();
+    drop(device);
+    assert_eq!(
+        injects_of(&mock, 1),
+        vec![(0x04, 2), (0x04, 0), (0x05, 2), (0x05, 0)]
+    );
+}
+
+#[test]
+fn after_a_poller_reconnect_the_core_leaves_a_forced_key_to_the_box_and_the_crate() {
+    let mock = keyboard(6, true);
+    let (device, mut poller) = device(&mock);
+    device.force_release_key(Key::A).unwrap();
+    if let Some(backend) = device_backend(&device) {
+        backend.shared().go_down();
+    }
+    mock.clear_recorded();
+    poller.tick();
+    device.settle();
+    // the box keeps it, and the crate replays it itself when its own link comes back, so no restore and no
+    // second force from the core
+    assert!(injects_of(&mock, 1).is_empty());
 }

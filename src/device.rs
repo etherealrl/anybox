@@ -1,26 +1,35 @@
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::backend::{
-    Backend, Command, Input, InputKinds, LOCKED, LockSlot, Sign, Signal, UNLOCKED, Usage,
+    Backend, ChordKind, Command, Input, InputKinds, Keys, LOCKED, LockSlot, MAX_CHORD, Sign,
+    Signal, Typing, UNLOCKED, Usage,
 };
-use crate::capability::{Action, Axis, Button, Direction, Execution, Quirk, Snapshot};
+use crate::capability::{Action, Axis, Button, Direction, Execution, Family, Quirk, Snapshot};
 use crate::click::{Click, ClickTiming, Holds, Timing};
 use crate::error::{Error, Result};
 use crate::event::{
     DropSource, Event, EventKinds, Events, Listeners, QUEUE_CAPACITY, Queue, Stamp,
 };
+use crate::extension::{Extension, ExtensionReply, Ferrum, Makcu, Ysc};
 use crate::key::{Key, MediaKey};
 
 /// how long drop waits for the backend and the link thread before it gives up on them
 const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(1);
 /// how close two refusals of one stream have to be to count as the same one, see `publish`
 const MERGE: Duration = Duration::from_secs(1);
+/// a text goes to the box this many characters at a time, so a piece fits in `WRITE_DEADLINE` on a box that
+/// types about 100 ms a character (MAKCU, measured) and a call waiting for the output lock gets it in between
+const PIECE: usize = 2;
+/// how long a text leaves the output lock free between pieces. the standard mutex isn't fair, so without it the
+/// typing thread would usually take the lock straight back
+const BETWEEN_PIECES: Duration = Duration::from_millis(2);
 
 /// one connected box. every call checks what the box can do first, so nothing is faked and nothing is
 /// silently dropped. dropping it lets go of every button and key you were holding and closes the port
@@ -43,6 +52,8 @@ struct Core {
     port: String,
     /// when each stream action was last refused, see `publish`
     refused: Mutex<Refusals>,
+    /// set by close and drop before they wait for the output lock, so a text stops at the next piece
+    closing: AtomicBool,
 }
 
 /// when each stream action was last refused, and a number that goes up every time a refusal actually went out, so
@@ -70,6 +81,13 @@ struct Output {
     /// what anybox locked or scaled, with how much of the physical input each slot keeps. it all gets unlocked on
     /// drop, and on a box that doesn't keep locks itself it gets sent again after a disconnect or a reset
     locked: HashMap<LockSlot, i16>,
+    /// keys `force_release_key` holds up for the PC. they get restored on drop, and on a box that doesn't keep them
+    /// itself they get forced again after a disconnect or a reset, like locks
+    forced: HashSet<Key>,
+    /// how many `type_text` calls are running. they let go of the output lock between pieces, so a key can't get
+    /// forced up in the middle of a text. a count and not a flag, otherwise the first of two texts to finish would
+    /// clear it while the other one still types
+    typing: u32,
     link_up: bool,
     /// set once drop or close starts, and after that nothing from the link brings the device back
     closing: bool,
@@ -117,6 +135,8 @@ impl Device {
             output: Mutex::new(Output {
                 held: HashSet::new(),
                 locked: HashMap::new(),
+                forced: HashSet::new(),
+                typing: 0,
                 unsure: HashSet::new(),
                 link_up: true,
                 closing: false,
@@ -132,6 +152,7 @@ impl Device {
             signals: start.signals,
             port: start.port.clone(),
             refused: Mutex::new(Refusals::default()),
+            closing: AtomicBool::new(false),
         });
         let link = spawn_link(Arc::downgrade(&core), start.incoming)?;
         Ok(Self {
@@ -198,6 +219,32 @@ impl Device {
         self.core.tap(Usage::Key(key), tap)
     }
 
+    /// types the text on the box with the box's own timing, as US layout key presses, and returns once the box
+    /// has typed all of it. it takes printable ASCII only, so tap keys like Enter yourself after it. it goes out a
+    /// few characters at a time and other calls on the device can wait in between, and a `close` stops it after
+    /// the few going out. after an error part of it may already be typed, and a reconnect never types the rest
+    pub fn type_text(&self, text: &str) -> Result<()> {
+        self.core.type_text(text)
+    }
+
+    /// holds the keys down with one command of the box, up to 14 of them, until `release_keys` or
+    /// `release_key`
+    pub fn press_keys(&self, keys: &[Key]) -> Result<()> {
+        self.core.chord(ChordKind::Press, keys)
+    }
+
+    /// lets go of the keys with one command of the box. on a box that can't do that it lets go of them one at a
+    /// time like `release_key`, so a key you hold always gets let go. a key you don't hold still has to be one the
+    /// box can let go of, so it can be `Unsupported` after the held ones already went
+    pub fn release_keys(&self, keys: &[Key]) -> Result<()> {
+        self.core.release_keys(keys)
+    }
+
+    /// presses and lets go of the keys with one command of the box, timed by the box
+    pub fn tap_keys(&self, keys: &[Key]) -> Result<()> {
+        self.core.chord(ChordKind::Tap, keys)
+    }
+
     /// holds a media key down until `release_media`
     pub fn press_media(&self, key: MediaKey) -> Result<()> {
         self.core
@@ -241,6 +288,19 @@ impl Device {
     pub fn unlock_key(&self, key: Key) -> Result<()> {
         self.core
             .lock(Action::LockKey, &[LockSlot::Key(key)], UNLOCKED)
+    }
+
+    /// the PC sees the key up from now on, whatever the finger does, until `restore_key`. key events keep reporting
+    /// the finger, so you can tell whether it's still held. a key anybox holds or has locked itself, or one a text
+    /// needs while it types, is refused, since each box would do something else with it
+    pub fn force_release_key(&self, key: Key) -> Result<()> {
+        self.core.force(key, true)
+    }
+
+    /// gives the PC the finger's state of the key again, so a key that's still held goes down for it. it also
+    /// clears a force another program left, except on a key anybox holds or has locked
+    pub fn restore_key(&self, key: Key) -> Result<()> {
+        self.core.force(key, false)
     }
 
     /// keeps physical motion one way or both ways along an axis from reaching the PC until `unlock_axis`. your own
@@ -301,6 +361,29 @@ impl Device {
         self.receiver(kinds, !kinds.contains(EventKinds::ALL))
     }
 
+    /// what only a MAKCU has, none on another box and after close
+    pub fn makcu(&self) -> Option<Makcu<'_>> {
+        self.is(Family::MakcuV4).then(|| Makcu::new(self))
+    }
+
+    /// what only a YSC8K has, none on another box and after close
+    pub fn ysc(&self) -> Option<Ysc<'_>> {
+        self.is(Family::Ysc).then(|| Ysc::new(self))
+    }
+
+    /// what only a Ferrum has, none on another box and after close
+    pub fn ferrum(&self) -> Option<Ferrum<'_>> {
+        self.is(Family::Ferrum).then(|| Ferrum::new(self))
+    }
+
+    fn is(&self, family: Family) -> bool {
+        !lock(&self.core.output).closing && self.core.snapshot().info.family == family
+    }
+
+    pub(crate) fn extension(&self, request: Extension) -> Result<ExtensionReply> {
+        self.core.extension(request)
+    }
+
     fn receiver(&self, kinds: EventKinds, report_unsupported: bool) -> Events {
         let listeners: Weak<dyn Listeners> = Arc::downgrade(&self.core) as Weak<Core>;
         let (queue, id) = self.core.add_receiver(kinds, report_unsupported);
@@ -348,6 +431,7 @@ impl Device {
     }
 
     fn shutdown(&self) -> Result<()> {
+        self.core.closing.store(true, Ordering::Release);
         let released = self.core.release_everything();
         let stopped = self.core.backend.close(SHUTDOWN_DEADLINE);
         let _ = self.core.signals.send(Signal::Stop);
@@ -394,15 +478,20 @@ fn prepare(snapshot: Snapshot, click_timing: ClickTiming, port: &str) -> Arc<Sna
 }
 
 fn keeps_locked(snapshot: &Snapshot) -> bool {
-    [Action::LockButton, Action::LockAxis, Action::LockKey]
-        .into_iter()
-        .any(|lock| {
-            snapshot
-                .capabilities
-                .get(lock)
-                .quirks
-                .contains(&Quirk::KeepsLocked)
-        })
+    [
+        Action::LockButton,
+        Action::LockAxis,
+        Action::LockKey,
+        Action::ForceReleaseKey,
+    ]
+    .into_iter()
+    .any(|lock| {
+        snapshot
+            .capabilities
+            .get(lock)
+            .quirks
+            .contains(&Quirk::KeepsLocked)
+    })
 }
 
 fn whole_axis_only(snapshot: &Snapshot) -> bool {
@@ -446,6 +535,14 @@ fn keeps_held(snapshot: &Snapshot) -> bool {
                 .quirks
                 .contains(&Quirk::KeepsHeld)
         })
+}
+
+fn releases_typed_keys(snapshot: &Snapshot) -> bool {
+    snapshot
+        .capabilities
+        .get(Action::TypeText)
+        .quirks
+        .contains(&Quirk::TypingReleasesHeldKeys)
 }
 
 fn max_keys_held(snapshot: &Snapshot) -> Option<u8> {
@@ -506,20 +603,8 @@ impl Core {
     /// checks a command against what the box can do. it runs under the output lock, and the link thread swaps
     /// snapshots under that same lock, so the snapshot checked here is the one the command goes out with
     fn gate(snapshot: &Snapshot, action: Action, timing: Timing, command: Command) -> Result<()> {
+        Self::check_capability(snapshot, action, timing)?;
         let capability = snapshot.capabilities.get(action);
-        match &capability.execution {
-            Execution::Unsupported { reason } => {
-                return Err(Self::unsupported(snapshot, action, reason.clone()));
-            }
-            Execution::Host if timing == Timing::NativeOnly => {
-                return Err(Self::unsupported(
-                    snapshot,
-                    action,
-                    "the box can't do it by itself and you asked for native timing only",
-                ));
-            }
-            _ => {}
-        }
         match command {
             Command::Press(button) | Command::Release(button) | Command::Click { button, .. }
                 if !snapshot.capabilities.buttons().contains(&button) =>
@@ -621,6 +706,19 @@ impl Core {
                     None => Ok(()),
                 }
             }
+            Command::KeyForce { key, .. } if !key.is_valid() => Err(Error::InvalidArgument {
+                action,
+                detail: format!("{key} isn't a key, keys go from 0x04 to 0xE7").into(),
+            }),
+            Command::KeyChord { keys, .. } => {
+                match keys.as_slice().iter().find(|key| !key.is_valid()) {
+                    Some(key) => Err(Error::InvalidArgument {
+                        action,
+                        detail: format!("{key} isn't a key, keys go from 0x04 to 0xE7").into(),
+                    }),
+                    None => Ok(()),
+                }
+            }
             Command::Move(..)
             | Command::MoveNow(..)
             | Command::Press(_)
@@ -633,7 +731,46 @@ impl Core {
             | Command::KeyTap { hold: None, .. }
             | Command::MediaPress(_)
             | Command::MediaRelease(_)
-            | Command::MediaTap { hold: None, .. } => Ok(()),
+            | Command::MediaTap { hold: None, .. }
+            | Command::KeyForce { .. } => Ok(()),
+        }
+    }
+
+    /// a press of a key that's forced up would come out differently on each box (a Medius drops the force for the
+    /// press, a MAKCU keeps its mask), so it's refused
+    fn check_forced(output: &Output, action: Action, command: Command) -> Result<()> {
+        let pressed = match command {
+            Command::KeyPress(key) | Command::KeyTap { key, .. } => Some(key),
+            Command::KeyChord {
+                kind: ChordKind::Press | ChordKind::Tap,
+                keys,
+            } => keys
+                .as_slice()
+                .iter()
+                .copied()
+                .find(|key| output.forced.contains(key)),
+            _ => None,
+        };
+        match pressed {
+            Some(key) if output.forced.contains(&key) => Err(Error::InvalidArgument {
+                action,
+                detail: format!("{key} is forced up, restore_key it first").into(),
+            }),
+            _ => Ok(()),
+        }
+    }
+
+    fn check_capability(snapshot: &Snapshot, action: Action, timing: Timing) -> Result<()> {
+        match &snapshot.capabilities.get(action).execution {
+            Execution::Unsupported { reason } => {
+                Err(Self::unsupported(snapshot, action, reason.clone()))
+            }
+            Execution::Host if timing == Timing::NativeOnly => Err(Self::unsupported(
+                snapshot,
+                action,
+                "the box can't do it by itself and you asked for native timing only",
+            )),
+            _ => Ok(()),
         }
     }
 
@@ -668,6 +805,16 @@ impl Core {
         Ok(())
     }
 
+    /// closed, link down, capability, then the arguments, like a core call, and the call under the output lock
+    fn extension(&self, request: Extension) -> Result<ExtensionReply> {
+        let (output, snapshot) = self.open_output()?;
+        Self::check_capability(&snapshot, request.action(), Timing::Any)?;
+        request.check()?;
+        let reply = self.backend.extension(request);
+        drop(output);
+        reply
+    }
+
     fn open_output(&self) -> Result<(MutexGuard<'_, Output>, Arc<Snapshot>)> {
         let output = lock(&self.output);
         if output.closing {
@@ -688,15 +835,72 @@ impl Core {
         timing: Timing,
         command: Command,
     ) -> Result<()> {
+        // a forced key isn't held, so letting go of it does nothing, and on a Medius it would drop the force
+        let command = match command {
+            Command::KeyRelease(key) if output.forced.contains(&key) => return Ok(()),
+            Command::KeyChord {
+                kind: ChordKind::Release,
+                keys,
+            } if keys
+                .as_slice()
+                .iter()
+                .any(|key| output.forced.contains(key)) =>
+            {
+                let kept: Vec<Key> = keys
+                    .as_slice()
+                    .iter()
+                    .copied()
+                    .filter(|key| !output.forced.contains(key))
+                    .collect();
+                match Keys::new(&kept) {
+                    Some(keys) if !kept.is_empty() => Command::KeyChord {
+                        kind: ChordKind::Release,
+                        keys,
+                    },
+                    _ => return Ok(()),
+                }
+            }
+            command => command,
+        };
         let held = command.holds();
         // letting go of something held always goes out, even when the box can't do it any more, otherwise a
         // keyboard that got pulled out would leave a key anybox can never release
-        let releasing_held = matches!(held, Some((usage, false)) if output.held.contains(&usage));
+        let releasing_held = match command {
+            Command::KeyChord {
+                kind: ChordKind::Release,
+                keys,
+            } => keys
+                .as_slice()
+                .iter()
+                .all(|&key| output.held.contains(&Usage::Key(key))),
+            _ => matches!(held, Some((usage, false)) if output.held.contains(&usage)),
+        };
         if !releasing_held {
             Self::gate(snapshot, action, timing, command)?;
         }
+        Self::check_forced(output, action, command)?;
         Self::check_rollover(output, snapshot, action, command)?;
         let sent = self.backend.send(command);
+        if let Command::KeyChord { kind, keys } = command {
+            for &key in keys.as_slice() {
+                let usage = Usage::Key(key);
+                match (kind, &sent) {
+                    (ChordKind::Press, Ok(())) => {
+                        output.held.insert(usage);
+                        output.unsure.remove(&usage);
+                    }
+                    (ChordKind::Press, Err(Error::Disconnected)) => {
+                        output.held.insert(usage);
+                        output.unsure.insert(usage);
+                    }
+                    (ChordKind::Release, Ok(())) => {
+                        output.held.remove(&usage);
+                        output.unsure.remove(&usage);
+                    }
+                    _ => {}
+                }
+            }
+        }
         match (held, &sent) {
             // a press that ran out of time may still have gone out, and releasing something the box doesn't hold
             // does nothing, so it counts as held and the cleanup lets go of it
@@ -720,6 +924,184 @@ impl Core {
     fn run(&self, action: Action, timing: Timing, command: Command) -> Result<()> {
         let (mut output, snapshot) = self.open_output()?;
         self.send_locked(&mut output, &snapshot, action, timing, command)
+    }
+
+    /// the keys of a chord, checked: none past `MAX_CHORD` and none twice. whether each one is a key is the
+    /// gate's
+    fn chord_keys(keys: &[Key]) -> Result<Keys> {
+        if let Some(key) = keys
+            .iter()
+            .enumerate()
+            .find_map(|(index, key)| keys[..index].contains(key).then_some(key))
+        {
+            return Err(Error::InvalidArgument {
+                action: Action::KeyChord,
+                detail: format!("{key} is in it twice").into(),
+            });
+        }
+        Keys::new(keys).ok_or_else(|| Error::InvalidArgument {
+            action: Action::KeyChord,
+            detail: format!("a chord takes at most {MAX_CHORD} keys").into(),
+        })
+    }
+
+    fn chord(&self, kind: ChordKind, keys: &[Key]) -> Result<()> {
+        let (mut output, snapshot) = self.open_output()?;
+        Self::check_capability(&snapshot, Action::KeyChord, Timing::Any)?;
+        let keys = Self::chord_keys(keys)?;
+        if keys.as_slice().is_empty() {
+            return Ok(());
+        }
+        self.send_locked(
+            &mut output,
+            &snapshot,
+            Action::KeyChord,
+            Timing::Any,
+            Command::KeyChord { kind, keys },
+        )
+    }
+
+    /// one chord when the box can do it, otherwise `release_key` for each key, so a key that's held always gets
+    /// let go. the keys are checked first, so a bad list lets go of nothing
+    fn release_keys(&self, keys: &[Key]) -> Result<()> {
+        let (mut output, snapshot) = self.open_output()?;
+        let chord = Self::chord_keys(keys)?;
+        if let Some(key) = keys.iter().find(|key| !key.is_valid()) {
+            return Err(Error::InvalidArgument {
+                action: Action::KeyChord,
+                detail: format!("{key} isn't a key, keys go from 0x04 to 0xE7").into(),
+            });
+        }
+        if keys.is_empty() {
+            return Ok(());
+        }
+        if snapshot.capabilities.get(Action::KeyChord).is_supported() {
+            return self.send_locked(
+                &mut output,
+                &snapshot,
+                Action::KeyChord,
+                Timing::Any,
+                Command::KeyChord {
+                    kind: ChordKind::Release,
+                    keys: chord,
+                },
+            );
+        }
+        let mut first = Ok(());
+        for &key in keys {
+            let sent = self.send_locked(
+                &mut output,
+                &snapshot,
+                Action::KeyRelease,
+                Timing::Any,
+                Command::KeyRelease(key),
+            );
+            if first.is_ok() {
+                first = sent;
+            }
+        }
+        first
+    }
+
+    /// checks the whole text, then hands it to the box `PIECE` characters at a time, each under the output lock
+    /// like any other command. once any of it went to the box it never answers `Unsupported`, an app falling back
+    /// on that would type the whole text again
+    fn type_text(&self, text: &str) -> Result<()> {
+        let (output, snapshot) = self.open_output()?;
+        Self::check_capability(&snapshot, Action::TypeText, Timing::Any)?;
+        if let Some((index, c)) = text
+            .chars()
+            .enumerate()
+            .find(|(_, c)| !matches!(c, ' '..='~'))
+        {
+            return Err(Error::InvalidArgument {
+                action: Action::TypeText,
+                detail: format!(
+                    "it only types printable ASCII and character {} is {c:?}, so tap keys like Enter yourself",
+                    index + 1
+                )
+                .into(),
+            });
+        }
+        let mut output = output;
+        if let Some(key) = text
+            .bytes()
+            .filter_map(Key::for_ascii)
+            .find_map(|(key, shift)| {
+                if output.forced.contains(&key) {
+                    Some(key)
+                } else if shift && output.forced.contains(&Key::LEFT_SHIFT) {
+                    Some(Key::LEFT_SHIFT)
+                } else {
+                    None
+                }
+            })
+        {
+            return Err(Error::InvalidArgument {
+                action: Action::TypeText,
+                detail: format!("the text needs {key}, which is forced up, restore_key it first")
+                    .into(),
+            });
+        }
+        output.typing += 1;
+        drop(output);
+        let typed = self.type_pieces(text);
+        lock(&self.output).typing -= 1;
+        typed
+    }
+
+    fn type_pieces(&self, text: &str) -> Result<()> {
+        let total = text.len();
+        let mut typed = 0;
+        let mut typing = Typing::default();
+        for piece in text.as_bytes().chunks(PIECE) {
+            if typed > 0 {
+                thread::sleep(BETWEEN_PIECES);
+            }
+            let (mut output, snapshot) = self.open_output()?;
+            if self.closing.load(Ordering::Acquire) {
+                return Err(Error::Closed);
+            }
+            let piece_typed = Self::check_capability(&snapshot, Action::TypeText, Timing::Any)
+                .and_then(|()| self.backend.type_piece(piece, &mut typing));
+            match piece_typed {
+                Ok(()) => {
+                    typed += piece.len();
+                    if releases_typed_keys(&snapshot) {
+                        Self::forget_typed_keys(&mut output, piece);
+                    }
+                }
+                Err(Error::Unsupported { reason, .. }) if typed > 0 || typing.sent => {
+                    return Err(Error::Rejected {
+                        action: Action::TypeText,
+                        detail: format!("it stopped after {typed} of {total} characters, {reason}"),
+                    });
+                }
+                Err(Error::Rejected { action, detail }) if typed > 0 => {
+                    return Err(Error::Rejected {
+                        action,
+                        detail: format!("{detail}, after {typed} of {total} characters went out"),
+                    });
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    }
+
+    /// a box with `TypingReleasesHeldKeys` let go of a held key the piece typed, and of Left Shift when the piece
+    /// needed Shift, so the record follows it
+    fn forget_typed_keys(output: &mut Output, piece: &[u8]) {
+        let mut shifted = false;
+        for (key, shift) in piece.iter().filter_map(|&byte| Key::for_ascii(byte)) {
+            shifted |= shift;
+            output.held.remove(&Usage::Key(key));
+            output.unsure.remove(&Usage::Key(key));
+        }
+        if shifted {
+            output.held.remove(&Usage::Key(Key::LEFT_SHIFT));
+            output.unsure.remove(&Usage::Key(Key::LEFT_SHIFT));
+        }
     }
 
     /// locks, unlocks or scales each slot. unlocking a slot anybox locked always goes out, same as releasing
@@ -746,9 +1128,27 @@ impl Core {
             if !unlocking_held {
                 Self::gate(&snapshot, action, Timing::Any, Command::Lock { slot, keep })?;
             }
+            // on a MAKCU a lock and a force are the same mask, on a Medius two things the box keeps apart
+            if let LockSlot::Key(key) = slot
+                && keep != UNLOCKED
+                && output.forced.contains(&key)
+            {
+                return Err(Error::InvalidArgument {
+                    action,
+                    detail: format!("{key} is forced up, restore_key it first").into(),
+                });
+            }
         }
         let mut first = Ok(());
         for &slot in slots {
+            // a forced key can't be locked too, so there's nothing to unlock, and on a MAKCU the unlock would drop
+            // the force since both are the same mask
+            if let LockSlot::Key(key) = slot
+                && keep == UNLOCKED
+                && output.forced.contains(&key)
+            {
+                continue;
+            }
             let sent = self.backend.send(Command::Lock { slot, keep });
             if keep == UNLOCKED {
                 if sent.is_ok() {
@@ -764,6 +1164,54 @@ impl Core {
             }
         }
         first
+    }
+
+    /// forces a key up for the PC or gives it back. a restore of a forced key always goes out, even when the box
+    /// can't do it any more, like an unlock, so a force never outlives the record
+    fn force(&self, key: Key, force: bool) -> Result<()> {
+        let action = Action::ForceReleaseKey;
+        let (mut output, snapshot) = self.open_output()?;
+        let command = Command::KeyForce { key, force };
+        let forced = output.forced.contains(&key);
+        if force || !forced {
+            Self::gate(&snapshot, action, Timing::Any, command)?;
+        }
+        let usage = Usage::Key(key);
+        let held = output.held.contains(&usage) || output.unsure.contains(&usage);
+        let locked = output.locked.contains_key(&LockSlot::Key(key));
+        // each of these would come out differently on each box, or leave the record wrong
+        let refused = if forced {
+            None
+        } else if held && force {
+            Some(format!("you hold {key} yourself, release_key it first"))
+        } else if held {
+            Some(format!("you hold {key} yourself, release_key it instead"))
+        } else if locked && force {
+            Some(format!("{key} is locked, unlock_key it first"))
+        } else if locked {
+            Some(format!("{key} is locked, unlock_key it instead"))
+        } else if force && output.typing > 0 {
+            Some("a text is typing, force it after".to_string())
+        } else {
+            None
+        };
+        if let Some(detail) = refused {
+            return Err(Error::InvalidArgument {
+                action,
+                detail: detail.into(),
+            });
+        }
+        let sent = self.backend.send(command);
+        if force {
+            // a force that ran out of time may still have gone out, and a restore of a key that isn't forced does
+            // nothing, so it counts as forced
+            if matches!(sent, Ok(()) | Err(Error::Disconnected)) {
+                output.forced.insert(key);
+            }
+        } else if sent.is_ok() {
+            output.forced.remove(&key);
+        }
+        sent
     }
 
     /// a click or a key or media tap. it's the box's own if it has one, otherwise anybox presses, waits and
@@ -804,6 +1252,7 @@ impl Core {
         };
         // checked as the tap first, so a bad key or a full box gives an error about the tap and not about its press
         Self::gate(&snapshot, action, tap.timing, usage.tap(None))?;
+        Self::check_forced(&output, action, usage.tap(None))?;
         Self::check_rollover(&output, &snapshot, action, usage.press())?;
         self.send_locked(&mut output, &snapshot, press, Timing::Any, usage.press())?;
         let session = output.session;
@@ -1013,13 +1462,19 @@ impl Core {
         } else {
             self.backend.release_all(&held)
         };
+        let forced: Vec<Key> = output.forced.drain().collect();
+        let restored = if forced.is_empty() {
+            Ok(())
+        } else {
+            self.backend.restore_all(&forced)
+        };
         let locked: Vec<LockSlot> = output.locked.drain().map(|(slot, _)| slot).collect();
         let unlocked = if locked.is_empty() {
             Ok(())
         } else {
             self.backend.unlock_all(&locked)
         };
-        released.and(unlocked)
+        released.and(restored).and(unlocked)
     }
 
     /// sends the app's locks again after a reconnect or a reset, on a box that doesn't keep them itself. a lock the
@@ -1038,6 +1493,12 @@ impl Core {
                 continue;
             }
             let command = Command::Lock { slot, keep };
+            if Self::gate(snapshot, command.action(), Timing::Any, command).is_ok() {
+                let _ = self.backend.send(command);
+            }
+        }
+        for &key in &output.forced {
+            let command = Command::KeyForce { key, force: true };
             if Self::gate(snapshot, command.action(), Timing::Any, command).is_ok() {
                 let _ = self.backend.send(command);
             }

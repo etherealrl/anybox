@@ -1,5 +1,8 @@
 use std::fmt;
 
+#[cfg(test)]
+mod tests;
+
 /// a keyboard key by its HID usage (page 0x07). the consts cover the usual keys, and `Key(n)` gets you any
 /// other one from 0x04 to 0xE7
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -119,6 +122,52 @@ impl Key {
     /// 0x00 to 0x03 are HID error codes, and nothing from 0xE8 up is defined on the keyboard page
     pub(crate) const fn is_valid(self) -> bool {
         matches!(self.0, 0x04..=0xE7)
+    }
+
+    /// the key a US layout types this printable ASCII character with, and whether it needs Shift. it's what the
+    /// boxes that type text themselves send, and none for anything outside 0x20 to 0x7E
+    pub(crate) fn for_ascii(byte: u8) -> Option<(Key, bool)> {
+        let key = |key: Key, shift: bool| Some((key, shift));
+        match byte {
+            b'a'..=b'z' => key(Key(Key::A.0 + (byte - b'a')), false),
+            b'A'..=b'Z' => key(Key(Key::A.0 + (byte - b'A')), true),
+            b'1'..=b'9' => key(Key(Key::NUM1.0 + (byte - b'1')), false),
+            b'0' => key(Key::NUM0, false),
+            b' ' => key(Key::SPACE, false),
+            b'!' => key(Key::NUM1, true),
+            b'@' => key(Key::NUM2, true),
+            b'#' => key(Key::NUM3, true),
+            b'$' => key(Key::NUM4, true),
+            b'%' => key(Key::NUM5, true),
+            b'^' => key(Key::NUM6, true),
+            b'&' => key(Key::NUM7, true),
+            b'*' => key(Key::NUM8, true),
+            b'(' => key(Key::NUM9, true),
+            b')' => key(Key::NUM0, true),
+            b'-' => key(Key::MINUS, false),
+            b'_' => key(Key::MINUS, true),
+            b'=' => key(Key::EQUAL, false),
+            b'+' => key(Key::EQUAL, true),
+            b'[' => key(Key::LEFT_BRACKET, false),
+            b'{' => key(Key::LEFT_BRACKET, true),
+            b']' => key(Key::RIGHT_BRACKET, false),
+            b'}' => key(Key::RIGHT_BRACKET, true),
+            b'\\' => key(Key::BACKSLASH, false),
+            b'|' => key(Key::BACKSLASH, true),
+            b';' => key(Key::SEMICOLON, false),
+            b':' => key(Key::SEMICOLON, true),
+            b'\'' => key(Key::APOSTROPHE, false),
+            b'"' => key(Key::APOSTROPHE, true),
+            b'`' => key(Key::GRAVE, false),
+            b'~' => key(Key::GRAVE, true),
+            b',' => key(Key::COMMA, false),
+            b'<' => key(Key::COMMA, true),
+            b'.' => key(Key::PERIOD, false),
+            b'>' => key(Key::PERIOD, true),
+            b'/' => key(Key::SLASH, false),
+            b'?' => key(Key::SLASH, true),
+            _ => None,
+        }
     }
 }
 

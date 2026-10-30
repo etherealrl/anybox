@@ -2,13 +2,14 @@
 // run it from anywhere in the repo with `cargo run -p anybox-gen`. check.sh runs it with --check, which changes
 // nothing and fails when a file doesn't match the table
 
+mod extension;
 mod table;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use table::{Arg, CALLS, Call, On, Ty};
+use table::{Arg, CALLS, Call, On, Ret, Ty};
 
 // the longest line each language's files keep, less the indent of the class their region sits in: the repo's Rust
 // comments go to 117, ruff's line length is 115, the C# methods keep to 117. the C# imports and forwarders stay on
@@ -40,6 +41,20 @@ fn pascal(name: &str) -> String {
         .collect()
 }
 
+/// the C# name of an argument, `with_software` is `withSoftware`
+fn camel(name: &str) -> String {
+    let pascal = pascal(name);
+    let mut chars = pascal.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_lowercase().chain(chars).collect()
+    })
+}
+
+/// a value only the extension calls take, which the device's own emitters don't write
+fn extension_only(ty: Ty) -> ! {
+    panic!("a {ty:?} argument only goes on an extension call")
+}
+
 fn click_arg(call: &Call) -> Option<&Arg> {
     call.args.iter().find(|arg| arg.ty == Ty::Click)
 }
@@ -52,11 +67,26 @@ fn doc(call: &Call, lang: Lang) -> String {
         out.push_str(&rest[..start]);
         let end = start + rest[start..].find('}').expect("a { in a doc with no }");
         let name = &rest[start + 1..end];
-        let argument = call.args.iter().any(|arg| arg.name == name);
+        let argument = call.args.iter().find(|arg| arg.name == name);
         // a reference to a call is looked up whatever the language, so a wrong one stops the generator even in a
         // doc only C gets
-        let other = (!argument && name != "click").then(|| find(call.on, name));
+        let other = (argument.is_none()
+            && !["click", "off", "rejected", "whole_ms", "in_seconds"].contains(&name))
+        .then(|| find(call.on, name));
         out.push_str(&match (name, lang) {
+            ("off", Lang::C) => "0".to_string(),
+            ("off", Lang::Python) => "None".to_string(),
+            ("off", Lang::CSharp) => "null".to_string(),
+            ("off", Lang::Cpp) => "an empty one".to_string(),
+            ("rejected", Lang::C) => "is `ANYBOX_STATUS_REJECTED`".to_string(),
+            ("rejected", Lang::Python) => "raises `RejectedError`".to_string(),
+            ("rejected", Lang::CSharp) => "throws <see cref=\"RejectedException\"/>".to_string(),
+            ("rejected", Lang::Cpp) => "throws `RejectedError`".to_string(),
+            // Python takes and gives durations as seconds, the others as durations of their own
+            ("whole_ms", Lang::Python) => "in seconds, whole milliseconds only".to_string(),
+            ("whole_ms", _) => "whole milliseconds".to_string(),
+            ("in_seconds", Lang::Python) => " in seconds".to_string(),
+            ("in_seconds", _) => String::new(),
             ("click", Lang::C | Lang::Cpp) => format!(
                 "`{}` says how long to hold it and whether to fail instead of letting anybox time it from the PC",
                 click_arg(call).expect("{click} in a call with no Click").name
@@ -67,14 +97,14 @@ fn doc(call: &Call, lang: Lang) -> String {
             ("click", Lang::CSharp) => "<paramref name=\"hold\"/> is how long, and <paramref name=\"nativeOnly\"/> \
                                         fails instead of letting anybox time it from the PC"
                 .to_string(),
-            (name, Lang::CSharp) if argument => format!("<paramref name=\"{name}\"/>"),
-            (name, _) if argument => format!("`{name}`"),
+            (name, Lang::CSharp) if argument.is_some() => format!("<paramref name=\"{}\"/>", camel(name)),
+            (_, Lang::C) if argument.is_some() => format!("`{}`", extension::c_name(argument.unwrap())),
+            (name, _) if argument.is_some() => format!("`{name}`"),
             (_, Lang::C) => {
                 let other = other.unwrap();
                 format!("`{}{}`", other.on.handle().c_prefix, other.name)
             }
-            (_, Lang::Python | Lang::Cpp) => format!("`{}`", python_name(other.unwrap())),
-            (_, Lang::CSharp) => format!("<see cref=\"{}\"/>", pascal(python_name(other.unwrap()))),
+            (_, lang) => extension::cross(call, other.unwrap(), lang),
         });
         rest = &rest[end + 1..];
     }
@@ -82,11 +112,12 @@ fn doc(call: &Call, lang: Lang) -> String {
     out
 }
 
-/// the call of that name on that handle, two handles can each have a call of the same name
+/// the call of that name on that handle, or on the device when the handle has none of that name. two handles can
+/// each have a call of the same name
 fn find(on: On, name: &str) -> &'static Call {
-    CALLS
-        .iter()
-        .find(|call| call.on == on && call.name == name)
+    let on_handle = |on: On| CALLS.iter().find(|call| call.on == on && call.name == name);
+    on_handle(on)
+        .or_else(|| on_handle(On::Device))
         .unwrap_or_else(|| panic!("there's no call {name} on {on:?} in the table"))
 }
 
@@ -151,6 +182,13 @@ fn c_function(call: &Call) -> Vec<String> {
             Ty::Key => "u8",
             Ty::MediaKey => "u16",
             Ty::Click => "*const AnyboxClick",
+            Ty::Text => "*const std::ffi::c_char",
+            Ty::Keys => {
+                out.push(format!("    {}: *const u8,", arg.name));
+                out.push("    len: usize,".into());
+                continue;
+            }
+            ty => extension_only(ty),
         };
         out.push(format!("    {}: {ty},", arg.name));
     }
@@ -166,6 +204,12 @@ fn c_function(call: &Call) -> Vec<String> {
             Ty::Axis => format!("values::axis({})?", arg.name),
             Ty::Direction => format!("values::direction({})?", arg.name),
             Ty::Click => format!("values::click(unsafe {{ read({0}, \"{0}\") }}?)", arg.name),
+            Ty::Text => format!("unsafe {{ crate::status::text({0}, \"{0}\") }}?", arg.name),
+            Ty::Keys => format!(
+                "&values::keys(unsafe {{ crate::status::slice({0}, len, \"{0}\") }}?)",
+                arg.name
+            ),
+            ty => extension_only(ty),
         })
         .collect();
     out.push("    guard(|| {".into());
@@ -189,6 +233,9 @@ fn python_signature(call: &Call) -> String {
         Ty::Key => "c_uint8",
         Ty::MediaKey => "c_uint16",
         Ty::Click => "POINTER(Click)",
+        Ty::Text => "c_char_p",
+        Ty::Keys => "POINTER(c_uint8), c_size_t",
+        ty => extension_only(ty),
     }));
     format!(
         "\"{}{}\": (_status, [{}]),",
@@ -214,6 +261,14 @@ fn python_method(call: &Call) -> Vec<String> {
                 converted.push("ctypes.byref(_click(hold, native_only))".into());
                 continue;
             }
+            Ty::Text => ("str", format!("native.char_array({})", arg.name)),
+            Ty::Keys => {
+                params.push(format!("*{}: Key", arg.name));
+                converted.push(format!("_keys({})", arg.name));
+                converted.push(format!("len({})", arg.name));
+                continue;
+            }
+            ty => extension_only(ty),
         };
         params.push(match arg.default {
             Some(default) => format!("{}: {ty} = {ty}.{default}", arg.name),
@@ -264,6 +319,14 @@ fn csharp_c_params(call: &Call) -> (String, String) {
             Ty::Key => "byte",
             Ty::MediaKey => "ushort",
             Ty::Click => "in AnyboxClick",
+            // an array LibraryImport pins, not a pointer, because the recording test's DispatchProxy can't take one
+            Ty::Text => "byte[]",
+            Ty::Keys => {
+                params.push(format!("byte[] {}, nuint len", arg.name));
+                passed.push(format!("{}, len", arg.name));
+                continue;
+            }
+            ty => extension_only(ty),
         };
         params.push(format!("{ty} {}", arg.name));
         passed.push(if arg.ty == Ty::Click {
@@ -310,6 +373,14 @@ fn csharp_method(call: &Call) -> Vec<String> {
                 converted.push("Click(hold, nativeOnly)".into());
                 continue;
             }
+            Ty::Text => ("string", format!("Library.Utf8({})", arg.name)),
+            Ty::Keys => {
+                params.push(format!("params ReadOnlySpan<Key> {}", arg.name));
+                converted.push(format!("Library.KeyBytes({})", arg.name));
+                converted.push(format!("(nuint){}.Length", arg.name));
+                continue;
+            }
+            ty => extension_only(ty),
         };
         params.push(match arg.default {
             Some(default) => format!("{ty} {} = {ty}.{}", arg.name, pascal(default)),
@@ -359,6 +430,9 @@ fn recorder_arm(call: &Call) -> String {
                 Ty::Axis => "axis",
                 Ty::Direction => "direction",
                 Ty::Click => "click",
+                Ty::Text => "&text",
+                Ty::Keys => "&keys",
+                ty => extension_only(ty),
             };
             format!("{reader}({index})")
         })
@@ -395,6 +469,18 @@ fn cpp_method(call: &Call) -> Vec<String> {
                 converted.push(format!("{}.get()", arg.name));
                 continue;
             }
+            Ty::Text => (
+                "const std::string&",
+                format!("detail::c_text({}).c_str()", arg.name),
+            ),
+            // the bytes are a temporary that lives until the call returns
+            Ty::Keys => {
+                params.push(format!("const std::vector<Key>& {}", arg.name));
+                converted.push(format!("detail::key_bytes({}).data()", arg.name));
+                converted.push(format!("{}.size()", arg.name));
+                continue;
+            }
+            ty => extension_only(ty),
         };
         params.push(match arg.default {
             Some(default) => format!("{ty} {} = {ty}::{}", arg.name, pascal(default)),
@@ -437,6 +523,9 @@ fn cpp_arm(call: &Call) -> String {
                 Ty::Axis => "axis",
                 Ty::Direction => "direction",
                 Ty::Click => "click",
+                Ty::Text => "text",
+                Ty::Keys => "keys",
+                ty => extension_only(ty),
             };
             format!("{reader}({index})")
         })
@@ -462,15 +551,22 @@ fn cpp_fake(call: &Call) -> Vec<String> {
             Ty::Key => "uint8_t",
             Ty::MediaKey => "uint16_t",
             Ty::Click => "const AnyboxClick*",
+            Ty::Text => "const char*",
+            Ty::Keys => {
+                params.push(format!("const uint8_t* {}, uintptr_t len", arg.name));
+                recorded.push(format!("keys_text({}, len)", arg.name));
+                continue;
+            }
+            ty => extension_only(ty),
         };
         params.push(format!("{ty} {}", arg.name));
-        if arg.ty == Ty::Click {
-            recorded.push(format!(
+        match arg.ty {
+            Ty::Click => recorded.push(format!(
                 "{0}->hold_us, {0}->has_hold, {0}->native_only",
                 arg.name
-            ));
-        } else {
-            recorded.push(arg.name.to_string());
+            )),
+            Ty::Text => recorded.push(format!("std::string({})", arg.name)),
+            _ => recorded.push(arg.name.to_string()),
         }
     }
     vec![
@@ -503,8 +599,9 @@ struct Places {
     csharp_methods: Place,
     recorder_calls: Place,
     recorder_dispatch: Place,
-    python_folded: Place,
-    csharp_folded: Place,
+    /// only the device has folded calls
+    python_folded: Option<Place>,
+    csharp_folded: Option<Place>,
     cpp_methods: Place,
     cpp_dispatch: Place,
     cpp_fake: Place,
@@ -521,15 +618,73 @@ fn places(on: On) -> Places {
             csharp_methods: ("bindings/csharp/src/Anybox/Device.cs", "methods"),
             recorder_calls: ("bindings/c/src/conformance.rs", "calls"),
             recorder_dispatch: ("bindings/c/src/conformance.rs", "dispatch"),
-            python_folded: ("bindings/python/tests/test_conformance.py", "folded"),
-            csharp_folded: (
+            python_folded: Some(("bindings/python/tests/test_conformance.py", "folded")),
+            csharp_folded: Some((
                 "bindings/csharp/tests/Anybox.Tests/ConformanceTests.cs",
                 "folded",
-            ),
+            )),
             cpp_methods: ("bindings/c/include/anybox.hpp", "methods"),
             cpp_dispatch: ("bindings/c/tests/cpp/conformance.cpp", "dispatch"),
             cpp_fake: ("bindings/c/tests/cpp/fake.cpp", "calls"),
         },
+        On::Makcu => extension_places([
+            "makcu_calls",
+            "makcu_signatures",
+            "makcu_methods",
+            "makcu_imports",
+            "makcu_forwarders",
+            "makcu_methods",
+            "makcu_calls",
+            "makcu_dispatch",
+            "makcu_methods",
+            "makcu_dispatch",
+            "makcu_calls",
+        ]),
+        On::Ysc => extension_places([
+            "ysc_calls",
+            "ysc_signatures",
+            "ysc_methods",
+            "ysc_imports",
+            "ysc_forwarders",
+            "ysc_methods",
+            "ysc_calls",
+            "ysc_dispatch",
+            "ysc_methods",
+            "ysc_dispatch",
+            "ysc_calls",
+        ]),
+        On::Ferrum => extension_places([
+            "ferrum_calls",
+            "ferrum_signatures",
+            "ferrum_methods",
+            "ferrum_imports",
+            "ferrum_forwarders",
+            "ferrum_methods",
+            "ferrum_calls",
+            "ferrum_dispatch",
+            "ferrum_methods",
+            "ferrum_dispatch",
+            "ferrum_calls",
+        ]),
+    }
+}
+
+/// an extension's regions, in the order of the `Places` fields, each file with one region per extension
+fn extension_places(regions: [&'static str; 11]) -> Places {
+    Places {
+        c: ("bindings/c/src/extension.rs", regions[0]),
+        python_signatures: ("bindings/python/anybox/_native.py", regions[1]),
+        python_methods: ("bindings/python/anybox/_device.py", regions[2]),
+        csharp_imports: ("bindings/csharp/src/Anybox/Extensions.cs", regions[3]),
+        csharp_forwarders: ("bindings/csharp/src/Anybox/Extensions.cs", regions[4]),
+        csharp_methods: ("bindings/csharp/src/Anybox/Extensions.cs", regions[5]),
+        recorder_calls: ("bindings/c/src/conformance.rs", regions[6]),
+        recorder_dispatch: ("bindings/c/src/conformance.rs", regions[7]),
+        python_folded: None,
+        csharp_folded: None,
+        cpp_methods: ("bindings/c/include/anybox.hpp", regions[8]),
+        cpp_dispatch: ("bindings/c/tests/cpp/conformance.cpp", regions[9]),
+        cpp_fake: ("bindings/c/tests/cpp/fake.cpp", regions[10]),
     }
 }
 
@@ -551,69 +706,157 @@ fn regions() -> Vec<(&'static str, &'static str, Vec<String>)> {
             .filter(|call| call.folds_into.is_some())
             .collect();
         let places = places(on);
-        let made: [(Place, Vec<String>); 13] = [
-            (
-                places.c,
-                all.iter().flat_map(|call| c_function(call)).collect(),
-            ),
-            (
-                places.python_signatures,
-                bound.iter().map(|call| python_signature(call)).collect(),
-            ),
-            (
-                places.python_methods,
-                bound.iter().flat_map(|call| python_method(call)).collect(),
-            ),
-            (
-                places.csharp_imports,
-                bound.iter().flat_map(|call| csharp_import(call)).collect(),
-            ),
-            (
-                places.csharp_forwarders,
-                bound.iter().map(|call| csharp_forwarder(call)).collect(),
-            ),
-            (
-                places.csharp_methods,
-                bound.iter().flat_map(|call| csharp_method(call)).collect(),
-            ),
-            (
-                places.recorder_calls,
-                all.iter()
-                    .map(|call| format!("\"{}\",", call.name))
-                    .collect(),
-            ),
-            (
-                places.recorder_dispatch,
-                all.iter().map(|call| recorder_arm(call)).collect(),
-            ),
-            (
-                places.python_folded,
-                folded
-                    .iter()
-                    .map(|call| format!("\"{}\": \"{}\",", call.name, python_name(call)))
-                    .collect(),
-            ),
-            (
-                places.csharp_folded,
-                folded
-                    .iter()
-                    .map(|call| format!("[\"{}\"] = \"{}\",", call.name, pascal(python_name(call))))
-                    .collect(),
-            ),
-            (
-                places.cpp_methods,
-                bound.iter().flat_map(|call| cpp_method(call)).collect(),
-            ),
-            (
-                places.cpp_dispatch,
-                all.iter().map(|call| cpp_arm(call)).collect(),
-            ),
-            (
-                places.cpp_fake,
-                all.iter().flat_map(|call| cpp_fake(call)).collect(),
-            ),
-        ];
-        out.extend(made.map(|((file, region), lines)| (file, region, lines)));
+        let made: Vec<(Option<Place>, Vec<String>)> = if on == On::Device {
+            for call in &all {
+                assert!(
+                    call.ret == Ret::Unit && call.action.is_none(),
+                    "{} is on the device, which only has plain calls",
+                    call.name
+                );
+            }
+            vec![
+                (
+                    Some(places.c),
+                    all.iter().flat_map(|call| c_function(call)).collect(),
+                ),
+                (
+                    Some(places.python_signatures),
+                    bound.iter().map(|call| python_signature(call)).collect(),
+                ),
+                (
+                    Some(places.python_methods),
+                    bound.iter().flat_map(|call| python_method(call)).collect(),
+                ),
+                (
+                    Some(places.csharp_imports),
+                    bound.iter().flat_map(|call| csharp_import(call)).collect(),
+                ),
+                (
+                    Some(places.csharp_forwarders),
+                    bound.iter().map(|call| csharp_forwarder(call)).collect(),
+                ),
+                (
+                    Some(places.csharp_methods),
+                    bound.iter().flat_map(|call| csharp_method(call)).collect(),
+                ),
+                (
+                    Some(places.recorder_calls),
+                    all.iter()
+                        .map(|call| format!("\"{}\",", call.name))
+                        .collect(),
+                ),
+                (
+                    Some(places.recorder_dispatch),
+                    all.iter().map(|call| recorder_arm(call)).collect(),
+                ),
+                (
+                    places.python_folded,
+                    folded
+                        .iter()
+                        .map(|call| format!("\"{}\": \"{}\",", call.name, python_name(call)))
+                        .collect(),
+                ),
+                (
+                    places.csharp_folded,
+                    folded
+                        .iter()
+                        .map(|call| {
+                            format!("[\"{}\"] = \"{}\",", call.name, pascal(python_name(call)))
+                        })
+                        .collect(),
+                ),
+                (
+                    Some(places.cpp_methods),
+                    bound.iter().flat_map(|call| cpp_method(call)).collect(),
+                ),
+                (
+                    Some(places.cpp_dispatch),
+                    all.iter().map(|call| cpp_arm(call)).collect(),
+                ),
+                (
+                    Some(places.cpp_fake),
+                    all.iter().flat_map(|call| cpp_fake(call)).collect(),
+                ),
+            ]
+        } else {
+            for call in &all {
+                assert!(
+                    call.action.is_some() && !call.only_in_c && call.folds_into.is_none(),
+                    "{} is an extension call, so it needs its action and is bound everywhere",
+                    call.name
+                );
+            }
+            vec![
+                (
+                    Some(places.c),
+                    all.iter()
+                        .flat_map(|call| extension::c_function(call))
+                        .collect(),
+                ),
+                (
+                    Some(places.python_signatures),
+                    all.iter()
+                        .map(|call| extension::python_signature(call))
+                        .collect(),
+                ),
+                (
+                    Some(places.python_methods),
+                    all.iter()
+                        .flat_map(|call| extension::python_method(call))
+                        .collect(),
+                ),
+                (
+                    Some(places.csharp_imports),
+                    all.iter()
+                        .flat_map(|call| extension::csharp_import(call))
+                        .collect(),
+                ),
+                (
+                    Some(places.csharp_forwarders),
+                    all.iter()
+                        .map(|call| extension::csharp_forwarder(call))
+                        .collect(),
+                ),
+                (
+                    Some(places.csharp_methods),
+                    all.iter()
+                        .flat_map(|call| extension::csharp_method(call))
+                        .collect(),
+                ),
+                (
+                    Some(places.recorder_calls),
+                    all.iter()
+                        .map(|call| format!("\"{}\",", extension::identity(call)))
+                        .collect(),
+                ),
+                (
+                    Some(places.recorder_dispatch),
+                    all.iter()
+                        .map(|call| extension::recorder_arm(call))
+                        .collect(),
+                ),
+                (
+                    Some(places.cpp_methods),
+                    all.iter()
+                        .flat_map(|call| extension::cpp_method(call))
+                        .collect(),
+                ),
+                (
+                    Some(places.cpp_dispatch),
+                    all.iter().map(|call| extension::cpp_arm(call)).collect(),
+                ),
+                (
+                    Some(places.cpp_fake),
+                    all.iter()
+                        .flat_map(|call| extension::cpp_fake(call))
+                        .collect(),
+                ),
+            ]
+        };
+        out.extend(
+            made.into_iter()
+                .filter_map(|(place, lines)| place.map(|(file, region)| (file, region, lines))),
+        );
     }
     for (index, (file, region, _)) in out.iter().enumerate() {
         assert!(

@@ -1,15 +1,16 @@
-use std::collections::HashMap;
 use std::path::Path;
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use super::frames::{self, FerrumFrames, LEGACY_VERSION, SOFTWARE_VERSION};
+use super::frames::{self, FerrumFrames};
+use super::mock::{Shared, State, cp210x, respond};
 use super::{BAUDS, FerrumBackend, Poller, attach};
 use crate::backend::{Input, Signal, Sink};
 use crate::capability::{
-    Action, Axis, Button, Direction, Family, FerrumApi, Quirk, Snapshot, UsbIds,
+    Action, Axis, Button, Direction, Family, FerrumAction, FerrumApi, Firmware, Quirk, Snapshot,
+    UsbIds,
 };
 use crate::click::{Click, ClickTiming, Holds};
 use crate::device::{Device, Start};
@@ -22,135 +23,6 @@ use crate::transport::{Candidate, PortUsb, System};
 
 const PORT: &str = "COM7";
 const SHORT: Duration = Duration::from_millis(500);
-
-/// what the fake Ferrum knows, answering the way the vendor docs show it. a test can change it while it runs
-struct State {
-    api: FerrumApi,
-    /// the legacy port only answers at this rate, the virtual port at any
-    baud: u32,
-    mouse: bool,
-    keyboard: bool,
-    /// an app new enough to know `km.has_mouse()` and the others
-    roles: bool,
-    /// an app new enough to know the directional axis locks
-    directional: bool,
-    /// what `device.VID()` and `device.PID()` answer, none for an app that doesn't know them
-    ids: Option<(&'static str, &'static str)>,
-    /// an app that answers nothing at all to `device.` commands, against what the docs say
-    ids_silent: bool,
-    silent: bool,
-    /// whether the legacy port puts a prompt after what it sends, the docs contradict themselves on it
-    legacy_prompt: bool,
-    streams: HashMap<String, bool>,
-    /// every command line it got, without the line end
-    lines: Vec<String>,
-}
-
-impl State {
-    fn software() -> Self {
-        Self {
-            api: FerrumApi::Software,
-            baud: 0,
-            mouse: true,
-            keyboard: true,
-            roles: true,
-            directional: true,
-            ids: Some(("046d", "c08b")),
-            ids_silent: false,
-            silent: false,
-            legacy_prompt: false,
-            streams: HashMap::new(),
-            lines: Vec::new(),
-        }
-    }
-
-    fn legacy(baud: u32) -> Self {
-        Self {
-            api: FerrumApi::Legacy,
-            baud,
-            keyboard: false,
-            roles: false,
-            directional: false,
-            ..Self::software()
-        }
-    }
-
-    /// the result line, none for a command with no result, and for one the box doesn't know
-    fn answer(&mut self, line: &str) -> Option<String> {
-        let (name, args) = line.split_once('(')?;
-        let args = args.strip_suffix(')')?;
-        let bit = |on: bool| if on { "1" } else { "0" }.to_string();
-        match (name, args) {
-            ("km.version", "") => Some(
-                String::from_utf8_lossy(match self.api {
-                    FerrumApi::Software => SOFTWARE_VERSION,
-                    FerrumApi::Legacy => LEGACY_VERSION,
-                })
-                .into(),
-            ),
-            ("km.has_mouse", "") if self.roles => Some(bit(self.mouse)),
-            ("km.has_keyboard", "") if self.roles => Some(bit(self.keyboard)),
-            ("km.lock_mx+", "") if self.directional => Some("0".into()),
-            ("device.VID", "") => self.ids.map(|(vid, _)| format!("VID={vid}")),
-            ("device.PID", "") => self.ids.map(|(_, pid)| format!("PID={pid}")),
-            ("km.buttons" | "km.axes" | "km.keys", "") => {
-                Some(bit(self.streams.get(name).copied().unwrap_or(false)))
-            }
-            ("km.buttons" | "km.axes" | "km.keys", on) => {
-                self.streams.insert(name.into(), on == "1");
-                None
-            }
-            _ => None,
-        }
-    }
-}
-
-type Shared = Arc<Mutex<State>>;
-
-fn respond(shared: &Shared, baud: u32, bytes: &[u8]) -> Vec<Vec<u8>> {
-    let mut state = shared.lock().unwrap();
-    if state.silent || (state.api == FerrumApi::Legacy && baud != state.baud) {
-        return Vec::new();
-    }
-    let text = String::from_utf8_lossy(bytes).to_string();
-    let mut out = Vec::new();
-    for line in text.split(['\r', '\n']).filter(|line| !line.is_empty()) {
-        state.lines.push(line.into());
-        if state.ids_silent && line.starts_with("device.") {
-            continue;
-        }
-        let result = state.answer(line);
-        match state.api {
-            FerrumApi::Software => {
-                out.extend_from_slice(line.as_bytes());
-                out.extend_from_slice(b"\r\n");
-                if let Some(result) = result {
-                    out.extend_from_slice(result.as_bytes());
-                    out.extend_from_slice(b"\r\n");
-                }
-                out.extend_from_slice(b">>> ");
-            }
-            FerrumApi::Legacy => {
-                if let Some(result) = result {
-                    out.extend_from_slice(result.as_bytes());
-                    out.extend_from_slice(b"\r\n");
-                    if state.legacy_prompt {
-                        out.extend_from_slice(b">>> ");
-                    }
-                }
-            }
-        }
-    }
-    vec![out]
-}
-
-fn cp210x() -> Option<PortUsb> {
-    Some(PortUsb {
-        vid: 0x10C4,
-        pid: 0xEA60,
-        serial: None,
-    })
-}
 
 struct Rig {
     system: FakeSystem,
@@ -509,7 +381,14 @@ fn the_software_api_opens_and_says_what_is_behind_it() {
                 .contains(&Quirk::PhysicalOverride)
         );
     }
-    assert_eq!(snapshot.info.firmware, None);
+    assert_eq!(
+        snapshot.info.firmware,
+        Some(Firmware::Version {
+            major: 2,
+            minor: 0,
+            patch: 6
+        })
+    );
     assert_eq!(snapshot.info.id, None);
     let capabilities = &snapshot.capabilities;
     for action in [
@@ -568,6 +447,7 @@ fn the_software_api_opens_and_says_what_is_behind_it() {
             "km.has_mouse()",
             "km.has_keyboard()",
             "km.lock_mx+()",
+            "ferrum.version()",
             "device.VID()",
             "device.PID()"
         ]
@@ -1630,6 +1510,8 @@ fn a_mouse_set_in_the_app_later_brings_its_ids_and_a_changed() {
     rig.set(|state| state.mouse = true);
     poller.unwrap().tick();
     until(|| device.snapshot().info.peripheral == Some(UsbIds::new(0x046d, 0xc08b)));
+    // the rebuilt snapshot keeps the version read at open
+    assert!(device.snapshot().info.firmware.is_some());
     assert!(
         std::iter::from_fn(|| events.recv_timeout(SHORT).ok()).any(|e| matches!(e, Event::Changed))
     );
@@ -1643,4 +1525,131 @@ fn an_app_that_says_nothing_to_the_ids_still_opens_with_no_peripheral() {
     });
     let (device, _) = rig.device();
     assert_eq!(device.snapshot().info.peripheral, None);
+}
+
+#[test]
+fn chords_are_the_multi_key_commands_by_number() {
+    use crate::backend::{ChordKind, Command, Keys};
+    let keys = Keys::new(&[Key::LEFT_CTRL, Key::A]).unwrap();
+    for (kind, text) in [
+        (ChordKind::Press, "km.multidown(224,4)"),
+        (ChordKind::Release, "km.multiup(224,4)"),
+        (ChordKind::Tap, "km.multipress(224,4)"),
+    ] {
+        assert_eq!(
+            FerrumBackend::encode(Command::KeyChord { kind, keys }, false),
+            Some(format!("{text}\r\n").into_bytes())
+        );
+    }
+}
+
+#[test]
+fn the_software_api_has_chords_and_nothing_types_text() {
+    use super::Roles;
+    use crate::capability::FerrumApi;
+    let roles = |keyboard| Roles {
+        mouse: true,
+        keyboard,
+        directional: true,
+        peripheral: None,
+        firmware: None,
+    };
+    let software = super::snapshot(FerrumApi::Software, &roles(true));
+    assert!(software.capabilities.get(Action::KeyChord).is_supported());
+    for snapshot in [
+        &software,
+        &super::snapshot(FerrumApi::Software, &roles(false)),
+        &super::snapshot(FerrumApi::Legacy, &roles(true)),
+    ] {
+        assert!(!snapshot.capabilities.get(Action::TypeText).is_supported());
+    }
+    for snapshot in [
+        super::snapshot(FerrumApi::Software, &roles(false)),
+        super::snapshot(FerrumApi::Legacy, &roles(true)),
+    ] {
+        assert!(!snapshot.capabilities.get(Action::KeyChord).is_supported());
+    }
+}
+
+#[test]
+fn an_app_too_old_to_say_its_version_still_opens_without_one() {
+    for state in [
+        State {
+            version: None,
+            ..State::software()
+        },
+        State {
+            version_silent: true,
+            ..State::software()
+        },
+    ] {
+        assert_eq!(rig(state).attach().unwrap().1.info.firmware, None);
+    }
+}
+
+#[test]
+fn the_app_version_is_three_numbers_or_kept_as_text() {
+    assert_eq!(
+        super::app_version(Some(b"v2.0.6")),
+        Some(Firmware::Version {
+            major: 2,
+            minor: 0,
+            patch: 6
+        })
+    );
+    assert_eq!(
+        super::app_version(Some(b"v2.1-beta")),
+        Some(Firmware::Text("v2.1-beta".into()))
+    );
+    assert_eq!(super::app_version(Some(b"")), None);
+    assert_eq!(super::app_version(Some(b"ERR")), None);
+    assert_eq!(super::app_version(None), None);
+}
+
+// the Ferrum's own call
+
+#[test]
+fn catch_xy_sends_both_arguments_and_reads_the_pair() {
+    let rig = rig(State::software());
+    let (device, _poller) = rig.device();
+    let ferrum = device.ferrum().unwrap();
+    // the vendor docs' own example
+    assert_eq!(
+        ferrum.catch_xy(Duration::from_millis(10), true).unwrap(),
+        (-3, 10)
+    );
+    assert!(rig.lines().contains(&"km.catch_xy(10, true)".to_string()));
+    rig.set(|state| state.catch = "(500, -500)");
+    assert_eq!(
+        ferrum.catch_xy(Duration::from_secs(1), false).unwrap(),
+        (500, -500)
+    );
+    rig.set(|state| state.catch = "nope");
+    assert!(matches!(
+        ferrum.catch_xy(Duration::from_millis(5), false),
+        Err(Error::Rejected { .. })
+    ));
+    for bad in [Duration::from_millis(1001), Duration::from_micros(2500)] {
+        assert!(matches!(
+            ferrum.catch_xy(bad, false),
+            Err(Error::InvalidArgument { .. })
+        ));
+    }
+    assert!(device.makcu().is_none() && device.ysc().is_none());
+}
+
+#[test]
+fn the_legacy_port_has_no_catch_xy() {
+    let rig = rig(State::legacy(115_200));
+    let (device, _poller) = rig.device();
+    assert!(matches!(
+        device
+            .ferrum()
+            .unwrap()
+            .catch_xy(Duration::from_millis(10), false),
+        Err(Error::Unsupported {
+            action: Action::Ferrum(FerrumAction::CatchXy),
+            ..
+        })
+    ));
 }

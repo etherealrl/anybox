@@ -32,12 +32,23 @@ pub(crate) struct Target {
 /// asks a port that was just reopened what box it is, the same way detection did
 pub(crate) type Reprobe = Box<dyn Fn(&Probe<'_>) -> Result<Snapshot> + Send + Sync>;
 
-type Reply = Sender<Result<Option<Frame>>>;
+/// a request's answer, with the opening of the port it went out on
+type Answered = Result<(Option<Frame>, u64)>;
+
+enum Answer {
+    /// the bytes are on the port, so a wait for silence can start
+    Written,
+    Done(Answered),
+}
+
+type Reply = Sender<Answer>;
 
 struct Request {
     id: u64,
     bytes: Vec<u8>,
     expect: Option<ReplyKey>,
+    /// the opening of the port it may only go out on
+    on: Option<u64>,
     deadline: Instant,
     given_up: Arc<AtomicBool>,
     reply: Reply,
@@ -132,14 +143,57 @@ impl Link {
         expect: Option<ReplyKey>,
         until: Instant,
     ) -> Result<Option<Frame>> {
+        self.send(bytes, expect, None, until, None)
+            .map(|(frame, _)| frame)
+    }
+
+    /// same as `request_until`, and it says which opening of the port it went out on. with `on` it only goes
+    /// out on that one, and once the link has moved on it's `Disconnected` without being written
+    pub(crate) fn request_on(
+        &self,
+        bytes: Vec<u8>,
+        expect: Option<ReplyKey>,
+        on: Option<u64>,
+        until: Instant,
+    ) -> Answered {
+        self.send(bytes, expect, on, until, None)
+    }
+
+    /// for a box that only answers when it refuses: no reply within `window` of the bytes being written is
+    /// silence, a frame of none, and not a missed reply. not being written by `until` is still `Disconnected`
+    pub(crate) fn request_or_silence(
+        &self,
+        bytes: Vec<u8>,
+        expect: ReplyKey,
+        window: Duration,
+        on: Option<u64>,
+        until: Instant,
+    ) -> Answered {
+        self.send(bytes, Some(expect), on, until, Some(window))
+    }
+
+    /// what a missed reply does, for a backend whose own wait ran out while the box kept answering
+    pub(crate) fn take_down(&self, generation: u64) {
+        self.shared.take_down(generation);
+    }
+
+    fn send(
+        &self,
+        bytes: Vec<u8>,
+        expect: Option<ReplyKey>,
+        on: Option<u64>,
+        until: Instant,
+        silence: Option<Duration>,
+    ) -> Answered {
         let (reply, answer) = mpsc::channel();
         let id = self.shared.next_id.fetch_add(1, Ordering::Relaxed);
-        let deadline = until.min(Instant::now() + WRITE_DEADLINE);
+        let mut deadline = until.min(Instant::now() + WRITE_DEADLINE);
         let given_up = Arc::new(AtomicBool::new(false));
         let request = Request {
             id,
             bytes,
             expect,
+            on,
             deadline,
             given_up: given_up.clone(),
             reply,
@@ -148,23 +202,41 @@ impl Link {
             Some(queue) if queue.send(request).is_ok() => {}
             _ => return Err(Error::Disconnected),
         }
-        match answer.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
-            Ok(result) => result,
-            Err(_) => {
-                given_up.store(true, Ordering::Release);
-                let missed = {
-                    let mut pending = lock(&self.shared.pending);
-                    let index = pending.iter().position(|p| p.id == id);
-                    index.and_then(|index| pending.remove(index))
-                };
-                // after a missed reply there's no way to tell which later reply belongs to which request, so
-                // the box gets probed again. if losing the link already failed this request, there's
-                // nothing left to take down
-                if let Some(missed) = missed {
-                    self.shared.take_down(missed.generation);
+        let mut written = false;
+        loop {
+            match answer.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok(Answer::Done(result)) => return result,
+                Ok(Answer::Written) => {
+                    written = true;
+                    if let Some(window) = silence {
+                        deadline = Instant::now() + window;
+                    }
                 }
+                Err(_) => break,
+            }
+        }
+        given_up.store(true, Ordering::Release);
+        let missed = {
+            let mut pending = lock(&self.shared.pending);
+            let index = pending.iter().position(|p| p.id == id);
+            index.and_then(|index| pending.remove(index))
+        };
+        match missed {
+            Some(missed) if written && silence.is_some() => Ok((None, missed.generation)),
+            // after a missed reply there's no way to tell which later reply belongs to which request, so the box
+            // gets probed again
+            Some(missed) => {
+                self.shared.take_down(missed.generation);
                 Err(Error::Disconnected)
             }
+            // the reply came in right as the wait ran out, or losing the link already failed this request
+            None => answer
+                .try_iter()
+                .find_map(|answer| match answer {
+                    Answer::Done(result) => Some(result),
+                    Answer::Written => None,
+                })
+                .unwrap_or(Err(Error::Disconnected)),
         }
     }
 
@@ -239,7 +311,9 @@ impl Shared {
             .position(|p| p.key == key && p.generation == generation);
         match index.and_then(|index| pending.remove(index)) {
             Some(waiting) => {
-                let _ = waiting.reply.send(Ok(Some(frame)));
+                let _ = waiting
+                    .reply
+                    .send(Answer::Done(Ok((Some(frame), waiting.generation))));
                 true
             }
             None => false,
@@ -248,7 +322,7 @@ impl Shared {
 
     fn fail_pending(&self) {
         for waiting in lock(&self.pending).drain(..) {
-            let _ = waiting.reply.send(Err(Error::Disconnected));
+            let _ = waiting.reply.send(Answer::Done(Err(Error::Disconnected)));
         }
     }
 }
@@ -275,13 +349,22 @@ fn write_loop(shared: &Shared, requests: &Receiver<Request>) {
             continue;
         }
         let Some((port, generation)) = shared.current() else {
-            let _ = request.reply.send(Err(Error::Disconnected));
+            let _ = request.reply.send(Answer::Done(Err(Error::Disconnected)));
             continue;
         };
+        if request.on.is_some_and(|on| on != generation) {
+            let _ = request.reply.send(Answer::Done(Err(Error::Disconnected)));
+            continue;
+        }
         // this is registered before the write, so a reply that arrives before the write returns still finds
-        // its request
+        // its request. the give up is checked again under the lock the caller takes to remove it, so a request
+        // it already gave up on can never take a later reply
         if let Some(key) = request.expect {
-            lock(&shared.pending).push_back(Pending {
+            let mut pending = lock(&shared.pending);
+            if request.given_up.load(Ordering::Acquire) {
+                continue;
+            }
+            pending.push_back(Pending {
                 id: request.id,
                 key,
                 generation,
@@ -290,13 +373,14 @@ fn write_loop(shared: &Shared, requests: &Receiver<Request>) {
         }
         match port.write_all(&request.bytes) {
             Ok(()) => {
+                let _ = request.reply.send(Answer::Written);
                 if request.expect.is_none() {
-                    let _ = request.reply.send(Ok(None));
+                    let _ = request.reply.send(Answer::Done(Ok((None, generation))));
                 }
             }
             Err(_) => {
                 lock(&shared.pending).retain(|pending| pending.id != request.id);
-                let _ = request.reply.send(Err(Error::Disconnected));
+                let _ = request.reply.send(Answer::Done(Err(Error::Disconnected)));
                 shared.take_down(generation);
             }
         }

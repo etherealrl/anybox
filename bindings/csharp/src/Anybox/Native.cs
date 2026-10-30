@@ -297,6 +297,18 @@ internal static unsafe partial class Imports
     internal static partial uint anybox_device_tap_key_with(DeviceHandle device, byte key, in AnyboxClick tap);
 
     [LibraryImport(Library)]
+    internal static partial uint anybox_device_type_text(DeviceHandle device, byte[] text);
+
+    [LibraryImport(Library)]
+    internal static partial uint anybox_device_press_keys(DeviceHandle device, byte[] keys, nuint len);
+
+    [LibraryImport(Library)]
+    internal static partial uint anybox_device_release_keys(DeviceHandle device, byte[] keys, nuint len);
+
+    [LibraryImport(Library)]
+    internal static partial uint anybox_device_tap_keys(DeviceHandle device, byte[] keys, nuint len);
+
+    [LibraryImport(Library)]
     internal static partial uint anybox_device_press_media(DeviceHandle device, ushort key);
 
     [LibraryImport(Library)]
@@ -310,6 +322,12 @@ internal static unsafe partial class Imports
 
     [LibraryImport(Library)]
     internal static partial uint anybox_device_unlock_button(DeviceHandle device, uint button);
+
+    [LibraryImport(Library)]
+    internal static partial uint anybox_device_force_release_key(DeviceHandle device, byte key);
+
+    [LibraryImport(Library)]
+    internal static partial uint anybox_device_restore_key(DeviceHandle device, byte key);
 
     [LibraryImport(Library)]
     internal static partial uint anybox_device_lock_key(DeviceHandle device, byte key);
@@ -428,7 +446,7 @@ internal static unsafe partial class Imports
 // every call a Device makes goes through here. it's an interface with one real implementation, which the repo
 // otherwise avoids, but a LibraryImport can't be swapped out in a test the way a ctypes function can, and the
 // tests need to see what each call hands to C
-internal interface INative
+internal partial interface INative
 {
     uint anybox_device_snapshot(DeviceHandle device, out SnapshotHandle @out) => Imports.anybox_device_snapshot(device, out @out);
     // made by bindings/gen from its call table (forwarders), change the table and run cargo run -p anybox-gen
@@ -440,11 +458,17 @@ internal interface INative
     uint anybox_device_press_key(DeviceHandle device, byte key) => Imports.anybox_device_press_key(device, key);
     uint anybox_device_release_key(DeviceHandle device, byte key) => Imports.anybox_device_release_key(device, key);
     uint anybox_device_tap_key_with(DeviceHandle device, byte key, in AnyboxClick tap) => Imports.anybox_device_tap_key_with(device, key, in tap);
+    uint anybox_device_type_text(DeviceHandle device, byte[] text) => Imports.anybox_device_type_text(device, text);
+    uint anybox_device_press_keys(DeviceHandle device, byte[] keys, nuint len) => Imports.anybox_device_press_keys(device, keys, len);
+    uint anybox_device_release_keys(DeviceHandle device, byte[] keys, nuint len) => Imports.anybox_device_release_keys(device, keys, len);
+    uint anybox_device_tap_keys(DeviceHandle device, byte[] keys, nuint len) => Imports.anybox_device_tap_keys(device, keys, len);
     uint anybox_device_press_media(DeviceHandle device, ushort key) => Imports.anybox_device_press_media(device, key);
     uint anybox_device_release_media(DeviceHandle device, ushort key) => Imports.anybox_device_release_media(device, key);
     uint anybox_device_tap_media_with(DeviceHandle device, ushort key, in AnyboxClick tap) => Imports.anybox_device_tap_media_with(device, key, in tap);
     uint anybox_device_lock_button(DeviceHandle device, uint button) => Imports.anybox_device_lock_button(device, button);
     uint anybox_device_unlock_button(DeviceHandle device, uint button) => Imports.anybox_device_unlock_button(device, button);
+    uint anybox_device_force_release_key(DeviceHandle device, byte key) => Imports.anybox_device_force_release_key(device, key);
+    uint anybox_device_restore_key(DeviceHandle device, byte key) => Imports.anybox_device_restore_key(device, key);
     uint anybox_device_lock_key(DeviceHandle device, byte key) => Imports.anybox_device_lock_key(device, key);
     uint anybox_device_unlock_key(DeviceHandle device, byte key) => Imports.anybox_device_unlock_key(device, key);
     uint anybox_device_lock_axis(DeviceHandle device, uint axis, uint direction) => Imports.anybox_device_lock_axis(device, axis, direction);

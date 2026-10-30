@@ -2,6 +2,7 @@
 
 mod connect;
 mod device;
+mod extension;
 // the box clock wrap is only used by the header
 pub mod events;
 mod failure;
@@ -18,7 +19,7 @@ use std::ffi::c_char;
 
 /// bumped on any change to a struct, a constant or a function, so a caller compares it with `anybox_abi_version()`
 /// once at start and calls nothing else when they differ
-pub const ANYBOX_ABI_VERSION: u32 = 2;
+pub const ANYBOX_ABI_VERSION: u32 = 3;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn anybox_abi_version() -> u32 {

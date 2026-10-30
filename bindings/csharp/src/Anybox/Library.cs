@@ -8,7 +8,7 @@ namespace Anybox;
 public static unsafe class Library
 {
     /// <summary>the C ABI this package speaks, a library with another one gets refused before any call</summary>
-    public const uint AbiVersion = 2;
+    public const uint AbiVersion = 3;
 
     internal const uint Ok = 0;
     internal const uint NotFound = 1;
@@ -145,6 +145,8 @@ public static unsafe class Library
     }
 
     internal static string? Text(byte* value) => Marshal.PtrToStringUTF8((nint)value);
+
+    internal static byte[] KeyBytes(ReadOnlySpan<Key> keys) => MemoryMarshal.AsBytes(keys).ToArray();
 
     // NUL terminated for a `const char *`, and a NUL inside would cut it short on the C side
     internal static byte[] Utf8(string value)
