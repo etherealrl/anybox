@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 use medius::{CatchFilter, ClockDomain, InputEvent, InputStream, Timeline};
 
 use crate::backend::{
-    Backend, Command, Input, InputKind, InputKinds, LockSlot, Sign, Sink, StreamFailure, UNLOCKED,
-    Usage, WRITE_DEADLINE,
+    Backend, Command, Input, InputKind, InputKinds, LockSlot, Sign, Sink, StreamFailure, Typing,
+    UNLOCKED, Usage, WRITE_DEADLINE,
 };
 use crate::capability::{
     Action, Axis, Button, Capabilities, Capability, Family, Firmware, Info, Quirk, Snapshot,
@@ -272,7 +272,11 @@ pub(crate) fn snapshot(device: &medius::Device) -> Result<(Snapshot, CloneState)
             axis_locks.clone().with(Quirk::KeepsLocked),
         )
         .set(Action::ScaleAxis, axis_locks.with(Quirk::KeepsLocked))
-        .set(Action::LockKey, keys.with(Quirk::KeepsLocked));
+        .set(Action::LockKey, keys.clone().with(Quirk::KeepsLocked))
+        // the crate replays a force after a reconnect like a press, and the box keeps it through a reset
+        .set(Action::ForceReleaseKey, keys.with(Quirk::KeepsLocked))
+        .set(Action::TypeText, Capability::unsupported(NO_TYPING))
+        .set(Action::KeyChord, Capability::unsupported(NO_CHORDS));
     let mut info = Info::new(Family::Medius);
     info.model = Some(version.name.clone());
     info.firmware = Some(Firmware::Version {
@@ -298,6 +302,17 @@ pub(crate) fn snapshot(device: &medius::Device) -> Result<(Snapshot, CloneState)
 }
 
 /// the box can't time a press by itself, so the core builds clicks and taps out of a press and a release
+const NO_TYPING: &str = "the box can't type text by itself, tap the keys yourself instead";
+const NO_CHORDS: &str = "the box presses one key per command, its clips can press several at once through device.medius()";
+
+fn unsupported(action: Action, reason: &'static str) -> Error {
+    Error::Unsupported {
+        action,
+        family: Family::Medius,
+        reason: reason.into(),
+    }
+}
+
 fn untimed(action: Action) -> Error {
     Error::Unsupported {
         action,
@@ -325,6 +340,7 @@ impl Job {
                     | Command::KeyRelease(_)
                     | Command::MediaRelease(_)
                     | Command::Lock { keep: UNLOCKED, .. }
+                    | Command::KeyForce { force: false, .. }
             ) | Job::Release(_)
         )
     }
@@ -469,6 +485,9 @@ impl Shared {
             Job::Send(Command::DiscardPendingMoves) => (Action::DiscardPendingMoves, None),
             Job::Send(Command::KeyPress(_)) => (Action::KeyPress, None),
             Job::Send(Command::MediaPress(_)) => (Action::MediaPress, None),
+            Job::Send(Command::KeyForce { force: true, .. }) => (Action::ForceReleaseKey, None),
+            // a restore always passes, like a release
+            Job::Send(Command::KeyForce { force: false, .. }) => return Ok(()),
             // an unlock always passes, like a release
             Job::Send(Command::Lock { keep: UNLOCKED, .. }) => return Ok(()),
             Job::Send(Command::Lock { slot, keep }) => (
@@ -478,9 +497,12 @@ impl Shared {
                     LockSlot::Key(_) | LockSlot::Axis(..) => None,
                 },
             ),
-            // the box has no timed press, `run` returns the error for these
+            // the box has no timed press and no chords, `run` returns the error for these
             Job::Send(
-                Command::Click { .. } | Command::KeyTap { .. } | Command::MediaTap { .. },
+                Command::Click { .. }
+                | Command::KeyTap { .. }
+                | Command::MediaTap { .. }
+                | Command::KeyChord { .. },
             ) => {
                 return Ok(());
             }
@@ -527,6 +549,13 @@ impl Shared {
             Job::Send(Command::Release(button)) => device.release(to_crate(button)),
             Job::Send(Command::KeyRelease(key)) => device.release(medius::Key(key.0)),
             Job::Send(Command::MediaRelease(key)) => device.release(medius::MediaKey(key.0)),
+            Job::Send(Command::KeyForce { key, force: true }) => {
+                device.force_release(medius::Key(key.0))
+            }
+            // the soft release, which drops the force and leaves the finger's hold to the PC
+            Job::Send(Command::KeyForce { key, force: false }) => {
+                device.release(medius::Key(key.0))
+            }
             Job::Release(usage) => device.release(usage_to_crate(usage)),
             Job::Send(Command::Wheel(notches)) => device.wheel(notches),
             Job::Send(Command::Pan(notches)) => device.pan(notches),
@@ -534,6 +563,9 @@ impl Shared {
             Job::Send(Command::Click { .. }) => return Err(whole(untimed(Action::Click))),
             Job::Send(Command::KeyTap { .. }) => return Err(whole(untimed(Action::KeyTap))),
             Job::Send(Command::MediaTap { .. }) => return Err(whole(untimed(Action::MediaTap))),
+            Job::Send(Command::KeyChord { .. }) => {
+                return Err(whole(unsupported(Action::KeyChord, NO_CHORDS)));
+            }
             Job::Send(Command::Lock { slot, keep }) => {
                 let both = medius::Direction::Both;
                 match slot {
@@ -853,6 +885,10 @@ impl Backend for MediusBackend {
         self.order(Job::Restart(kind))
     }
 
+    fn type_piece(&self, _piece: &[u8], _typing: &mut Typing) -> Result<()> {
+        Err(unsupported(Action::TypeText, NO_TYPING))
+    }
+
     /// a soft release for each one and never the crate's reset, because that would clear the locks and transforms
     /// too. once one runs out of time, the rest get queued without waiting
     fn release_all(&self, held: &[Usage]) -> Result<()> {
@@ -885,6 +921,23 @@ impl Backend for MediusBackend {
             let unlocked = self.order(job);
             if first.is_ok() || matches!(unlocked, Err(Error::Disconnected)) {
                 first = unlocked;
+            }
+        }
+        first
+    }
+
+    /// like `unlock_all`, the rest get queued once one runs out of time
+    fn restore_all(&self, keys: &[Key]) -> Result<()> {
+        let mut first = Ok(());
+        for &key in keys {
+            let job = Job::Send(Command::KeyForce { key, force: false });
+            if matches!(first, Err(Error::Disconnected)) {
+                self.enqueue(job);
+                continue;
+            }
+            let restored = self.order(job);
+            if first.is_ok() || matches!(restored, Err(Error::Disconnected)) {
+                first = restored;
             }
         }
         first

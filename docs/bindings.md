@@ -1,6 +1,6 @@
 # bindings
 
-anybox's core is the Rust crate, and every other language goes through its C library. each binding is the same API with the names of its language, and it's meant to do exactly what the Rust crate does, with the same boxes, the same errors with the same fields, the same events and stamps, and the same `device.medius()` on a Medius. if one of them acts differently from Rust, that's a bug, so open an issue
+anybox's core is the Rust crate, and every other language goes through its C library. each binding is the same API with the names of its language, and it's meant to do exactly what the Rust crate does, with the same boxes, the same errors with the same fields, the same events and stamps, the same `device.medius()` on a Medius, and the same `makcu()`, `ysc()` and `ferrum()` on those boxes. if one of them acts differently from Rust, that's a bug, so open an issue
 
 they're only Windows and Linux on x64 for now. if you need another platform or another language, open an issue too
 
@@ -95,24 +95,24 @@ it's the same API with C# names, on top of the C library, which comes inside the
 
 ## when a box can't do something
 
-same as in Rust, anybox never makes up something a box can't do, so you build it yourself out of what the box can do. here's the `type_text` from the [readme](../README.md#when-a-box-cant-do-something) in each language, made of key taps
+same as in Rust, anybox never makes up something a box can't do. something no box has you build out of what every box can do, like the drag in the [readme](../README.md#when-a-box-cant-do-something). something only some boxes have you call anyway and fall back to your own version where the box answers unsupported. here's that for typing in each language, with key taps on the boxes that can't type by themselves
 
-Python, put on `anybox.Device` itself so every device gets `device.type_text()`, like a trait in Rust:
+Python:
 
 ```python
 import anybox
 from anybox import Key
 
 
-def type_text(device: anybox.Device, text: str) -> None:
+def type_with_taps(device: anybox.Device, text: str) -> None:
     for c in text:
         # a us layout and only the basics, add whatever your app needs
         if c.isascii() and c.isalpha():
             key, shift = Key(Key.A + ord(c.lower()) - ord("a")), c.isupper()
         elif "1" <= c <= "9":
             key, shift = Key(Key.NUM1 + ord(c) - ord("1")), False
-        elif c in ("0", " ", "\n"):
-            key, shift = {"0": Key.NUM0, " ": Key.SPACE, "\n": Key.ENTER}[c], False
+        elif c in ("0", " "):
+            key, shift = {"0": Key.NUM0, " ": Key.SPACE}[c], False
         else:
             continue
         if shift:
@@ -124,25 +124,44 @@ def type_text(device: anybox.Device, text: str) -> None:
                 device.release_key(Key.LEFT_SHIFT)
 
 
-anybox.Device.type_text = type_text
+def type_anywhere(device: anybox.Device, text: str) -> None:
+    try:
+        device.type_text(text)
+    except anybox.UnsupportedError:
+        type_with_taps(device, text)
+
 
 with anybox.connect() as device:
-    device.type_text("Hello there\n")
+    type_anywhere(device, "Hello there")
+    device.tap_key(Key.ENTER)
 ```
 
-C#, as an extension on `Device` so it reads like the rest of the API:
+C#:
 
 ```csharp
 using Anybox;
 
 using var device = Device.Connect();
-device.TypeText("Hello there\n");
+device.TypeAnywhere("Hello there");
+device.TapKey(Key.Enter);
 
-static class TypeTextExtension
+static class Typing
 {
     extension(Device device)
     {
-        public void TypeText(string text)
+        public void TypeAnywhere(string text)
+        {
+            try
+            {
+                device.TypeText(text);
+            }
+            catch (UnsupportedException)
+            {
+                device.TypeWithTaps(text);
+            }
+        }
+
+        public void TypeWithTaps(string text)
         {
             foreach (var c in text)
             {
@@ -154,7 +173,6 @@ static class TypeTextExtension
                     >= '1' and <= '9' => ((Key)((byte)Key.Num1 + (c - '1')), false),
                     '0' => (Key.Num0, false),
                     ' ' => (Key.Space, false),
-                    '\n' => (Key.Enter, false),
                     _ => null,
                 };
                 if (typed is not (Key tap, bool shift))
@@ -182,12 +200,12 @@ static class TypeTextExtension
 }
 ```
 
-C has no methods, so it's a function named like the API's own, `device_type_text(device, text)` next to `anybox_device_tap_key(device, key)`. shift gets let go of even when the tap failed, and the error you get back is the one Rust would give:
+C has no exceptions, so it's the status that says unsupported. shift gets let go of even when the tap failed, and the error you get back is the one Rust would give:
 
 ```c
 #include "anybox.h"
 
-static AnyboxStatus device_type_text(const AnyboxDevice *device, const char *text) {
+static AnyboxStatus type_with_taps(const AnyboxDevice *device, const char *text) {
     for (; *text != '\0'; text++) {
         char c = *text;
         uint8_t key;
@@ -205,8 +223,6 @@ static AnyboxStatus device_type_text(const AnyboxDevice *device, const char *tex
             key = ANYBOX_KEY_NUM0;
         } else if (c == ' ') {
             key = ANYBOX_KEY_SPACE;
-        } else if (c == '\n') {
-            key = ANYBOX_KEY_ENTER;
         } else {
             continue;
         }
@@ -229,15 +245,20 @@ static AnyboxStatus device_type_text(const AnyboxDevice *device, const char *tex
     }
     return ANYBOX_STATUS_OK;
 }
+
+static AnyboxStatus type_anywhere(const AnyboxDevice *device, const char *text) {
+    AnyboxStatus typed = anybox_device_type_text(device, text);
+    return typed == ANYBOX_STATUS_UNSUPPORTED ? type_with_taps(device, text) : typed;
+}
 ```
 
-C++ can't add a method to a class from outside it either, so it's a free function that takes the device, and it throws like the rest of the API:
+C++:
 
 ```cpp
 #include <string>
 #include "anybox.hpp"
 
-void type_text(const anybox::Device& device, const std::string& text) {
+void type_with_taps(const anybox::Device& device, const std::string& text) {
     using anybox::Key;
     for (const char c : text) {
         // a us layout and only the basics, add whatever your app needs
@@ -254,8 +275,6 @@ void type_text(const anybox::Device& device, const std::string& text) {
             key = Key::NUM0;
         } else if (c == ' ') {
             key = Key::SPACE;
-        } else if (c == '\n') {
-            key = Key::ENTER;
         } else {
             continue;
         }
@@ -275,4 +294,14 @@ void type_text(const anybox::Device& device, const std::string& text) {
         }
     }
 }
+
+void type_anywhere(const anybox::Device& device, const std::string& text) {
+    try {
+        device.type_text(text);
+    } catch (const anybox::UnsupportedError&) {
+        type_with_taps(device, text);
+    }
+}
 ```
+
+once a box started typing it never answers unsupported, so none of these type the text a second time

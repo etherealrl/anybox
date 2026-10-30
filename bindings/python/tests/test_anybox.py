@@ -49,8 +49,8 @@ def test_the_abi_version_matches_the_header_and_the_library(workspace):
 
 
 def test_a_library_with_another_abi_is_refused():
-    with pytest.raises(ImportError, match=r"speaks C ABI 2 and this package needs 3"):
-        _native.load(_native.lib._name, abi=3)
+    with pytest.raises(ImportError, match=r"speaks C ABI 4 and this package needs 5"):
+        _native.load(_native.lib._name, abi=5)
 
 
 def test_a_library_that_isnt_anybox_is_refused():
@@ -438,7 +438,11 @@ def test_every_output_call_hands_its_arguments_to_c(mock, monkeypatch):
                 (
                     name,
                     [
-                        (v.hold_us, v.has_hold, v.native_only) if isinstance(v, _native.Click) else v
+                        (v.hold_us, v.has_hold, v.native_only)
+                        if isinstance(v, _native.Click)
+                        else list(v)
+                        if isinstance(v, ctypes.Array)
+                        else v
                         for v in values
                     ],
                 )
@@ -461,6 +465,10 @@ def test_every_output_call_hands_its_arguments_to_c(mock, monkeypatch):
     device.press_key(anybox.Key.B)
     device.release_key(anybox.Key(0x64))
     device.tap_key(anybox.Key.C, hold=0.002)
+    device.type_text('a"b')
+    device.press_keys(anybox.Key.LEFT_CTRL, anybox.Key.A)
+    device.release_keys(anybox.Key.LEFT_CTRL)
+    device.tap_keys()
     device.press_media(anybox.MediaKey.MUTE)
     device.release_media(anybox.MediaKey.VOLUME_UP)
     device.tap_media(anybox.MediaKey.PLAY, native_only=True)
@@ -468,6 +476,8 @@ def test_every_output_call_hands_its_arguments_to_c(mock, monkeypatch):
     device.unlock_button(anybox.Button.SIDE2)
     device.lock_key(anybox.Key.D)
     device.unlock_key(anybox.Key.E)
+    device.force_release_key(anybox.Key.F)
+    device.restore_key(anybox.Key.G)
     device.lock_axis(anybox.Axis.Y, anybox.Direction.NEGATIVE)
     device.unlock_axis(anybox.Axis.WHEEL)
     device.scale_axis(anybox.Axis.PAN, anybox.Direction.POSITIVE, -100)
@@ -484,6 +494,10 @@ def test_every_output_call_hands_its_arguments_to_c(mock, monkeypatch):
         ("press_key", [0x05]),
         ("release_key", [0x64]),
         ("tap_key_with", [0x06, (2_000, True, False)]),
+        ("type_text", [b'a"b']),
+        ("press_keys", [[0xE0, 0x04], 2]),
+        ("release_keys", [[0xE0], 1]),
+        ("tap_keys", [[], 0]),
         ("press_media", [0xE2]),
         ("release_media", [0xE9]),
         ("tap_media_with", [0xB0, (0, False, True)]),
@@ -491,6 +505,8 @@ def test_every_output_call_hands_its_arguments_to_c(mock, monkeypatch):
         ("unlock_button", [4]),
         ("lock_key", [0x07]),
         ("unlock_key", [0x08]),
+        ("force_release_key", [0x09]),
+        ("restore_key", [0x0A]),
         ("lock_axis", [1, 2]),
         ("unlock_axis", [2, 0]),
         ("scale_axis", [3, 1, -100]),
@@ -690,6 +706,8 @@ def test_every_quirk_comes_across_with_its_fields():
         (dict(kind=4), anybox.Quirk(kinds.FIXED_CLICK_TIMING)),
         (dict(kind=8), anybox.Quirk(kinds.KEEPS_HELD)),
         (dict(kind=10), anybox.Quirk(kinds.KEEPS_LOCKED)),
+        (dict(kind=11), anybox.Quirk(kinds.TYPED_TEXT_IGNORES_CAPS_LOCK)),
+        (dict(kind=12), anybox.Quirk(kinds.TYPING_RELEASES_HELD_KEYS)),
     ]:
         assert _quirk(_native.Quirk(**raw)) == quirk
         seen.add(quirk.kind)
@@ -1090,3 +1108,44 @@ def test_the_mock_pushes_keys_media_a_link_loss_and_a_restart():
     finally:
         device.close()
         box.close()
+
+
+def test_a_text_with_a_nul_or_a_key_that_isnt_one_is_refused_before_c(mock, monkeypatch):
+    device, _ = mock
+    monkeypatch.setattr(_native.lib, "anybox_device_type_text", lambda *args: pytest.fail("reached C"))
+    monkeypatch.setattr(_native.lib, "anybox_device_press_keys", lambda *args: pytest.fail("reached C"))
+    with pytest.raises(ValueError, match="NUL"):
+        device.type_text("a\0b")
+    with pytest.raises(ValueError, match="a key goes from 0 to 255"):
+        device.press_keys(anybox.Key.A, 256)
+
+
+def test_a_box_handle_keeps_the_device_alive_and_goes_once_it_closes():
+    device = anybox.mock_makcu()
+    assert device.ysc() is None and device.ferrum() is None
+    makcu = device.makcu()
+    del device
+    gc.collect()
+    makcu.set_autorelease(1.5)
+    assert makcu.autorelease() == 1.5
+    makcu._device.close()
+    assert makcu._device.makcu() is None
+    with pytest.raises(anybox.ClosedError):
+        makcu.moving()
+
+
+def test_box_calls_refuse_durations_the_box_cant_take():
+    makcu = anybox.mock_makcu().makcu()
+    ferrum = anybox.mock_ferrum().ferrum()
+    with pytest.raises(ValueError, match="whole milliseconds"):
+        makcu.set_autorelease(0.0015)
+    with pytest.raises(ValueError, match="can't be negative"):
+        ferrum.catch_xy(-0.01)
+    # 0 is off on the C side, a zero asked for must not quietly turn it off
+    makcu.set_autorelease(1.5)
+    with pytest.raises(ValueError, match="use None to turn it off"):
+        makcu.set_autorelease(0)
+    assert makcu.autorelease() == 1.5
+    with pytest.raises(anybox.InvalidArgumentError):
+        makcu.set_autorelease(61)
+    assert ferrum.catch_xy(0.01) == (-3, 10)

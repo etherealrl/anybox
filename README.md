@@ -32,12 +32,12 @@ some boxes can do things the others can't, and anybox doesn't hide those. you ge
 
 > KMBox B Pro and Net might get added if enough people ask for it, otherwise i won't spend time on it
 
-|            | firmware       | mouse | wheel | pan | keys | media keys | locks | scale | events        |
-| ---------- | -------------- | :---: | :---: | :-: | :--: | :--------: | :---: | :---: | ------------- |
-| **Medius** | 3.4.2+         |   ✓   |   ✓   |  ✓  |  ✓   |     ✓      |   ✓   |   ✓   | all           |
-| **MAKCU**  | V4.085+        |   ✓   |   ✓   |  ✗  |  ✓   |     ✗      |   ✓   |   ✗   | buttons, keys |
-| Ferrum     | docs only      |   ✓   |   ✓   |  ✗  | app  |     ✗      |   ✓   |   ✗   | all but media |
-| YSC8K      | V1 Oct 10 2026 |   ✓   |   ✓   |  ✗  |  ✓   |     ✗      |   ✓   |   ✗   | all but media |
+|            | firmware       | mouse | wheel | pan | keys | media keys | typing | chords | locks | scale | events        |
+| ---------- | -------------- | :---: | :---: | :-: | :--: | :--------: | :----: | :----: | :---: | :---: | ------------- |
+| **Medius** | 3.4.2+         |   ✓   |   ✓   |  ✓  |  ✓   |     ✓      |   ✗    |   ✗    |   ✓   |   ✓   | all           |
+| **MAKCU**  | V4.085+        |   ✓   |   ✓   |  ✗  |  ✓   |     ✗      |   ✓    |   ✓    |   ✓   |   ✗   | buttons, keys |
+| Ferrum     | docs only      |   ✓   |   ✓   |  ✗  | app  |     ✗      |   ✗    |  app   |   ✓   |   ✗   | all but media |
+| YSC8K      | V1 Oct 10 2026 |   ✓   |   ✓   |  ✗  |  ✓   |     ✗      |   ✓    |   ✗    |   ✓   |   ✗   | all but media |
 
 Ferrum and YSC8K were written from the vendor docs and reference code, and so far only one community tester ran them on real ones, so expect surprises and tell me about them. "app" means only through the Ferrum app's port
 
@@ -57,7 +57,7 @@ cargo add anybox-rs --no-default-features --features medius
 
 on Linux it needs libudev to find the boxes, that's `libudev-dev` and `pkg-config` on Debian and Ubuntu, `systemd-devel` on Fedora. your user also has to be allowed to open serial ports, the `dialout` group on most distros (`uucp` on Arch)
 
-to test your own code without a box plugged in, turn on the `mock` feature. `Device::mock_medius` gives you a device over the medius crate's mock box, running the exact same code a real Medius gets. it only proves your code works though, not how the hardware behaves
+to test your own code without a box plugged in, turn on the `mock` feature. `Device::mock_medius` gives you a device over the medius crate's mock box, running the exact same code a real Medius gets, and `Device::mock_makcu`, `mock_ysc` and `mock_ferrum` give you anybox's own model of those boxes, for their own calls. it only proves your code works though, not how the hardware behaves
 
 if a box acts weird and you want to see what actually goes over the wire, turn on the `trace` feature and set `ANYBOX_TRACE` to a file path. every byte anybox sends and gets back ends up in that file with a timestamp, the Medius is the one exception since it talks through the medius crate
 
@@ -87,9 +87,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-what only one box can do stays reachable through that box's own API, like `device.medius()` above, which gives you the medius crate's device for clips, transforms, rendering and the rest
+what only one box can do stays reachable through that box's own API, like `device.medius()` above, which gives you the medius crate's device for clips, transforms, rendering and the rest. `device.makcu()`, `device.ysc()` and `device.ferrum()` have the few things only those boxes do, like the MAKCU's interpolation and autorelease, and [box-specific behavior](docs/boxes.md#box-specific-behavior) says what each one is
 
-`connect()` takes the first box it finds. `anybox::scan()` gives every port it looks at with what's on it, the box and what it can do or why you can't use it (busy, not allowed, too old, nothing there etc), which is what a box picker wants. `Connect::port("COM18")` or `Connect::auto().family(Family::Medius)` opens the one you want, and `Connect::auto().can(Action::Move)` opens the first one that can move, so a box with only a keyboard behind it gets skipped. a scan opens every box, so don't run it every second, `candidates()` below is the cheap one. a Ferrum isn't found on its own yet, open it with `Connect::port` or `.family(Family::Ferrum)`
+`connect()` takes the first box it finds. `anybox::scan()` gives every port it looks at with what's on it, the box and what it can do or why you can't use it (busy, not allowed, too old, nothing there etc), which is what a box picker wants. `Connect::port("COM18")` or `Connect::auto().family(Family::Medius)` opens the one you want, and `Connect::auto().can(Action::Move)` opens the first one that can move, so a box with only a keyboard behind it gets skipped. a scan opens every box, so don't run it every second, `candidates()` below is the cheap one. a Ferrum isn't found on its own yet, open it with `Connect::port` or `.family(Family::Ferrum)`. with two boxes, open the first one, then take `candidates()` without its port and open the other one with `Connect::port`, a box that's already open is busy to every other search anyway
 
 a YSC8K (the V1, the only one sold so far) sits behind the same USB chip as a Medius and a MAKCU, so it only gets asked with `.family(Family::Ysc)`, and that asks every one of those ports at up to 9 rates, so a port with no YSC on it takes about 2 s. a YSC or a Ferrum only comes back on the same port after a reconnect, so if its port name changes, connect again
 
@@ -124,50 +124,81 @@ when you drop the device, anybox tries to let go of everything you still hold an
 
 ## when a box can't do something
 
-anybox never makes up something a box can't do, that's your responsibility. if you want it anyway, put it in your own trait on `Device` and build it out of what the box can do
+anybox never makes up something a box can't do, so when you want it anyway it's yours to build. there are two cases
 
-anybox has no `type_text` for example, so here it is made of key taps:
+when no box has it, build it out of what every box can do and put it in your own trait on `Device`. a drag for example is just a press, a few moves and a release:
 
 ```rust,no_run
-use anybox::{Device, Key};
+use anybox::{Button, Device};
 
-trait TypeText {
-    fn type_text(&self, text: &str) -> anybox::Result<()>;
+trait Drag {
+    fn drag(&self, button: Button, dx: i16, dy: i16) -> anybox::Result<()>;
 }
 
-impl TypeText for Device {
-    fn type_text(&self, text: &str) -> anybox::Result<()> {
-        for c in text.chars() {
-            // a us layout and only the basics, add whatever your app needs
-            let (key, shift) = match c {
-                'a'..='z' => (Key(Key::A.0 + (c as u8 - b'a')), false),
-                'A'..='Z' => (Key(Key::A.0 + (c as u8 - b'A')), true),
-                '1'..='9' => (Key(Key::NUM1.0 + (c as u8 - b'1')), false),
-                '0' => (Key::NUM0, false),
-                ' ' => (Key::SPACE, false),
-                '\n' => (Key::ENTER, false),
-                _ => continue,
-            };
-            if shift {
-                self.press_key(Key::LEFT_SHIFT)?;
-            }
-            let tapped = self.tap_key(key);
-            if shift {
-                self.release_key(Key::LEFT_SHIFT)?;
-            }
-            tapped?;
-        }
-        Ok(())
+impl Drag for Device {
+    fn drag(&self, button: Button, dx: i16, dy: i16) -> anybox::Result<()> {
+        self.press(button)?;
+        // a few steps instead of one jump, so whatever's under the cursor sees it move. what doesn't split evenly
+        // goes last
+        let moved = (0..10)
+            .try_for_each(|_| self.move_by(dx / 10, dy / 10))
+            .and_then(|()| self.move_by(dx % 10, dy % 10));
+        // the button gets let go even when a move failed
+        let released = self.release(button);
+        moved.and(released)
     }
 }
 
 fn main() -> anybox::Result<()> {
     let device = anybox::connect()?;
-    device.type_text("Hello there\n")
+    device.drag(Button::Left, 300, 0)
 }
 ```
 
-the same thing in Python, C# and C is in [bindings](docs/bindings.md#when-a-box-cant-do-something)
+when only some boxes have it, call anybox's and run your own version on the boxes that answer `Unsupported`, so the same code works everywhere. a MAKCU or a YSC types text by itself for example, a Medius or a Ferrum can't, so there it's made of key taps:
+
+```rust,no_run
+use anybox::{Device, Error, Key};
+
+fn type_anywhere(device: &Device, text: &str) -> anybox::Result<()> {
+    match device.type_text(text) {
+        Err(Error::Unsupported { .. }) => type_with_taps(device, text),
+        typed => typed,
+    }
+}
+
+fn type_with_taps(device: &Device, text: &str) -> anybox::Result<()> {
+    for c in text.chars() {
+        // a us layout and only the basics, add whatever your app needs
+        let (key, shift) = match c {
+            'a'..='z' => (Key(Key::A.0 + (c as u8 - b'a')), false),
+            'A'..='Z' => (Key(Key::A.0 + (c as u8 - b'A')), true),
+            '1'..='9' => (Key(Key::NUM1.0 + (c as u8 - b'1')), false),
+            '0' => (Key::NUM0, false),
+            ' ' => (Key::SPACE, false),
+            _ => continue,
+        };
+        if shift {
+            device.press_key(Key::LEFT_SHIFT)?;
+        }
+        let tapped = device.tap_key(key);
+        if shift {
+            device.release_key(Key::LEFT_SHIFT)?;
+        }
+        tapped?;
+    }
+    Ok(())
+}
+
+fn main() -> anybox::Result<()> {
+    let device = anybox::connect()?;
+    type_anywhere(&device, "Hello there")?;
+    // the box only types printable ASCII, so Enter is a key of its own
+    device.tap_key(Key::ENTER)
+}
+```
+
+the fallback only kicks in when nothing went out yet. once a box started typing, an error is never `Unsupported`, so your version never types the text a second time. the same thing in Python, C#, C and C++ is in [bindings](docs/bindings.md#when-a-box-cant-do-something)
 
 ## moving from another library
 

@@ -43,6 +43,9 @@ ALIGNED(AnyboxCapability)
 ALIGNED(AnyboxQuirk)
 ALIGNED(AnyboxEvent)
 ALIGNED(AnyboxErrorDetail)
+ALIGNED(AnyboxMakcuInterpolation)
+ALIGNED(AnyboxYscInterpolation)
+ALIGNED(AnyboxYscInterpolationSettings)
 
 #define TYPE(T) put("%s size %u align %u\n", #T, (unsigned)sizeof(T), (unsigned)offsetof(struct align_##T, value))
 #define FIELD(T, f) put("  %s %u\n", #f, (unsigned)offsetof(T, f))
@@ -149,6 +152,23 @@ static void write_layout(void) {
     FIELD(AnyboxErrorDetail, io_kind);
     FIELD(AnyboxErrorDetail, has_os_error);
     FIELD(AnyboxErrorDetail, os_error);
+    TYPE(AnyboxMakcuInterpolation);
+    FIELD(AnyboxMakcuInterpolation, automatic);
+    FIELD(AnyboxMakcuInterpolation, percent);
+    TYPE(AnyboxYscInterpolation);
+    FIELD(AnyboxYscInterpolation, enabled);
+    FIELD(AnyboxYscInterpolation, profile);
+    FIELD(AnyboxYscInterpolation, has_window);
+    FIELD(AnyboxYscInterpolation, window_ms);
+    FIELD(AnyboxYscInterpolation, has_max_window);
+    FIELD(AnyboxYscInterpolation, max_window_ms);
+    FIELD(AnyboxYscInterpolation, has_measured_interval);
+    FIELD(AnyboxYscInterpolation, measured_interval_us);
+    TYPE(AnyboxYscInterpolationSettings);
+    FIELD(AnyboxYscInterpolationSettings, enabled);
+    FIELD(AnyboxYscInterpolationSettings, profile);
+    FIELD(AnyboxYscInterpolationSettings, window_ms);
+    FIELD(AnyboxYscInterpolationSettings, max_window_ms);
 }
 
 static void check_layout(const char *path) {

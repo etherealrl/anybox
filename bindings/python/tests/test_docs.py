@@ -46,8 +46,6 @@ def test_the_example_runs(code, monkeypatch):
         with contextlib.suppress(anybox.ClosedError):
             device.close()
         box.close()
-        if hasattr(anybox.Device, "type_text"):
-            del anybox.Device.type_text
 
 
 def test_every_doc_has_its_examples():

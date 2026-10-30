@@ -20,6 +20,34 @@ public sealed class Mock : IDisposable
         return (new Device(device), new Mock(mock));
     }
 
+    /// <summary>a device over anybox's own model of a MAKCU V4.108 with a mouse and a keyboard behind it, running the
+    /// exact code a real one gets over a fake port, for testing the <see cref="Device.Makcu"/> calls with no
+    /// box</summary>
+    public static Device Makcu(ClickTiming? clickTiming = null)
+    {
+        NeedMock();
+        Library.Check(Imports.anybox_mock_makcu_open((clickTiming ?? ClickTiming.Makcu).ToNative(), out var device));
+        return new Device(device);
+    }
+
+    /// <summary>a device over anybox's own model of a YSC8K V1, for testing the <see cref="Device.Ysc"/> calls with no
+    /// box</summary>
+    public static Device Ysc(ClickTiming? clickTiming = null)
+    {
+        NeedMock();
+        Library.Check(Imports.anybox_mock_ysc_open((clickTiming ?? ClickTiming.Makcu).ToNative(), out var device));
+        return new Device(device);
+    }
+
+    /// <summary>a device over anybox's own model of a Ferrum on the app's port, for testing the
+    /// <see cref="Device.Ferrum"/> calls with no box</summary>
+    public static Device Ferrum(ClickTiming? clickTiming = null)
+    {
+        NeedMock();
+        Library.Check(Imports.anybox_mock_ferrum_open((clickTiming ?? ClickTiming.Makcu).ToNative(), out var device));
+        return new Device(device);
+    }
+
     /// <summary>the same as <see cref="Medius"/>, except that the link only gets checked on <see cref="Tick"/>, so a
     /// test decides when a link event gets noticed and nothing lands between the frames it records</summary>
     public static (Device Device, Mock Mock) MediusManual(ClickTiming? clickTiming = null, bool keyboard = false)

@@ -1,8 +1,7 @@
 name: ci
 
-# a push only runs on the public repo, the private one pays for its minutes (Windows counts double) and
-# its hooks already run the same checks, so there it only runs when someone asks. a release runs the checks on
-# its tag, then puts the crate on crates.io
+# a push only runs on the public repo, the private one pays for its minutes (Windows counts double), so there it
+# only runs when someone asks. a release runs the checks on its tag, then puts the crate on crates.io
 on:
   workflow_dispatch:
   pull_request:

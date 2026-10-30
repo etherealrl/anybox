@@ -4,13 +4,15 @@ use std::sync::{Arc, Barrier, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::backend::{
-    Backend, Command, Input, InputKind, InputKinds, LockSlot, Sink, UNLOCKED, Usage,
+    Backend, ChordKind, Command, Input, InputKind, InputKinds, LockSlot, Sink, Typing, UNLOCKED,
+    Usage,
 };
 use crate::capability::{Action, Button, Capabilities, Capability, Family, Info, Snapshot};
 use crate::click::{ClickTiming, Holds};
 use crate::device::{Device, Start};
 use crate::error::{Error, Result};
 use crate::event::{BoxTime, Clock};
+use crate::extension::{Extension, ExtensionReply, Interpolation};
 use crate::key::{Key, MediaKey};
 
 #[derive(Default)]
@@ -22,6 +24,8 @@ struct State {
     restarted: Vec<InputKind>,
     released_all: Vec<Vec<Usage>>,
     unlocked_all: Vec<Vec<LockSlot>>,
+    /// the cleanup calls in the order they came, `release_all`, `restore_all` and `unlock_all`
+    cleanup: Vec<&'static str>,
     fail_next: Option<Error>,
     /// the next stream switch fails for these kinds with this error
     fail_streams: Option<(InputKinds, Error)>,
@@ -33,6 +37,12 @@ struct State {
     fail_releases: bool,
     pause_release: Option<Arc<Barrier>>,
     snapshot: Option<Snapshot>,
+    /// every piece of text the fake typed
+    pieces: Vec<Vec<u8>>,
+    /// runs before each piece with its number, and an error it gives fails that piece
+    on_piece: Option<Box<dyn FnMut(usize) -> Option<Error> + Send>>,
+    /// every extension call that reached the fake
+    extensions: Vec<Extension>,
 }
 
 /// a box that does whatever its snapshot says and writes down everything it was asked
@@ -60,7 +70,16 @@ pub(crate) fn mouse() -> Capabilities {
 }
 
 pub(crate) fn open(capabilities: Capabilities, click_timing: ClickTiming) -> (Device, Handle) {
-    let snapshot = Snapshot::new(Info::new(Family::Medius), capabilities);
+    open_as(Family::Medius, capabilities, click_timing)
+}
+
+/// the fake, saying it's another family, for the calls only that family has
+pub(crate) fn open_as(
+    family: Family,
+    capabilities: Capabilities,
+    click_timing: ClickTiming,
+) -> (Device, Handle) {
+    let snapshot = Snapshot::new(Info::new(family), capabilities);
     let state = Arc::new(Mutex::new(State {
         snapshot: Some(snapshot.clone()),
         ..State::default()
@@ -119,8 +138,24 @@ impl Handle {
         self.state.lock().unwrap().released_all.clone()
     }
 
+    pub(crate) fn cleanup(&self) -> Vec<&'static str> {
+        self.state.lock().unwrap().cleanup.clone()
+    }
+
     pub(crate) fn unlocked_all(&self) -> Vec<Vec<LockSlot>> {
         self.state.lock().unwrap().unlocked_all.clone()
+    }
+
+    pub(crate) fn extensions(&self) -> Vec<Extension> {
+        self.state.lock().unwrap().extensions.clone()
+    }
+
+    pub(crate) fn pieces(&self) -> Vec<Vec<u8>> {
+        self.state.lock().unwrap().pieces.clone()
+    }
+
+    pub(crate) fn on_piece(&self, on_piece: impl FnMut(usize) -> Option<Error> + Send + 'static) {
+        self.state.lock().unwrap().on_piece = Some(Box::new(on_piece));
     }
 
     pub(crate) fn fail_next(&self, error: Error) {
@@ -258,7 +293,15 @@ impl Handle {
 impl Backend for Fake {
     fn send(&self, command: Command) -> Result<()> {
         let release = matches!(command.holds(), Some((_, false)))
-            || matches!(command, Command::Lock { keep: UNLOCKED, .. });
+            || matches!(
+                command,
+                Command::Lock { keep: UNLOCKED, .. }
+                    | Command::KeyForce { force: false, .. }
+                    | Command::KeyChord {
+                        kind: ChordKind::Release,
+                        ..
+                    }
+            );
         if release {
             let pause = self.0.lock().unwrap().pause_release.take();
             if let Some(barrier) = pause {
@@ -312,22 +355,75 @@ impl Backend for Fake {
         state.fail_restart.take().map_or(Ok(()), Err)
     }
 
+    fn type_piece(&self, piece: &[u8], typing: &mut Typing) -> Result<()> {
+        let mut on_piece = self.0.lock().unwrap().on_piece.take();
+        let index = self.0.lock().unwrap().pieces.len();
+        let failed = on_piece.as_mut().and_then(|on_piece| on_piece(index));
+        let mut state = self.0.lock().unwrap();
+        if state.on_piece.is_none() {
+            state.on_piece = on_piece;
+        }
+        // a hook's error stands for a box that failed with the piece already sent
+        if let Some(error) = failed {
+            typing.sent = true;
+            return Err(error);
+        }
+        let snapshot = state.snapshot.as_ref().unwrap();
+        if !snapshot.capabilities.get(Action::TypeText).is_supported() {
+            return Err(Error::Unsupported {
+                action: Action::TypeText,
+                family: snapshot.info.family,
+                reason: "the box changed during this call, check its snapshot again".into(),
+            });
+        }
+        state.pieces.push(piece.to_vec());
+        typing.sent = true;
+        Ok(())
+    }
+
     fn unlock_all(&self, slots: &[LockSlot]) -> Result<()> {
         let mut slots = slots.to_vec();
         slots.sort_by_key(|slot| format!("{slot:?}"));
-        self.0.lock().unwrap().unlocked_all.push(slots);
+        let mut state = self.0.lock().unwrap();
+        state.unlocked_all.push(slots);
+        state.cleanup.push("unlock_all");
         Ok(())
     }
 
     fn release_all(&self, held: &[Usage]) -> Result<()> {
         let mut held = held.to_vec();
         held.sort_by_key(|usage| format!("{usage:?}"));
-        self.0.lock().unwrap().released_all.push(held);
+        let mut state = self.0.lock().unwrap();
+        state.released_all.push(held);
+        state.cleanup.push("release_all");
         Ok(())
+    }
+
+    fn restore_all(&self, keys: &[Key]) -> Result<()> {
+        self.0.lock().unwrap().cleanup.push("restore_all");
+        let mut first = Ok(());
+        for &key in keys {
+            let restored = self.send(Command::KeyForce { key, force: false });
+            if first.is_ok() {
+                first = restored;
+            }
+        }
+        first
     }
 
     fn shutdown(&self, _deadline: Duration) {
         self.0.lock().unwrap().shutdowns += 1;
+    }
+
+    fn extension(&self, request: Extension) -> Result<ExtensionReply> {
+        self.0.lock().unwrap().extensions.push(request);
+        Ok(match request {
+            Extension::MakcuInterpolation => ExtensionReply::Interpolation(Interpolation::Auto),
+            Extension::MakcuMoving => ExtensionReply::Moving(false),
+            Extension::MakcuAutorelease => ExtensionReply::Autorelease(None),
+            Extension::FerrumCatchXy { .. } => ExtensionReply::Xy(0, 0),
+            _ => ExtensionReply::Done,
+        })
     }
 
     fn as_any(&self) -> &dyn Any {

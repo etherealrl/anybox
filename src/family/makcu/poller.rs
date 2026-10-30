@@ -91,6 +91,9 @@ impl Poller {
         // a kind that didn't answer just gets skipped this tick, the retries and the route check still run
         let on =
             wanted.map(|(kind, wanted)| (kind, wanted.then(|| self.stream_on(kind)).flatten()));
+        // a piece of text that types while this tick reads the snapshot would make the key it's typing look like a
+        // lost release
+        let pieces = self.shared.pieces.load(Ordering::Acquire);
         let Some(injected) = self.get(frames::INJECT_SNAPSHOT, &[]) else {
             return;
         };
@@ -147,6 +150,10 @@ impl Poller {
             self.shared.last.forget_locks();
             lock(&self.shared.key_masks).clear();
             self.sink.session_reset();
+            // the box forgot it with the rest, and what anybox set is anybox's to put back
+            if let Some(ms) = *lock(&self.shared.autorelease) {
+                self.get(frames::AUTORELEASE, &ms.to_le_bytes());
+            }
         } else {
             drop(expect);
             if keys_lost {
@@ -194,7 +201,11 @@ impl Poller {
         }
         for key in frames::injected_keys(&injected) {
             let _buttons = lock(&self.shared.buttons);
+            if self.shared.pieces.load(Ordering::Acquire) != pieces {
+                break;
+            }
             if !self.shared.last.key(key) {
+                self.shared.key_writes.fetch_add(1, Ordering::AcqRel);
                 let _ = self.link.request(frame(frames::KEY_UP, &[key]), None);
             }
         }
@@ -204,20 +215,23 @@ impl Poller {
             self.check_routes(generation);
             // key masks don't show in INJECT_SNAPSHOT, so sending the wanted ones again is the only way to fix a
             // lost one
-            let masks: Vec<u8> = if self
-                .shared
-                .snapshot()
-                .capabilities
-                .get(Action::LockKey)
-                .is_supported()
-            {
-                lock(&self.shared.key_masks).iter().copied().collect()
-            } else {
-                Vec::new()
-            };
-            for key in masks {
+            let snapshot = self.shared.snapshot();
+            let masks: Vec<(u8, Action)> = lock(&self.shared.key_masks)
+                .iter()
+                .map(|(&key, &action)| (key, action))
+                .filter(|&(_, action)| snapshot.capabilities.get(action).is_supported())
+                .collect();
+            for (key, action) in masks {
                 let _buttons = lock(&self.shared.buttons);
-                if lock(&self.shared.key_masks).contains(&key) {
+                // the box refuses key writes while it types, and the app would get that refusal
+                if self.shared.pieces.load(Ordering::Acquire) != pieces {
+                    break;
+                }
+                if lock(&self.shared.key_masks).get(&key) == Some(&action) {
+                    self.shared.key_writes.fetch_add(1, Ordering::AcqRel);
+                    self.shared
+                        .last
+                        .name_mask(action == Action::ForceReleaseKey);
                     let _ = self.link.request(frame(frames::KEY_MASK, &[key, 1]), None);
                 }
             }

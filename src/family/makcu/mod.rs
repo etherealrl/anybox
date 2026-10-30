@@ -1,20 +1,22 @@
 use std::any::Any;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::backend::{
-    Backend, Command, InputKind, InputKinds, LOCKED, LockSlot, Sink, StreamFailure, UNLOCKED,
-    Usage, WRITE_DEADLINE,
+    Backend, ChordKind, Command, InputKind, InputKinds, LOCKED, LockSlot, Sink, StreamFailure,
+    Typing, UNLOCKED, Usage, WRITE_DEADLINE,
 };
 use crate::capability::{
-    Action, Axis, Button, Capabilities, Capability, Family, Firmware, Info, Quirk, Snapshot,
-    StableId,
+    Action, Axis, Button, Capabilities, Capability, Family, Firmware, Info, MakcuAction, Quirk,
+    Snapshot, StableId,
 };
 use crate::error::{Error, Result};
+use crate::extension::{Extension, ExtensionReply, Interpolation};
+use crate::key::Key;
 use crate::transport::link::{Link, Target};
 use crate::transport::probe::Probe;
 use crate::transport::{Candidate, System, is_ch343};
@@ -31,11 +33,19 @@ pub(crate) const BAUDS: [u32; 2] = [4_000_000, 115_200];
 pub(crate) const MIN_BUILD: u32 = 4085;
 /// the vendor reads the build as major * 1000 + minor, so this would be a V5
 const NEXT_MAJOR: u32 = 5000;
-/// on V4.085 `move_now` can still get smoothed over several reports, V4.086 sends it in the next one
-const MOVE_NOW_BUILD: u32 = 4086;
+/// V4.097 is the first official build that sends `move_now` in the next report, older ones can smooth it
+const MOVE_NOW_BUILD: u32 = 4097;
+/// the first official build with AUTORELEASE
+const AUTORELEASE_BUILD: u32 = 4108;
 /// the reference code's timeout for a text reply
 const TEXT_WAIT: Duration = Duration::from_millis(500);
 const BINARY_WAIT: Duration = Duration::from_millis(250);
+/// how long an empty KEY_STRING waits for the box to refuse it, which it does while it types. the slowest refusal
+/// measured came 15 ms after the write, so silence for this long means the box is done
+const TYPING_WINDOW: Duration = Duration::from_millis(40);
+/// the pause between two of those checks while the box is still typing
+const TYPING_PAUSE: Duration = Duration::from_millis(10);
+const NO_KEYBOARD: &str = "the device behind the box has no keyboard interface right now";
 const TRIES: usize = 2;
 /// CLICK takes a hold of up to 5000 ms, that's documented. KEY_PRESS has no documented limit, so it gets the same
 /// one
@@ -119,9 +129,13 @@ fn start(
         expect: Mutex::new(Expect::default()),
         streams: Mutex::new(()),
         buttons: Mutex::new(()),
-        key_masks: Mutex::new(HashSet::new()),
+        key_masks: Mutex::new(HashMap::new()),
         last: Arc::default(),
         stop: AtomicBool::new(false),
+        pieces: AtomicU64::new(0),
+        key_writes: AtomicU64::new(0),
+        checked: AtomicU64::new(u64::MAX),
+        autorelease: Mutex::new(None),
     });
     let id = target.id.clone();
     let reprobe = {
@@ -131,6 +145,16 @@ fn start(
                 return Err(Error::Disconnected);
             }
             let snapshot = describe(probe, id.clone())?;
+            if let Some(ms) = *lock(&shared.autorelease) {
+                // the echo is read here, a request after the reconnect would take it for its own answer otherwise.
+                // a refusal leaves it off on the box, which `autorelease()` reads from the box anyway
+                probe.ask(
+                    &frame(frames::AUTORELEASE, &ms.to_le_bytes()),
+                    &mut MakcuFrames::probe(),
+                    |frame| parts(frame).is_some_and(|(cmd, _)| cmd == frames::AUTORELEASE),
+                    BINARY_WAIT,
+                )?;
+            }
             // the core turns streams back on and lets go of what it held once it hears Reconnected
             shared.last.forget_locks();
             lock(&shared.key_masks).clear();
@@ -239,7 +263,7 @@ pub(crate) fn snapshot(build: u32, kinds: u8, id: Option<StableId>) -> Snapshot 
             Capability::native()
         } else {
             Capability::unsupported(
-                "older builds can still smooth move_now, so update the box to V4.086 or later",
+                "older builds can still smooth move_now, so update the box to V4.097 or later",
             )
         };
         Capabilities::new(vec![
@@ -264,6 +288,19 @@ pub(crate) fn snapshot(build: u32, kinds: u8, id: Option<StableId>) -> Snapshot 
                 .with(Quirk::MaxHold(MAX_HOLD)),
         )
         .set(Action::ButtonEvents, Capability::native())
+        .set(
+            Action::Makcu(MakcuAction::Interpolation),
+            Capability::native(),
+        )
+        .set(Action::Makcu(MakcuAction::Moving), Capability::native())
+        .set(
+            Action::Makcu(MakcuAction::Autorelease),
+            if build >= AUTORELEASE_BUILD {
+                Capability::native()
+            } else {
+                Capability::unsupported("autorelease needs V4.108 or later, update the box")
+            },
+        )
     } else {
         let none = Capability::unsupported(
             "the box doesn't route a mouse right now, plug one in and it shows up by itself",
@@ -276,6 +313,9 @@ pub(crate) fn snapshot(build: u32, kinds: u8, id: Option<StableId>) -> Snapshot 
             Action::Wheel,
             Action::Click,
             Action::ButtonEvents,
+            Action::Makcu(MakcuAction::Interpolation),
+            Action::Makcu(MakcuAction::Moving),
+            Action::Makcu(MakcuAction::Autorelease),
         ]
         .into_iter()
         .fold(Capabilities::new(Vec::new()), |capabilities, action| {
@@ -292,15 +332,31 @@ pub(crate) fn snapshot(build: u32, kinds: u8, id: Option<StableId>) -> Snapshot 
                 Capability::native().with(Quirk::MaxHold(MAX_HOLD)),
             )
             .set(Action::KeyEvents, Capability::native())
+            // measured on V4.094: the same keys with Caps Lock on and off, and a held key the text types or a held
+            // Left Shift the text needs gets let go
+            .set(
+                Action::TypeText,
+                Capability::native()
+                    .with(Quirk::TypedTextIgnoresCapsLock)
+                    .with(Quirk::TypingReleasesHeldKeys),
+            )
+            // measured on V4.094, KEY_MULTI_PRESS holds its keys 8 to 12 ms
+            .set(
+                Action::KeyChord,
+                Capability::native().with(Quirk::BoxClickTiming {
+                    min: Duration::from_millis(8),
+                    max: Duration::from_millis(12),
+                }),
+            )
     } else {
-        let none = Capability::unsupported(
-            "the device behind the box has no keyboard interface right now",
-        );
+        let none = Capability::unsupported(NO_KEYBOARD);
         capabilities
             .set(Action::KeyPress, none.clone())
             .set(Action::KeyRelease, none.clone())
             .set(Action::KeyTap, none.clone())
-            .set(Action::KeyEvents, none)
+            .set(Action::KeyEvents, none.clone())
+            .set(Action::TypeText, none.clone())
+            .set(Action::KeyChord, none)
     };
     let capabilities = if mouse {
         capabilities
@@ -315,17 +371,15 @@ pub(crate) fn snapshot(build: u32, kinds: u8, id: Option<StableId>) -> Snapshot 
             .set(Action::LockButton, none.clone())
             .set(Action::LockAxis, none)
     };
+    let keys = if keyboard {
+        Capability::native()
+    } else {
+        Capability::unsupported("the device behind the box has no keyboard interface right now")
+    };
     let capabilities = capabilities
-        .set(
-            Action::LockKey,
-            if keyboard {
-                Capability::native()
-            } else {
-                Capability::unsupported(
-                    "the device behind the box has no keyboard interface right now",
-                )
-            },
-        )
+        .set(Action::LockKey, keys.clone())
+        // its key mask, which cuts a key that's already held. measured by K4 on V4.094, not checked here
+        .set(Action::ForceReleaseKey, keys)
         .set(
             Action::ScaleAxis,
             Capability::unsupported("MAKCU can only block an axis, not scale it"),
@@ -418,11 +472,22 @@ pub(crate) struct Shared {
     streams: Mutex<()>,
     /// only one button write at a time, the backend's or the poller's release retry
     buttons: Mutex<()>,
-    /// the keys masked through Anybox. masks don't show in INJECT_SNAPSHOT, so the poller sends them again every
-    /// now and then
-    key_masks: Mutex<HashSet<u8>>,
+    /// the keys masked through Anybox, each with the action it's masked for (`LockKey` or `ForceReleaseKey`, a key
+    /// is never both). masks don't show in INJECT_SNAPSHOT, so the poller sends them again every now and then
+    key_masks: Mutex<HashMap<u8, Action>>,
     last: Arc<frames::LastSent>,
     stop: AtomicBool,
+    /// goes up under `buttons` with every piece of text, so a poller tick that read the snapshot while one was
+    /// typing doesn't let go of the key it saw being typed
+    pieces: AtomicU64,
+    /// every key SET anybox writes other than a text's own, because a tap that's still running keeps the box busy
+    key_writes: AtomicU64,
+    /// `key_writes` when the box was last seen done typing, so a piece only checks it's idle when something went
+    /// out since
+    checked: AtomicU64,
+    /// what was set through anybox, in ms. the box forgets it when it loses power, so it goes out again after a
+    /// reconnect and a session reset
+    autorelease: Mutex<Option<u32>>,
 }
 
 impl Shared {
@@ -452,10 +517,19 @@ impl MakcuBackend {
     /// core already said yes. releases always go out
     fn check(&self, command: Command) -> Result<()> {
         let button = match command {
-            Command::Release(_) | Command::KeyRelease(_) | Command::MediaRelease(_) => {
+            Command::Release(_)
+            | Command::KeyRelease(_)
+            | Command::MediaRelease(_)
+            | Command::KeyChord {
+                kind: ChordKind::Release,
+                ..
+            } => {
                 return Ok(());
             }
-            Command::Lock { keep: UNLOCKED, .. } => return Ok(()),
+            Command::Lock { keep: UNLOCKED, .. } | Command::KeyForce { force: false, .. } => {
+                return Ok(());
+            }
+            Command::KeyForce { force: true, .. } => None,
             Command::Lock {
                 slot: LockSlot::Button(button),
                 ..
@@ -470,7 +544,8 @@ impl MakcuBackend {
             | Command::KeyPress(_)
             | Command::KeyTap { .. }
             | Command::MediaPress(_)
-            | Command::MediaTap { .. } => None,
+            | Command::MediaTap { .. }
+            | Command::KeyChord { .. } => None,
         };
         let action = command.action();
         let snapshot = self.shared.snapshot();
@@ -520,17 +595,115 @@ impl MakcuBackend {
             } if keep == LOCKED || keep == UNLOCKED => {
                 frame(frames::KEY_MASK, &[key.0, u8::from(keep == LOCKED)])
             }
+            // the same mask a lock writes, which cuts a key that's already held (K4, V4.094)
+            Command::KeyForce { key, force } => frame(frames::KEY_MASK, &[key.0, u8::from(force)]),
             Command::Lock { slot, keep } if keep == LOCKED || keep == UNLOCKED => frame(
                 frames::LOCK,
                 &[frames::lock_target(slot)?, u8::from(keep == LOCKED)],
             ),
             // a scale, which the box can't do because it only blocks or passes
             Command::Lock { .. } => return None,
+            Command::KeyChord { kind, keys } => frame(
+                match kind {
+                    ChordKind::Press => frames::KEY_MULTI_DOWN,
+                    ChordKind::Release => frames::KEY_MULTI_UP,
+                    ChordKind::Tap => frames::KEY_MULTI_PRESS,
+                },
+                &keys.as_slice().iter().map(|key| key.0).collect::<Vec<_>>(),
+            ),
             Command::DiscardPendingMoves
             | Command::Pan(_)
             | Command::MediaPress(_)
             | Command::MediaRelease(_)
             | Command::MediaTap { .. } => return None,
+        })
+    }
+
+    /// an empty KEY_STRING, which the box refuses while it types and takes without a word once it's done. the
+    /// first check of a text ties the rest of it to the opening it went out on
+    fn typing(&self, typing: &mut Typing, until: Instant) -> Result<bool> {
+        let (reply, generation) = self.link.request_or_silence(
+            frame(frames::KEY_STRING, &[]),
+            u32::from(frames::KEY_STRING),
+            TYPING_WINDOW,
+            typing.generation,
+            until,
+        )?;
+        typing.generation.get_or_insert(generation);
+        Ok(reply
+            .as_deref()
+            .and_then(parts)
+            .is_some_and(|(_, payload)| refused(payload)))
+    }
+
+    /// the piece itself, see `type_piece`
+    fn piece(&self, piece: &[u8], typing: &mut Typing) -> Result<()> {
+        let until = Instant::now() + WRITE_DEADLINE;
+        if let Some(error) = self.typing_unsupported() {
+            return Err(error);
+        }
+        if self.shared.key_writes.load(Ordering::Acquire)
+            != self.shared.checked.load(Ordering::Acquire)
+        {
+            while self.typing(typing, until)? {
+                thread::sleep(TYPING_PAUSE);
+                if Instant::now() >= until {
+                    return Err(Error::Rejected {
+                        action: Action::TypeText,
+                        detail: "it's still busy with a key it taps, try again once that's done"
+                            .into(),
+                    });
+                }
+            }
+        }
+        let (_, generation) = self.link.request_on(
+            frame(frames::KEY_STRING, piece),
+            None,
+            typing.generation,
+            until,
+        )?;
+        typing.generation.get_or_insert(generation);
+        typing.sent = true;
+        let mut started = false;
+        while self.typing(typing, until)? {
+            started = true;
+            if let Some(error) = self.typing_unsupported() {
+                return Err(error);
+            }
+            thread::sleep(TYPING_PAUSE);
+            if Instant::now() >= until {
+                self.link.take_down(generation);
+                return Err(Error::Disconnected);
+            }
+        }
+        // two characters take the box at least 150 ms, so the first check always lands while it types one
+        if !started {
+            return Err(Error::Rejected {
+                action: Action::TypeText,
+                detail: "it didn't type it".into(),
+            });
+        }
+        self.shared.checked.store(
+            self.shared.key_writes.load(Ordering::Acquire),
+            Ordering::Release,
+        );
+        // the box let go of what it typed, a held key of the same usage and a held Left Shift included
+        for (key, shift) in piece.iter().filter_map(|&byte| Key::for_ascii(byte)) {
+            self.shared.last.set_key(key.0, false);
+            if shift {
+                self.shared.last.set_key(Key::LEFT_SHIFT.0, false);
+            }
+        }
+        Ok(())
+    }
+
+    fn typing_unsupported(&self) -> Option<Error> {
+        let snapshot = self.shared.snapshot();
+        let capability = snapshot.capabilities.get(Action::TypeText);
+        (!capability.is_supported()).then(|| Error::Unsupported {
+            action: Action::TypeText,
+            family: Family::MakcuV4,
+            reason: capability.reason(),
         })
     }
 
@@ -606,12 +779,31 @@ impl Backend for MakcuBackend {
             let pressed = !matches!(command, Command::Release(_));
             self.shared.last.set(id, u8::from(pressed));
         }
+        if matches!(
+            command,
+            Command::KeyPress(_)
+                | Command::KeyRelease(_)
+                | Command::KeyTap { .. }
+                | Command::KeyChord { .. }
+                | Command::Lock {
+                    slot: LockSlot::Key(_),
+                    ..
+                }
+                | Command::KeyForce { .. }
+        ) {
+            self.shared.key_writes.fetch_add(1, Ordering::AcqRel);
+        }
         match command {
             // a tap counts as a press, like a click
             Command::KeyPress(key) | Command::KeyTap { key, .. } => {
                 self.shared.last.set_key(key.0, true)
             }
             Command::KeyRelease(key) => self.shared.last.set_key(key.0, false),
+            Command::KeyChord { kind, keys } => {
+                for key in keys.as_slice() {
+                    self.shared.last.set_key(key.0, kind != ChordKind::Release);
+                }
+            }
             Command::Lock { slot, keep } => {
                 let state = if keep == UNLOCKED {
                     frames::LastSent::UNLOCKED
@@ -622,12 +814,22 @@ impl Backend for MakcuBackend {
                     self.shared.last.set_lock(target, state);
                 }
                 if let LockSlot::Key(key) = slot {
+                    self.shared.last.name_mask(false);
                     let mut masks = lock(&self.shared.key_masks);
                     if keep == UNLOCKED {
                         masks.remove(&key.0);
                     } else {
-                        masks.insert(key.0);
+                        masks.insert(key.0, Action::LockKey);
                     }
+                }
+            }
+            Command::KeyForce { key, force } => {
+                self.shared.last.name_mask(true);
+                let mut masks = lock(&self.shared.key_masks);
+                if force {
+                    masks.insert(key.0, Action::ForceReleaseKey);
+                } else {
+                    masks.remove(&key.0);
                 }
             }
             _ => {}
@@ -654,6 +856,18 @@ impl Backend for MakcuBackend {
             _ => {}
         }
         sent.map(|_| ())
+    }
+
+    /// checks the box is idle when a key went out since it was last seen done, writes the piece, then checks with an
+    /// empty KEY_STRING until the box stops refusing it. all of it under `buttons`, so the poller writes no key in
+    /// the middle, and within `WRITE_DEADLINE`. a piece is never sent twice, it could get typed twice
+    fn type_piece(&self, piece: &[u8], typing: &mut Typing) -> Result<()> {
+        let _buttons = lock(&self.shared.buttons);
+        // bumped on both ends, so a poller that read the count and then a snapshot during the piece sees it moved
+        self.shared.pieces.fetch_add(1, Ordering::AcqRel);
+        let typed = self.piece(piece, typing);
+        self.shared.pieces.fetch_add(1, Ordering::AcqRel);
+        typed
     }
 
     /// switches each kind that isn't already where it's asked to be. no new kind starts once `WRITE_DEADLINE` has
@@ -771,7 +985,10 @@ impl Backend for MakcuBackend {
             }
         }
         // masks don't show in INJECT_SNAPSHOT, so any key left here never got its unlock sent
-        let masks: Vec<u8> = lock(&self.shared.key_masks).drain().collect();
+        let masks: Vec<u8> = lock(&self.shared.key_masks)
+            .drain()
+            .map(|(key, _)| key)
+            .collect();
         for key in masks {
             let _ = self
                 .link
@@ -805,10 +1022,97 @@ impl Backend for MakcuBackend {
             .shutdown(until.saturating_duration_since(Instant::now()));
     }
 
+    fn extension(&self, request: Extension) -> Result<ExtensionReply> {
+        let action = request.action();
+        let rejected = |detail: &str| Error::Rejected {
+            action,
+            detail: detail.into(),
+        };
+        match request {
+            Extension::MakcuInterpolation => self.spread().map(ExtensionReply::Interpolation),
+            Extension::MakcuSetInterpolation(value) => {
+                let byte = match value {
+                    Interpolation::Auto => 0xFF,
+                    Interpolation::Percent(n) => n,
+                };
+                let echo = self.get(frames::INTERPOLATE, &[byte])?;
+                // AUTO echoes FF, the same byte as a refusal, so the snapshot settles it either way
+                if refused(&echo) && byte != 0xFF {
+                    return Err(rejected("it refused the interpolation"));
+                }
+                if self.spread()? != value {
+                    return Err(rejected("it didn't take the interpolation"));
+                }
+                Ok(ExtensionReply::Done)
+            }
+            Extension::MakcuMoving => match self.get(frames::MOVING, &[])?[..] {
+                [moving @ 0..=1] => Ok(ExtensionReply::Moving(moving == 1)),
+                _ => Err(rejected("it refused to say whether it's still moving")),
+            },
+            Extension::MakcuAutorelease => match self.get(frames::AUTORELEASE, &[])?[..] {
+                [a, b, c, d] => Ok(ExtensionReply::Autorelease(after(u32::from_le_bytes([
+                    a, b, c, d,
+                ])))),
+                _ => Err(rejected("it refused to say its autorelease")),
+            },
+            Extension::MakcuSetAutorelease(wanted) => {
+                let ms = wanted.map_or(0, |after| {
+                    u32::try_from(after.as_millis()).expect("the core caps it at a minute")
+                });
+                // held over the exchange, otherwise a session reset could put the old value back between this
+                // write and the remembered one changing
+                let mut remembered = lock(&self.shared.autorelease);
+                let echo = self.get(frames::AUTORELEASE, &ms.to_le_bytes())?;
+                if echo != ms.to_le_bytes() {
+                    return Err(rejected("it refused the autorelease"));
+                }
+                *remembered = wanted.map(|_| ms);
+                Ok(ExtensionReply::Done)
+            }
+            _ => Err(Error::Unsupported {
+                action,
+                family: Family::MakcuV4,
+                reason: "a MAKCU doesn't have this".into(),
+            }),
+        }
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }
 }
 
+impl MakcuBackend {
+    /// a GET or a SET that echoes, and its payload, a refusal's `FF` included. no answer takes the link down
+    fn get(&self, command: u8, payload: &[u8]) -> Result<Vec<u8>> {
+        let reply = self
+            .link
+            .request(frame(command, payload), Some(u32::from(command)))?
+            .ok_or(Error::Disconnected)?;
+        let (_, payload) = parts(&reply).ok_or(Error::Disconnected)?;
+        Ok(payload.to_vec())
+    }
+
+    /// the spread from a fresh INJECT_SNAPSHOT, which can't be mistaken for a refusal the way INTERPOLATE's own
+    /// GET can
+    fn spread(&self) -> Result<Interpolation> {
+        let snapshot = self.get(frames::INJECT_SNAPSHOT, &[])?;
+        match snapshot.get(frames::SPREAD) {
+            Some(0xFF) => Ok(Interpolation::Auto),
+            Some(&n) if n <= 100 => Ok(Interpolation::Percent(n)),
+            _ => Err(Error::Rejected {
+                action: Action::Makcu(MakcuAction::Interpolation),
+                detail: "it didn't send its state".into(),
+            }),
+        }
+    }
+}
+
+fn after(ms: u32) -> Option<Duration> {
+    (ms != 0).then(|| Duration::from_millis(u64::from(ms)))
+}
+
+#[cfg(any(test, feature = "mock"))]
+pub(crate) mod mock;
 #[cfg(test)]
 mod tests;

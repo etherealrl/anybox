@@ -37,6 +37,7 @@ from ._types import (
     Family,
     FerrumApi,
     Info,
+    Interpolation,
     Key,
     KeyEvent,
     MediaEvent,
@@ -51,6 +52,10 @@ from ._types import (
     StableId,
     Stamp,
     UsbIds,
+    YscInterpolation,
+    YscInterpolationSettings,
+    YscProfile,
+    YscSerial,
     _ClickTimingKind,
     _EventKind,
     _IdKind,
@@ -409,6 +414,27 @@ class Device:
         anybox time it from the PC"""
         self._call(lib.anybox_device_tap_key_with, _key(key), ctypes.byref(_click(hold, native_only)))
 
+    def type_text(self, text: str) -> None:
+        """types the text on the box with the box's own timing, as US layout key presses, and returns once the box
+        has typed all of it. it takes printable ASCII only, so tap keys like Enter yourself after it. other calls
+        on the device can wait while it types, and a close stops it after the few characters going out. after an
+        error part of it may already be typed"""
+        self._call(lib.anybox_device_type_text, native.char_array(text))
+
+    def press_keys(self, *keys: Key) -> None:
+        """holds the keys down with one command of the box, up to 14 of them, until `release_keys`"""
+        self._call(lib.anybox_device_press_keys, _keys(keys), len(keys))
+
+    def release_keys(self, *keys: Key) -> None:
+        """lets go of the keys with one command of the box, or one at a time like `release_key` on a box that
+        can't, so a key you hold always gets let go. a key you don't hold still has to be one the box can let go
+        of, so it can fail as unsupported after the held ones already went"""
+        self._call(lib.anybox_device_release_keys, _keys(keys), len(keys))
+
+    def tap_keys(self, *keys: Key) -> None:
+        """presses and lets go of the keys with one command of the box, timed by the box"""
+        self._call(lib.anybox_device_tap_keys, _keys(keys), len(keys))
+
     def press_media(self, key: MediaKey) -> None:
         """holds a media key down until `release_media`. a media key is its HID consumer usage"""
         self._call(lib.anybox_device_press_media, _media(key))
@@ -430,6 +456,17 @@ class Device:
     def unlock_button(self, button: Button) -> None:
         """lets the physical button through again"""
         self._call(lib.anybox_device_unlock_button, _button(button))
+
+    def force_release_key(self, key: Key) -> None:
+        """the PC sees the key up from now on, whatever the finger does, until `restore_key`. key events keep
+        reporting the finger, so you can tell whether it's still held. a key anybox holds or has locked itself, or
+        one a text needs while it types, is refused, since each box would do something else with it"""
+        self._call(lib.anybox_device_force_release_key, _key(key))
+
+    def restore_key(self, key: Key) -> None:
+        """gives the PC the finger's state of the key again, so a key that's still held goes down for it. it also
+        clears a force another program left, except on a key anybox holds or has locked"""
+        self._call(lib.anybox_device_restore_key, _key(key))
 
     def lock_key(self, key: Key) -> None:
         """keeps the physical key from reaching the PC until `unlock_key`"""
@@ -481,6 +518,25 @@ class Device:
         with self._handle.use() as pointer:
             check(lib.anybox_device_events(pointer, _int(kinds, 0, 15, "kinds"), ctypes.byref(out)))
         return Events(out.value, self)  # type: ignore[arg-type]
+
+    def makcu(self) -> Makcu | None:
+        """what only a MAKCU has, None on another box and once this device is closed"""
+        return Makcu(self) if self._is(Family.MAKCU_V4) else None
+
+    def ysc(self) -> Ysc | None:
+        """what only a YSC8K has, None on another box and once this device is closed"""
+        return Ysc(self) if self._is(Family.YSC) else None
+
+    def ferrum(self) -> Ferrum | None:
+        """what only a Ferrum has, None on another box and once this device is closed"""
+        return Ferrum(self) if self._is(Family.FERRUM) else None
+
+    def _is(self, family: Family) -> bool:
+        return not self._closed and self.snapshot().info.family == family
+
+    def _out(self, function: Callable[..., int], *args: object) -> None:
+        with self._handle.use() as pointer:
+            check(function(pointer, *args))
 
     def medius(self) -> Any:
         """on a Medius, the medius package's own `Device` for everything only Medius does (clips, transforms,
@@ -560,6 +616,10 @@ def _button(button: Button) -> int:
 
 def _key(key: Key) -> int:
     return _int(key, 0, 0xFF, "a key")
+
+
+def _keys(keys: tuple[Key, ...]) -> ctypes.Array:
+    return (ctypes.c_uint8 * len(keys))(*(_key(key) for key in keys))
 
 
 def _media(key: MediaKey) -> int:
@@ -661,3 +721,169 @@ def scan() -> list[Scanned]:
 
 def candidates() -> list[str]:
     return Connect().candidates()
+
+
+def _millis(seconds: float, what: str) -> int:
+    """the boxes take whole milliseconds, so anything finer is refused instead of cut"""
+    if seconds < 0:
+        raise ValueError(f"{what} can't be negative")
+    nanos = round(seconds * 1_000_000_000)
+    if nanos % 1_000_000:
+        raise ValueError(f"{what} has to be whole milliseconds, {seconds} s isn't")
+    return _int(nanos // 1_000_000, 0, 0xFFFFFFFF, what)
+
+
+def _ysc_interpolation(raw: native.YscInterpolation) -> YscInterpolation:
+    return YscInterpolation(
+        enabled=raw.enabled,
+        profile=YscProfile(raw.profile),
+        window=raw.window_ms / 1000 if raw.has_window else None,
+        max_window=raw.max_window_ms / 1000 if raw.has_max_window else None,
+        measured_interval=_seconds(raw.measured_interval_us) if raw.has_measured_interval else None,
+    )
+
+
+def _ms_or_off(seconds: float | None, what: str) -> int:
+    """0 is off on the C side, so a zero asked for has to fail here like it does in Rust"""
+    if seconds is None:
+        return 0
+    ms = _millis(seconds, what)
+    if ms == 0:
+        raise ValueError(f"{what} can't be 0, use None to turn it off")
+    return ms
+
+
+def _seconds_or_off(ms: ctypes.c_uint32) -> float | None:
+    return ms.value / 1000 if ms.value else None
+
+
+def _raw_interpolation(value: Interpolation) -> native.MakcuInterpolation:
+    return native.MakcuInterpolation(
+        value.automatic, 0 if value.automatic else _int(value.percentage, 0, 255, "the percent")
+    )
+
+
+def _interpolation(raw: native.MakcuInterpolation) -> Interpolation:
+    return Interpolation.auto() if raw.automatic else Interpolation.percent(raw.percent)
+
+
+def _raw_ysc_settings(settings: YscInterpolationSettings) -> native.YscInterpolationSettings:
+    return native.YscInterpolationSettings(
+        settings.enabled,
+        _u32(settings.profile, "the profile"),
+        _millis(settings.window, "the window"),
+        _millis(settings.max_window, "the max window"),
+    )
+
+
+def _ysc_serial(out: ctypes.c_void_p) -> YscSerial:
+    """reads the serial and frees it"""
+    try:
+        return YscSerial(
+            custom=text(lib.anybox_ysc_serial_custom(out)),
+            physical=text(lib.anybox_ysc_serial_physical(out)),
+            active=text(lib.anybox_ysc_serial_active(out)),
+        )
+    finally:
+        lib.anybox_ysc_serial_free(out)
+
+
+class Makcu:
+    """what only a MAKCU has. it keeps the device alive, and each call checks what the box can do right now"""
+
+    def __init__(self, device: Device) -> None:
+        self._device = device
+
+    # made by bindings/gen from its call table (makcu_methods), change the table and run cargo run -p anybox-gen
+    def interpolation(self) -> Interpolation:
+        """how long the box spreads a move, read fresh from the box. it's global to the box and every program on it
+        shares it"""
+        out = native.MakcuInterpolation()
+        self._device._out(lib.anybox_makcu_interpolation, ctypes.byref(out))
+        return _interpolation(out)
+
+    def set_interpolation(self, value: Interpolation) -> None:
+        """sets it and reads it back, a box that didn't take it raises `RejectedError`. it changes how moves land
+        for every program on the box, and anybox leaves it set when you close"""
+        self._device._out(lib.anybox_makcu_set_interpolation, ctypes.byref(_raw_interpolation(value)))
+
+    def moving(self) -> bool:
+        """whether injected motion is still queued or being spread"""
+        out = ctypes.c_bool()
+        self._device._out(lib.anybox_makcu_moving, ctypes.byref(out))
+        return out.value
+
+    def autorelease(self) -> float | None:
+        """how long in seconds the box waits with nothing coming in before it lets go of injected mouse buttons,
+        None when it's off"""
+        out = ctypes.c_uint32()
+        self._device._out(lib.anybox_makcu_autorelease, ctypes.byref(out))
+        return _seconds_or_off(out)
+
+    def set_autorelease(self, after: float | None) -> None:
+        """turns autorelease on for 1 ms to 60 s (in seconds, whole milliseconds only), or off with None. anybox
+        asks the box something about every 250 ms, so with more than that it only fires once your app dies or
+        hangs, and a button it held gets let go instead of staying down. the box shares the timer with every
+        program on it and forgets it when it loses power, so anybox sends it again after a reconnect. needs V4.108
+        """
+        self._device._out(lib.anybox_makcu_set_autorelease, _ms_or_off(after, "autorelease"))
+
+    # the end of what bindings/gen makes (makcu_methods)
+
+
+class Ysc:
+    """what only a YSC8K has. it keeps the device alive, and each call checks what the box can do right now"""
+
+    def __init__(self, device: Device) -> None:
+        self._device = device
+
+    # made by bindings/gen from its call table (ysc_methods), change the table and run cargo run -p anybox-gen
+    def interpolation(self) -> YscInterpolation:
+        """how the box spreads moves. it's on by default and kept on the box, so another app may have changed it"""
+        out = native.YscInterpolation()
+        self._device._out(lib.anybox_ysc_interpolation, ctypes.byref(out))
+        return _ysc_interpolation(out)
+
+    def set_interpolation(self, settings: YscInterpolationSettings) -> None:
+        """sets it and reads it back, a box that didn't take it raises `RejectedError`. the box keeps it, anybox
+        leaves it set when you close"""
+        self._device._out(lib.anybox_ysc_set_interpolation, ctypes.byref(_raw_ysc_settings(settings)))
+
+    def reset_interpolation(self) -> YscInterpolation:
+        """puts it back to the box's default and gives you what that is"""
+        out = native.YscInterpolation()
+        self._device._out(lib.anybox_ysc_reset_interpolation, ctypes.byref(out))
+        return _ysc_interpolation(out)
+
+    def serial(self) -> YscSerial:
+        """the serial the box gives the mouse behind it"""
+        out = ctypes.c_void_p()
+        self._device._out(lib.anybox_ysc_serial, ctypes.byref(out))
+        return _ysc_serial(out)
+
+    # the end of what bindings/gen makes (ysc_methods)
+
+
+class Ferrum:
+    """what only a Ferrum has. it keeps the device alive, and each call checks what the box can do right now"""
+
+    def __init__(self, device: Device) -> None:
+        self._device = device
+
+    # made by bindings/gen from its call table (ferrum_methods), change the table and run cargo run -p anybox-gen
+    def catch_xy(self, window: float, with_software: bool = False) -> tuple[int, int]:
+        """the mouse's own motion summed over the last `window` (in seconds, whole milliseconds only, up to a
+        second), and what software sent too with `with_software`. y is positive down like `move_by` per the
+        vendor's first example, its second says the opposite and nobody checked it on a box yet. what a 0 window
+        does isn't documented"""
+        x, y = ctypes.c_int32(), ctypes.c_int32()
+        self._device._out(
+            lib.anybox_ferrum_catch_xy,
+            _millis(window, "the window"),
+            with_software,
+            ctypes.byref(x),
+            ctypes.byref(y),
+        )
+        return x.value, y.value
+
+    # the end of what bindings/gen makes (ferrum_methods)

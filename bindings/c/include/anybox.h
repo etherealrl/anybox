@@ -30,7 +30,7 @@
 
 // bumped on any change to a struct, a constant or a function, so a caller compares it with `anybox_abi_version()`
 // once at start and calls nothing else when they differ
-#define ANYBOX_ABI_VERSION 2
+#define ANYBOX_ABI_VERSION 4
 
 // `button`, `pressed` and the stamp
 #define ANYBOX_EVENT_BUTTON 0
@@ -394,6 +394,10 @@
 
 #define ANYBOX_QUIRK_KEEPS_LOCKED 10
 
+#define ANYBOX_QUIRK_TYPED_TEXT_IGNORES_CAPS_LOCK 11
+
+#define ANYBOX_QUIRK_TYPING_RELEASES_HELD_KEYS 12
+
 // no filter in the connect options
 #define ANYBOX_FAMILY_ANY 0
 
@@ -486,6 +490,27 @@
 
 #define ANYBOX_ACTION_SCALE_AXIS 22
 
+#define ANYBOX_ACTION_TYPE_TEXT 23
+
+#define ANYBOX_ACTION_KEY_CHORD 24
+
+#define ANYBOX_ACTION_FORCE_RELEASE_KEY 25
+
+// what only a MAKCU has, from 0x10000, through the `anybox_makcu_` calls
+#define ANYBOX_ACTION_MAKCU_INTERPOLATION 65536
+
+#define ANYBOX_ACTION_MAKCU_MOVING 65537
+
+#define ANYBOX_ACTION_MAKCU_AUTORELEASE 65538
+
+// what only a YSC8K has, from 0x20000, through the `anybox_ysc_` calls
+#define ANYBOX_ACTION_YSC_INTERPOLATION 131072
+
+#define ANYBOX_ACTION_YSC_SERIAL 131073
+
+// what only a Ferrum has, from 0x30000, through the `anybox_ferrum_` calls
+#define ANYBOX_ACTION_FERRUM_CATCH_XY 196608
+
 #define ANYBOX_EXECUTION_NATIVE 0
 
 #define ANYBOX_EXECUTION_HOST 1
@@ -536,6 +561,10 @@ typedef struct AnyboxSnapshot AnyboxSnapshot;
 
 // a list of strings, like the ports `anybox_candidates` gives
 typedef struct AnyboxStringList AnyboxStringList;
+
+// the serial a YSC gives the mouse behind it, read with the `anybox_ysc_serial_*` getters. free it with
+// `anybox_ysc_serial_free`
+typedef struct AnyboxYscSerial AnyboxYscSerial;
 
 // what a call did, `ANYBOX_STATUS_OK` or the reason it failed. `anybox_last_error_message` has the text and
 // `anybox_last_error_detail` the fields
@@ -632,6 +661,36 @@ typedef struct AnyboxClick {
     // fail instead of letting anybox time it from the PC
     bool native_only;
 } AnyboxClick;
+
+// how long a MAKCU spreads a move, `automatic` for AUTO and otherwise `percent` from 0 to 100
+typedef struct AnyboxMakcuInterpolation {
+    bool automatic;
+    uint8_t percent;
+} AnyboxMakcuInterpolation;
+
+// a YSC's interpolation as the box reports it. each `has_` is false when the box didn't send that field, the
+// vendor's own app only reads `enabled`, `profile` and the measured interval
+typedef struct AnyboxYscInterpolation {
+    bool enabled;
+    // 0 linear, 1 ease in out, 2 min jerk, another number kept as the box sent it
+    uint32_t profile;
+    bool has_window;
+    // zero is adaptive
+    uint32_t window_ms;
+    bool has_max_window;
+    uint32_t max_window_ms;
+    bool has_measured_interval;
+    // in microseconds, the box measures it finer than a millisecond
+    uint64_t measured_interval_us;
+} AnyboxYscInterpolation;
+
+// what `anybox_ysc_set_interpolation` sends, the windows in whole milliseconds up to 60 s
+typedef struct AnyboxYscInterpolationSettings {
+    bool enabled;
+    uint32_t profile;
+    uint32_t window_ms;
+    uint32_t max_window_ms;
+} AnyboxYscInterpolationSettings;
 
 // one event. which fields mean something depends on `kind`, the rest are 0. the stamp fields are set on button,
 // key, media and motion events
@@ -881,6 +940,30 @@ AnyboxStatus anybox_device_tap_key_with(const struct AnyboxDevice *device,
                                         uint8_t key,
                                         const struct AnyboxClick *tap);
 
+// types the text on the box with the box's own timing, as US layout key presses, and returns once the box has typed
+// all of it. it takes printable ASCII only, so tap keys like Enter yourself after it. other calls on the device can
+// wait while it types, and a close stops it after the few characters going out. after an error part of it may
+// already be typed
+AnyboxStatus anybox_device_type_text(const struct AnyboxDevice *device,
+                                     const char *text);
+
+// holds the keys down with one command of the box, up to 14 of them, until `anybox_device_release_keys`
+AnyboxStatus anybox_device_press_keys(const struct AnyboxDevice *device,
+                                      const uint8_t *keys,
+                                      uintptr_t len);
+
+// lets go of the keys with one command of the box, or one at a time like `anybox_device_release_key` on a box that
+// can't, so a key you hold always gets let go. a key you don't hold still has to be one the box can let go of, so
+// it can fail as unsupported after the held ones already went
+AnyboxStatus anybox_device_release_keys(const struct AnyboxDevice *device,
+                                        const uint8_t *keys,
+                                        uintptr_t len);
+
+// presses and lets go of the keys with one command of the box, timed by the box
+AnyboxStatus anybox_device_tap_keys(const struct AnyboxDevice *device,
+                                    const uint8_t *keys,
+                                    uintptr_t len);
+
 // holds a media key down until `anybox_device_release_media`. a media key is its HID consumer usage
 AnyboxStatus anybox_device_press_media(const struct AnyboxDevice *device, uint16_t key);
 
@@ -903,6 +986,17 @@ AnyboxStatus anybox_device_lock_button(const struct AnyboxDevice *device,
 
 // lets the physical button through again
 AnyboxStatus anybox_device_unlock_button(const struct AnyboxDevice *device, uint32_t button);
+
+// the PC sees the key up from now on, whatever the finger does, until `anybox_device_restore_key`. key events keep
+// reporting the finger, so you can tell whether it's still held. a key anybox holds or has locked itself, or one a
+// text needs while it types, is refused, since each box would do something else with it
+AnyboxStatus anybox_device_force_release_key(const struct AnyboxDevice *device,
+                                             uint8_t key);
+
+// gives the PC the finger's state of the key again, so a key that's still held goes down for it. it also clears a
+// force another program left, except on a key anybox holds or has locked
+AnyboxStatus anybox_device_restore_key(const struct AnyboxDevice *device,
+                                       uint8_t key);
 
 // keeps the physical key from reaching the PC until `anybox_device_unlock_key`
 AnyboxStatus anybox_device_lock_key(const struct AnyboxDevice *device, uint8_t key);
@@ -959,6 +1053,67 @@ AnyboxStatus anybox_device_close(const struct AnyboxDevice *device);
 
 // closes the device like `anybox_device_close` if it isn't yet, and frees it. null does nothing
 void anybox_device_free(struct AnyboxDevice *device);
+
+// how long the box spreads a move, read fresh from the box. it's global to the box and every program on it shares
+// it
+AnyboxStatus anybox_makcu_interpolation(const struct AnyboxDevice *device,
+                                        struct AnyboxMakcuInterpolation *out);
+
+// sets it and reads it back, a box that didn't take it is `ANYBOX_STATUS_REJECTED`. it changes how moves land for
+// every program on the box, and anybox leaves it set when you close
+AnyboxStatus anybox_makcu_set_interpolation(const struct AnyboxDevice *device,
+                                            const struct AnyboxMakcuInterpolation *value);
+
+// whether injected motion is still queued or being spread
+AnyboxStatus anybox_makcu_moving(const struct AnyboxDevice *device, bool *out);
+
+// how long the box waits with nothing coming in before it lets go of injected mouse buttons, 0 when it's off
+AnyboxStatus anybox_makcu_autorelease(const struct AnyboxDevice *device,
+                                      uint32_t *ms_out);
+
+// turns autorelease on for 1 ms to 60 s (whole milliseconds), or off with 0. anybox asks the box something about
+// every 250 ms, so with more than that it only fires once your app dies or hangs, and a button it held gets let go
+// instead of staying down. the box shares the timer with every program on it and forgets it when it loses power, so
+// anybox sends it again after a reconnect. needs V4.108
+AnyboxStatus anybox_makcu_set_autorelease(const struct AnyboxDevice *device,
+                                          uint32_t after_ms);
+
+// how the box spreads moves. it's on by default and kept on the box, so another app may have changed it
+AnyboxStatus anybox_ysc_interpolation(const struct AnyboxDevice *device,
+                                      struct AnyboxYscInterpolation *out);
+
+// sets it and reads it back, a box that didn't take it is `ANYBOX_STATUS_REJECTED`. the box keeps it, anybox leaves
+// it set when you close
+AnyboxStatus anybox_ysc_set_interpolation(const struct AnyboxDevice *device,
+                                          const struct AnyboxYscInterpolationSettings *settings);
+
+// puts it back to the box's default and gives you what that is
+AnyboxStatus anybox_ysc_reset_interpolation(const struct AnyboxDevice *device,
+                                            struct AnyboxYscInterpolation *out);
+
+// the serial the box gives the mouse behind it. free it with `anybox_ysc_serial_free`
+AnyboxStatus anybox_ysc_serial(const struct AnyboxDevice *device, struct AnyboxYscSerial **out);
+
+// the serial set in the vendor's app, empty when there's none, null when the box didn't send it. it lives as long
+// as the serial
+const char *anybox_ysc_serial_custom(const struct AnyboxYscSerial *serial);
+
+// the mouse's own serial, null when the box didn't send it. it lives as long as the serial
+const char *anybox_ysc_serial_physical(const struct AnyboxYscSerial *serial);
+
+// the serial the PC sees now, null when the box didn't send it. it lives as long as the serial
+const char *anybox_ysc_serial_active(const struct AnyboxYscSerial *serial);
+
+void anybox_ysc_serial_free(struct AnyboxYscSerial *serial);
+
+// the mouse's own motion summed over the last `window_ms` (whole milliseconds, up to a second), and what software
+// sent too with `with_software`. y is positive down like `anybox_device_move_by` per the vendor's first example,
+// its second says the opposite and nobody checked it on a box yet. what a 0 window does isn't documented
+AnyboxStatus anybox_ferrum_catch_xy(const struct AnyboxDevice *device,
+                                    uint32_t window_ms,
+                                    bool with_software,
+                                    int32_t *x,
+                                    int32_t *y);
 
 // the next event. a negative `timeout_us` waits as long as it takes, 0 doesn't wait at all, and anything else
 // waits up to that many microseconds. it's `ANYBOX_STATUS_RECV_TIMEOUT` when nothing came, and
@@ -1126,6 +1281,25 @@ AnyboxStatus anybox_mock_fail(AnyboxStatus status);
 #if defined(ANYBOX_FEATURE_MOCK)
 // null does nothing
 void anybox_mock_free(struct AnyboxMock *mock);
+#endif
+
+#if defined(ANYBOX_FEATURE_MOCK)
+// a device over anybox's own model of a MAKCU V4.108 with a mouse and a keyboard behind it, for testing the
+// `anybox_makcu_` calls with no box. null `click_timing` is the default. free it with `anybox_device_free`
+AnyboxStatus anybox_mock_makcu_open(const struct AnyboxClickTiming *click_timing,
+                                    struct AnyboxDevice **out);
+#endif
+
+#if defined(ANYBOX_FEATURE_MOCK)
+// a device over anybox's own model of a YSC8K V1, for testing the `anybox_ysc_` calls with no box
+AnyboxStatus anybox_mock_ysc_open(const struct AnyboxClickTiming *click_timing,
+                                  struct AnyboxDevice **out);
+#endif
+
+#if defined(ANYBOX_FEATURE_MOCK)
+// a device over anybox's own model of a Ferrum on the app's port, for testing the `anybox_ferrum_` calls with no box
+AnyboxStatus anybox_mock_ferrum_open(const struct AnyboxClickTiming *click_timing,
+                                     struct AnyboxDevice **out);
 #endif
 
 AnyboxStatus anybox_snapshot_info(const struct AnyboxSnapshot *snapshot, struct AnyboxInfo *out);

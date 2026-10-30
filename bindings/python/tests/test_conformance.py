@@ -90,6 +90,10 @@ def _arg(value: dict):
         return anybox.Key(_number("KEY", raw))
     if kind == "MediaKey":
         return anybox.MediaKey(_number("MEDIA", raw))
+    if kind == "Text":
+        return raw
+    if kind == "Keys":
+        return [anybox.Key(_number("KEY", key)) for key in raw]
     if kind == "Axis":
         return anybox.Axis(_number("AXIS", raw))
     if kind == "Direction":
@@ -120,6 +124,8 @@ def _call(device: anybox.Device, name: str, args: list[dict]) -> None:
         click = args[1]["Click"]
         hold = click["hold_us"] / 1_000_000 if "hold_us" in click else None
         getattr(device, _FOLDED[name])(_arg(args[0]), hold=hold, native_only=click.get("native_only", False))
+    elif args and "Keys" in args[0]:
+        getattr(device, name)(*_arg(args[0]))
     else:
         getattr(device, name)(*(_arg(arg) for arg in args))
 
@@ -281,7 +287,84 @@ def _recv(events, box: anybox.Mock, expected: dict, tick: bool) -> dict:
     return {"events": got}
 
 
+def _ms(seconds: float | None) -> int | None:
+    return None if seconds is None else round(seconds * 1000)
+
+
+def _interpolation(value: anybox.Interpolation) -> dict:
+    return {"Interpolation": "AUTO" if value.automatic else value.percentage}
+
+
+def _ysc(value: anybox.YscInterpolation) -> dict:
+    interval = value.measured_interval
+    return {
+        "enabled": value.enabled,
+        "profile": int(value.profile),
+        "window_ms": _ms(value.window),
+        "max_window_ms": _ms(value.max_window),
+        "measured_interval_us": None if interval is None else round(interval * 1_000_000),
+    }
+
+
+def _extension(device: anybox.Device, step: dict) -> dict:
+    """one call only one family has, `{"none": null}` when the device isn't that family"""
+    family, call = step["extension"].split(".")
+    handle = getattr(device, family)()
+    if handle is None:
+        return {"none": None}
+    args = [next(iter(arg.values())) for arg in step["args"]]
+    try:
+        if call == "set_interpolation" and family == "makcu":
+            (value,) = args
+            handle.set_interpolation(
+                anybox.Interpolation.auto() if value == "AUTO" else anybox.Interpolation.percent(value)
+            )
+            value = None
+        elif call == "set_interpolation":
+            (settings,) = args
+            handle.set_interpolation(
+                anybox.YscInterpolationSettings(
+                    settings["enabled"],
+                    anybox.YscProfile(settings["profile"]),
+                    settings["window_ms"] / 1000,
+                    settings["max_window_ms"] / 1000,
+                )
+            )
+            value = None
+        elif call == "set_autorelease":
+            (ms,) = args
+            value = handle.set_autorelease(None if ms is None else ms / 1000)
+        elif call == "catch_xy":
+            ms, with_software = args
+            value = list(handle.catch_xy(ms / 1000, with_software))
+        else:
+            value = getattr(handle, call)()
+            if isinstance(value, anybox.Interpolation):
+                value = _interpolation(value)
+            elif isinstance(value, anybox.YscInterpolation):
+                value = _ysc(value)
+            elif isinstance(value, anybox.YscSerial):
+                value = {"custom": value.custom, "physical": value.physical, "active": value.active}
+            elif call == "autorelease":
+                value = _ms(value)
+    except anybox.Error as error:
+        expected = step["outcome"]
+        return _error(error, expected) if "error" in expected else {"error": str(error)}
+    return {"ok": value}
+
+
+def _run_family(scenario: dict) -> list[dict]:
+    open_mock = {"makcu": anybox.mock_makcu, "ysc": anybox.mock_ysc, "ferrum": anybox.mock_ferrum}
+    device = open_mock[scenario["box"]](anybox.ClickTiming.fixed(0.005))
+    try:
+        return [{**step, "outcome": _extension(device, step)} for step in scenario["steps"]]
+    finally:
+        device.close()
+
+
 def _run(scenario: dict) -> list[dict]:
+    if "box" in scenario:
+        return _run_family(scenario)
     device, box = anybox.mock_medius_manual(anybox.ClickTiming.fixed(0.005), keyboard=scenario["keyboard"])
     events = None
     try:
@@ -311,6 +394,8 @@ def _run(scenario: dict) -> list[dict]:
                 out["frames"] = [
                     [kind, payload.hex()] for kind, payload in box.recorded() if not _keepalive(kind, payload)
                 ]
+            elif "extension" in step:
+                outcome = _extension(device, step)
             elif "snapshot" in step:
                 outcome = _snapshot(device.snapshot(), expected)
             elif "push" in step:

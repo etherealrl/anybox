@@ -13,6 +13,10 @@
       {"call": "release_key", "args": [{"Key": "C"}]},
       {"call": "tap_key", "args": [{"Key": "D"}]},
       {"call": "tap_key_with", "args": [{"Key": "E"}, {"Click": {"hold_us": 7000}}]},
+      {"call": "type_text", "args": [{"Text": "hi there"}]},
+      {"call": "press_keys", "args": [{"Keys": ["LEFT_CTRL", "A"]}]},
+      {"call": "release_keys", "args": [{"Keys": ["LEFT_CTRL", 4]}]},
+      {"call": "tap_keys", "args": [{"Keys": ["B", "C"]}]},
       {"call": "press_media", "args": [{"MediaKey": "MUTE"}]},
       {"call": "release_media", "args": [{"MediaKey": 402}]},
       {"call": "tap_media", "args": [{"MediaKey": "STOP"}]},
@@ -27,6 +31,23 @@
       {"call": "wheel", "args": [{"i16": -3}]},
       {"call": "pan", "args": [{"i16": 2}]},
       {"call": "discard_pending_moves", "args": []}
+    ]
+  },
+  {
+    "name": "a key forced up and given back",
+    "keyboard": true,
+    "steps": [
+      {"call": "force_release_key", "args": [{"Key": "W"}]},
+      {"call": "press_key", "args": [{"Key": "W"}]},
+      {"call": "release_key", "args": [{"Key": "W"}]},
+      {"call": "lock_key", "args": [{"Key": "W"}]},
+      {"call": "restore_key", "args": [{"Key": "W"}]},
+      {"call": "press_key", "args": [{"Key": "A"}]},
+      {"call": "force_release_key", "args": [{"Key": "A"}]},
+      {"call": "restore_key", "args": [{"Key": "A"}]},
+      {"call": "release_key", "args": [{"Key": "A"}]},
+      {"call": "restore_key", "args": [{"Key": "Q"}]},
+      {"call": "force_release_key", "args": [{"Key": 1}]}
     ]
   },
   {
@@ -63,7 +84,8 @@
       {"call": "press_key", "args": [{"Key": "A"}]},
       {"call": "tap_key_with", "args": [{"Key": "A"}, {"Click": {"hold_us": 5000}}]},
       {"call": "press_media", "args": [{"MediaKey": "MUTE"}]},
-      {"call": "lock_key", "args": [{"Key": "A"}]}
+      {"call": "lock_key", "args": [{"Key": "A"}]},
+      {"call": "force_release_key", "args": [{"Key": "A"}]}
     ]
   },
   {
@@ -175,6 +197,15 @@
       {"text": {"Action": "LOCK_AXIS"}},
       {"text": {"Action": "LOCK_KEY"}},
       {"text": {"Action": "SCALE_AXIS"}},
+      {"text": {"Action": "TYPE_TEXT"}},
+      {"text": {"Action": "KEY_CHORD"}},
+      {"text": {"Action": "FORCE_RELEASE_KEY"}},
+      {"text": {"Action": "MAKCU_INTERPOLATION"}},
+      {"text": {"Action": "MAKCU_MOVING"}},
+      {"text": {"Action": "MAKCU_AUTORELEASE"}},
+      {"text": {"Action": "YSC_INTERPOLATION"}},
+      {"text": {"Action": "YSC_SERIAL"}},
+      {"text": {"Action": "FERRUM_CATCH_XY"}},
       {"text": {"Axis": "X"}},
       {"text": {"Axis": "Y"}},
       {"text": {"Axis": "WHEEL"}},
@@ -207,6 +238,57 @@
       {"text": {"Firmware": {"text": ""}}},
       {"text": {"StableId": {"mac": "a1b2c3d4e5f6"}}},
       {"text": {"StableId": {"usb_serial": "A1B2C3"}}}
+    ]
+  },
+  {
+    "name": "the MAKCU's own calls",
+    "box": "makcu",
+    "steps": [
+      {"extension": "makcu.interpolation", "args": []},
+      {"extension": "makcu.set_interpolation", "args": [{"Interpolation": 30}]},
+      {"extension": "makcu.interpolation", "args": []},
+      {"extension": "makcu.set_interpolation", "args": [{"Interpolation": "AUTO"}]},
+      {"extension": "makcu.set_interpolation", "args": [{"Interpolation": 101}]},
+      {"extension": "makcu.moving", "args": []},
+      {"extension": "makcu.autorelease", "args": []},
+      {"extension": "makcu.set_autorelease", "args": [{"ms": 1500}]},
+      {"extension": "makcu.autorelease", "args": []},
+      {"extension": "makcu.set_autorelease", "args": [{"ms": 60001}]},
+      {"extension": "makcu.set_autorelease", "args": [{"ms": null}]},
+      {"extension": "ysc.serial", "args": []},
+      {"extension": "ferrum.catch_xy", "args": [{"ms": 10}, {"bool": true}]}
+    ]
+  },
+  {
+    "name": "the YSC's own calls",
+    "box": "ysc",
+    "steps": [
+      {"extension": "ysc.interpolation", "args": []},
+      {"extension": "ysc.set_interpolation", "args": [{"YscSettings": {"enabled": false, "profile": 0, "window_ms": 8, "max_window_ms": 40}}]},
+      {"extension": "ysc.interpolation", "args": []},
+      {"extension": "ysc.set_interpolation", "args": [{"YscSettings": {"enabled": true, "profile": 1, "window_ms": 60001, "max_window_ms": 40}}]},
+      {"extension": "ysc.reset_interpolation", "args": []},
+      {"extension": "ysc.serial", "args": []},
+      {"extension": "makcu.moving", "args": []}
+    ]
+  },
+  {
+    "name": "the Ferrum's own call",
+    "box": "ferrum",
+    "steps": [
+      {"extension": "ferrum.catch_xy", "args": [{"ms": 10}, {"bool": true}]},
+      {"extension": "ferrum.catch_xy", "args": [{"ms": 1000}, {"bool": false}]},
+      {"extension": "ferrum.catch_xy", "args": [{"ms": 1001}, {"bool": false}]},
+      {"extension": "ysc.interpolation", "args": []}
+    ]
+  },
+  {
+    "name": "a Medius has none of the other boxes' calls",
+    "keyboard": false,
+    "steps": [
+      {"extension": "makcu.interpolation", "args": []},
+      {"extension": "ysc.serial", "args": []},
+      {"extension": "ferrum.catch_xy", "args": [{"ms": 10}, {"bool": false}]}
     ]
   }
 ]

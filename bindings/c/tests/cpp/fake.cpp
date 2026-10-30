@@ -29,10 +29,27 @@ int failures = 0;
 // the next allocation of this program throws std::bad_alloc when this is set
 std::atomic<bool> fail_next_allocation{false};
 
+std::string field(const std::string& value) {
+    return "\"" + value + "\"";
+}
+
+template <class T>
+std::string field(T value) {
+    return std::to_string(value);
+}
+
+std::string keys_text(const uint8_t* keys, uintptr_t len) {
+    std::string text = "[";
+    for (uintptr_t index = 0; index < len; index++) {
+        text += (index ? "," : "") + std::to_string(keys[index]);
+    }
+    return text + "]";
+}
+
 template <class... Values>
 AnyboxStatus record(const char* name, Values... values) {
     std::string line = name;
-    ((line += ' ', line += std::to_string(values)), ...);
+    ((line += ' ', line += field(values)), ...);
     calls.push_back(line);
     return ANYBOX_STATUS_OK;
 }
@@ -118,6 +135,22 @@ AnyboxStatus anybox_device_tap_key_with(const AnyboxDevice*, uint8_t key, const 
     return record("tap_key_with", key, tap->hold_us, tap->has_hold, tap->native_only);
 }
 
+AnyboxStatus anybox_device_type_text(const AnyboxDevice*, const char* text) {
+    return record("type_text", std::string(text));
+}
+
+AnyboxStatus anybox_device_press_keys(const AnyboxDevice*, const uint8_t* keys, uintptr_t len) {
+    return record("press_keys", keys_text(keys, len));
+}
+
+AnyboxStatus anybox_device_release_keys(const AnyboxDevice*, const uint8_t* keys, uintptr_t len) {
+    return record("release_keys", keys_text(keys, len));
+}
+
+AnyboxStatus anybox_device_tap_keys(const AnyboxDevice*, const uint8_t* keys, uintptr_t len) {
+    return record("tap_keys", keys_text(keys, len));
+}
+
 AnyboxStatus anybox_device_press_media(const AnyboxDevice*, uint16_t key) {
     return record("press_media", key);
 }
@@ -140,6 +173,14 @@ AnyboxStatus anybox_device_lock_button(const AnyboxDevice*, uint32_t button) {
 
 AnyboxStatus anybox_device_unlock_button(const AnyboxDevice*, uint32_t button) {
     return record("unlock_button", button);
+}
+
+AnyboxStatus anybox_device_force_release_key(const AnyboxDevice*, uint8_t key) {
+    return record("force_release_key", key);
+}
+
+AnyboxStatus anybox_device_restore_key(const AnyboxDevice*, uint8_t key) {
+    return record("restore_key", key);
 }
 
 AnyboxStatus anybox_device_lock_key(const AnyboxDevice*, uint8_t key) {
@@ -175,6 +216,81 @@ AnyboxStatus anybox_device_discard_pending_moves(const AnyboxDevice*) {
 }
 
 // the end of what bindings/gen makes (calls)
+
+// what the box calls hand back, so the test can tell each field made it across
+AnyboxYscInterpolation fake_ysc_interpolation() { return {true, 1, true, 8, false, 0, true, 4000}; }
+
+int serial_frees = 0;
+AnyboxYscSerial* const fake_serial = reinterpret_cast<AnyboxYscSerial*>(&serial_frees);
+
+const char* anybox_ysc_serial_custom(const AnyboxYscSerial*) { return ""; }
+
+const char* anybox_ysc_serial_physical(const AnyboxYscSerial*) { return "PHYS"; }
+
+const char* anybox_ysc_serial_active(const AnyboxYscSerial*) { return nullptr; }
+
+void anybox_ysc_serial_free(AnyboxYscSerial* serial) {
+    if (serial == fake_serial) {
+        serial_frees++;
+    }
+}
+
+// made by bindings/gen from its call table (makcu_calls), change the table and run cargo run -p anybox-gen
+AnyboxStatus anybox_makcu_interpolation(const AnyboxDevice*, AnyboxMakcuInterpolation* out) {
+    *out = AnyboxMakcuInterpolation{false, 42};
+    return record("makcu.interpolation");
+}
+
+AnyboxStatus anybox_makcu_set_interpolation(const AnyboxDevice*, const AnyboxMakcuInterpolation* value) {
+    return record("makcu.set_interpolation", value->automatic, value->percent);
+}
+
+AnyboxStatus anybox_makcu_moving(const AnyboxDevice*, bool* out) {
+    *out = true;
+    return record("makcu.moving");
+}
+
+AnyboxStatus anybox_makcu_autorelease(const AnyboxDevice*, uint32_t* ms_out) {
+    *ms_out = 1500;
+    return record("makcu.autorelease");
+}
+
+AnyboxStatus anybox_makcu_set_autorelease(const AnyboxDevice*, uint32_t after_ms) {
+    return record("makcu.set_autorelease", after_ms);
+}
+
+// the end of what bindings/gen makes (makcu_calls)
+
+// made by bindings/gen from its call table (ysc_calls), change the table and run cargo run -p anybox-gen
+AnyboxStatus anybox_ysc_interpolation(const AnyboxDevice*, AnyboxYscInterpolation* out) {
+    *out = fake_ysc_interpolation();
+    return record("ysc.interpolation");
+}
+
+AnyboxStatus anybox_ysc_set_interpolation(const AnyboxDevice*, const AnyboxYscInterpolationSettings* settings) {
+    return record("ysc.set_interpolation", settings->enabled, settings->profile, settings->window_ms, settings->max_window_ms);
+}
+
+AnyboxStatus anybox_ysc_reset_interpolation(const AnyboxDevice*, AnyboxYscInterpolation* out) {
+    *out = fake_ysc_interpolation();
+    return record("ysc.reset_interpolation");
+}
+
+AnyboxStatus anybox_ysc_serial(const AnyboxDevice*, AnyboxYscSerial** out) {
+    *out = fake_serial;
+    return record("ysc.serial");
+}
+
+// the end of what bindings/gen makes (ysc_calls)
+
+// made by bindings/gen from its call table (ferrum_calls), change the table and run cargo run -p anybox-gen
+AnyboxStatus anybox_ferrum_catch_xy(const AnyboxDevice*, uint32_t window_ms, bool with_software, int32_t* x, int32_t* y) {
+    *x = -3;
+    *y = 10;
+    return record("ferrum.catch_xy", window_ms, with_software);
+}
+
+// the end of what bindings/gen makes (ferrum_calls)
 
 AnyboxStatus anybox_device_snapshot(const AnyboxDevice*, AnyboxSnapshot** out) {
     *out = fake_snapshot;
@@ -455,12 +571,18 @@ void every_call_hands_c_what_it_was_given() {
     device.release_key(Key{0x64});
     device.tap_key(Key::C);
     device.tap_key(Key::C, Click::hold(2ms));
+    device.type_text("a\"b");
+    device.press_keys({Key::LEFT_CTRL, Key::A});
+    device.release_keys({Key::LEFT_CTRL});
+    device.tap_keys({});
     device.press_media(MediaKey::MUTE);
     device.release_media(MediaKey{402});
     device.tap_media(MediaKey::PLAY);
     device.tap_media(MediaKey::PLAY, Click().native_only());
     device.lock_button(Button::Side1);
     device.unlock_button(Button::Side2);
+    device.force_release_key(Key::W);
+    device.restore_key(Key::Q);
     device.lock_key(Key::D);
     device.unlock_key(Key::E);
     device.lock_axis(Axis::Y, Direction::Negative);
@@ -483,12 +605,18 @@ void every_call_hands_c_what_it_was_given() {
         "release_key 100",
         "tap_key_with 6 0 0 0",
         "tap_key_with 6 2000 1 0",
+        "type_text \"a\"b\"",
+        "press_keys \"[224,4]\"",
+        "release_keys \"[224]\"",
+        "tap_keys \"[]\"",
         "press_media 226",
         "release_media 402",
         "tap_media_with 176 0 0 0",
         "tap_media_with 176 0 0 1",
         "lock_button 3",
         "unlock_button 4",
+        "force_release_key 26",
+        "restore_key 20",
         "lock_key 7",
         "unlock_key 8",
         "lock_axis 1 2",
@@ -501,11 +629,81 @@ void every_call_hands_c_what_it_was_given() {
         "discard_pending_moves",
     };
     expect(calls == wanted, "the calls handed C something else");
+    bool refused = false;
+    try {
+        device.type_text(std::string("a\0b", 3));
+    } catch (const std::invalid_argument&) {
+        refused = true;
+    }
+    expect(refused, "a text with a NUL wasn't refused before C");
     if (calls != wanted) {
         for (const auto& call : calls) {
             std::printf("  got %s\n", call.c_str());
         }
     }
+}
+
+void every_box_call_hands_c_what_it_was_given() {
+    using namespace std::chrono_literals;
+    using namespace anybox;
+    calls.clear();
+    // the classes take any device, which family it is gets checked by the real library and isn't faked here
+    const std::shared_ptr<AnyboxDevice> device(reinterpret_cast<AnyboxDevice*>(&serial_frees), [](AnyboxDevice*) {});
+    const Makcu makcu(device);
+    const Ysc ysc(device);
+    const Ferrum ferrum(device);
+    const auto interpolation = makcu.interpolation();
+    makcu.set_interpolation(Interpolation::percent(30));
+    makcu.set_interpolation(Interpolation::automatic());
+    const auto moving = makcu.moving();
+    const auto after = makcu.autorelease();
+    makcu.set_autorelease(1500ms);
+    makcu.set_autorelease(std::nullopt);
+    const auto ysc_interpolation = ysc.interpolation();
+    ysc.set_interpolation({false, YscProfile::EaseInOut, 8ms, 40ms});
+    ysc.reset_interpolation();
+    const auto serial = ysc.serial();
+    const auto xy = ferrum.catch_xy(10ms, true);
+    ferrum.catch_xy(1s);
+    const std::vector<std::string> wanted = {
+        "makcu.interpolation",
+        "makcu.set_interpolation 0 30",
+        "makcu.set_interpolation 1 0",
+        "makcu.moving",
+        "makcu.autorelease",
+        "makcu.set_autorelease 1500",
+        "makcu.set_autorelease 0",
+        "ysc.interpolation",
+        "ysc.set_interpolation 0 1 8 40",
+        "ysc.reset_interpolation",
+        "ysc.serial",
+        "ferrum.catch_xy 10 1",
+        "ferrum.catch_xy 1000 0",
+    };
+    expect(calls == wanted, "the box calls handed C something else");
+    if (calls != wanted) {
+        for (const auto& call : calls) {
+            std::printf("  got %s\n", call.c_str());
+        }
+    }
+    expect(interpolation == Interpolation::percent(42) && moving && after == std::optional(1500ms),
+           "the MAKCU values didn't come back as C wrote them");
+    expect(ysc_interpolation.enabled && ysc_interpolation.profile == YscProfile::EaseInOut &&
+               ysc_interpolation.window == std::optional(8ms) && !ysc_interpolation.max_window &&
+               ysc_interpolation.measured_interval == std::optional(4000us),
+           "the YSC interpolation didn't come back as C wrote it");
+    expect(serial.custom == std::optional<std::string>("") && serial.physical == std::optional<std::string>("PHYS") &&
+               !serial.active && serial_frees == 1,
+           "the serial didn't come back as C wrote it, or wasn't freed once");
+    expect(xy == std::make_pair(-3, 10), "the Ferrum motion didn't come back as C wrote it");
+    calls.clear();
+    bool refused = false;
+    try {
+        makcu.set_autorelease(0ms);
+    } catch (const std::invalid_argument&) {
+        refused = true;
+    }
+    expect(refused && calls.empty(), "a zero autorelease reached C, where 0 is off");
 }
 
 void a_snapshot_that_throws_halfway_is_freed_once() {
@@ -758,6 +956,7 @@ void a_progress_that_throws_wins_over_a_stage_and_an_abort_that_fail() {
 
 int main() {
     every_call_hands_c_what_it_was_given();
+    every_box_call_hands_c_what_it_was_given();
     a_snapshot_that_throws_halfway_is_freed_once();
     a_scan_that_throws_halfway_frees_the_list_and_the_snapshot_once();
     candidates_free_their_list_once_whether_they_throw_or_not();

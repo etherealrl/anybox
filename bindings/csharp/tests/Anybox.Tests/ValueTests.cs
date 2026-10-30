@@ -52,7 +52,7 @@ public sealed unsafe class ValueTests
             new Stamp(TimeSpan.FromTicks(1), TimeSpan.FromTicks(2), 0, 0, null, null),
             ((MotionEvent)Read.Event(new AnyboxEvent { kind = 3, since_open_ns = 100, received_since_open_ns = 200 })).At);
         Assert.Contains("update the Anybox package", Assert.Throws<AnyboxException>(() => Read.Event(new AnyboxEvent { kind = 10 })).Message);
-        Assert.Throws<AnyboxException>(() => Read.Event(new AnyboxEvent { kind = 6, action = 23 }));
+        Assert.Throws<AnyboxException>(() => Read.Event(new AnyboxEvent { kind = 6, action = 26 }));
     }
 
     [Fact]
@@ -130,13 +130,15 @@ public sealed unsafe class ValueTests
             (new() { kind = 4 }, new(QuirkKind.FixedClickTiming)),
             (new() { kind = 8 }, new(QuirkKind.KeepsHeld)),
             (new() { kind = 10 }, new(QuirkKind.KeepsLocked)),
+            (new() { kind = 11 }, new(QuirkKind.TypedTextIgnoresCapsLock)),
+            (new() { kind = 12 }, new(QuirkKind.TypingReleasesHeldKeys)),
         ];
         foreach (var (raw, quirk) in cases)
         {
             Assert.Equal(quirk, Read.Quirk(raw));
         }
         Assert.Equal(Enum.GetValues<QuirkKind>().Order(), cases.Select(pair => pair.Quirk.Kind).Distinct().Order());
-        Assert.Throws<AnyboxException>(() => Read.Quirk(new AnyboxQuirk { kind = 11 }));
+        Assert.Throws<AnyboxException>(() => Read.Quirk(new AnyboxQuirk { kind = 13 }));
         Assert.Throws<AnyboxException>(() => Read.Quirk(new AnyboxQuirk { kind = 7, click_timing = new() { kind = 4 } }));
     }
 
@@ -224,7 +226,7 @@ public sealed unsafe class ValueTests
     [Fact]
     public void AnActionTheLibraryDoesntKnowIsRefusedWithNoActionNamed()
     {
-        foreach (var unknown in new[] { (BoxAction)64, (BoxAction)23 })
+        foreach (var unknown in new[] { (BoxAction)64, (BoxAction)26 })
         {
             var refused = Assert.Throws<InvalidArgumentException>(() => new Connect { Can = [unknown] }.Candidates());
             Assert.Null(refused.Action);

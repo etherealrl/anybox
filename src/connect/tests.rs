@@ -70,6 +70,10 @@ impl Backend for Quiet {
         Ok(())
     }
 
+    fn type_piece(&self, _: &[u8], _: &mut crate::backend::Typing) -> Result<()> {
+        Ok(())
+    }
+
     fn shutdown(&self, _: Duration) {
         LOG.with_borrow_mut(|log| log.push(format!("shut {}", self.0)));
     }

@@ -92,6 +92,8 @@ public sealed class ConformanceTests
             "MediaKey" => (MediaKey)Number("MEDIA", raw!),
             "Axis" => (Axis)Number("AXIS", raw!),
             "Direction" => (Direction)Number("DIRECTION", raw!),
+            "Text" => (string)raw!,
+            "Keys" => raw!.AsArray().Select(key => (Key)Number("KEY", key!)).ToArray(),
             _ => throw new InvalidOperationException($"the runner doesn't know the value {node}"),
         };
     }
@@ -129,6 +131,8 @@ public sealed class ConformanceTests
         };
     }
 
+    delegate void KeysCall(ReadOnlySpan<Key> keys);
+
     static void Call(Device device, string name, JsonArray args)
     {
         object?[] values;
@@ -143,6 +147,12 @@ public sealed class ConformanceTests
         else
         {
             method = typeof(Device).GetMethod(Pascal(name))!;
+            // reflection can't hand over a span, a delegate can
+            if (method.GetParameters() is [{ ParameterType: var type }] && type == typeof(ReadOnlySpan<Key>))
+            {
+                method.CreateDelegate<KeysCall>(device)((Key[])Arg(args[0]!)!);
+                return;
+            }
             var given = args.Select(arg => Arg(arg!)).ToList();
             // a parameter the scenario leaves out keeps its default, like the Rust call that has none
             values = [.. method.GetParameters().Select((parameter, index) => index < given.Count ? given[index] : parameter.DefaultValue)];
@@ -325,8 +335,99 @@ public sealed class ConformanceTests
         return new() { ["events"] = got };
     }
 
+    static long? Ms(TimeSpan? span) => span is { } value ? value.Ticks / TimeSpan.TicksPerMillisecond : null;
+
+    static JsonObject Interpolation(Interpolation value) =>
+        new() { ["Interpolation"] = value.Automatic ? "AUTO" : value.Percentage };
+
+    static JsonObject Ysc(YscInterpolation value) => new()
+    {
+        ["enabled"] = value.Enabled,
+        ["profile"] = (uint)value.Profile,
+        ["window_ms"] = Ms(value.Window),
+        ["max_window_ms"] = Ms(value.MaxWindow),
+        ["measured_interval_us"] = value.MeasuredInterval is { } interval ? interval.Ticks / TimeSpan.TicksPerMicrosecond : null,
+    };
+
+    // one call only one family has, {"none": null} when the device isn't that family
+    static JsonObject Extension(Device device, JsonNode step)
+    {
+        var parts = ((string)step["extension"]!).Split('.');
+        var args = step["args"]!.AsArray().Select(arg => arg!.AsObject().Single().Value).ToArray();
+        TimeSpan? Window(int index) => args[index] is { } ms ? TimeSpan.FromMilliseconds((long)ms) : null;
+        try
+        {
+            JsonNode? value = parts switch
+            {
+                ["makcu", var call] when device.Makcu() is { } makcu => call switch
+                {
+                    "interpolation" => Interpolation(makcu.Interpolation()),
+                    "set_interpolation" => Done(() => makcu.SetInterpolation(args[0] is JsonValue auto && auto.TryGetValue<string>(out _)
+                        ? Anybox.Interpolation.Auto
+                        : Anybox.Interpolation.Percent((byte)(long)args[0]!))),
+                    "moving" => makcu.Moving(),
+                    "autorelease" => Ms(makcu.Autorelease()),
+                    "set_autorelease" => Done(() => makcu.SetAutorelease(Window(0))),
+                    _ => throw new InvalidOperationException($"there's no MAKCU call {call}"),
+                },
+                ["ysc", var call] when device.Ysc() is { } ysc => call switch
+                {
+                    "interpolation" => Ysc(ysc.Interpolation()),
+                    "set_interpolation" => Done(() => ysc.SetInterpolation(new YscInterpolationSettings(
+                        (bool)args[0]!["enabled"]!,
+                        (YscProfile)(uint)(long)args[0]!["profile"]!,
+                        TimeSpan.FromMilliseconds((long)args[0]!["window_ms"]!),
+                        TimeSpan.FromMilliseconds((long)args[0]!["max_window_ms"]!)))),
+                    "reset_interpolation" => Ysc(ysc.ResetInterpolation()),
+                    "serial" => ysc.Serial() is var serial
+                        ? new JsonObject { ["custom"] = serial.Custom, ["physical"] = serial.Physical, ["active"] = serial.Active }
+                        : null,
+                    _ => throw new InvalidOperationException($"there's no YSC call {call}"),
+                },
+                ["ferrum", "catch_xy"] when device.Ferrum() is { } ferrum =>
+                    ferrum.CatchXy(Window(0)!.Value, (bool)args[1]!) is var (x, y) ? new JsonArray(x, y) : null,
+                _ => throw new NoHandle(),
+            };
+            return new() { ["ok"] = value };
+        }
+        catch (NoHandle)
+        {
+            return new() { ["none"] = null };
+        }
+        catch (AnyboxException error)
+        {
+            var expected = step["outcome"];
+            return expected?["error"] is not null ? Error(error, expected) : new JsonObject { ["error"] = error.Message };
+        }
+    }
+
+    static JsonNode? Done(Action call)
+    {
+        call();
+        return null;
+    }
+
+    sealed class NoHandle : Exception;
+
     static List<JsonNode> Run(JsonNode scenario)
     {
+        if (scenario["box"] is { } family)
+        {
+            var timing = ClickTiming.Fixed(TimeSpan.FromMilliseconds(5));
+            using var mock = (string)family! switch
+            {
+                "makcu" => Mock.Makcu(timing),
+                "ysc" => Mock.Ysc(timing),
+                "ferrum" => Mock.Ferrum(timing),
+                var other => throw new InvalidOperationException($"there's no mock {other}"),
+            };
+            return [.. scenario["steps"]!.AsArray().Select(step =>
+            {
+                var out_ = step!.DeepClone().AsObject();
+                out_["outcome"] = Extension(mock, step);
+                return (JsonNode)out_;
+            })];
+        }
         var (device, box) = Mock.MediusManual(ClickTiming.Fixed(TimeSpan.FromMilliseconds(5)), (bool)scenario["keyboard"]!);
         Events? events = null;
         try
@@ -368,6 +469,10 @@ public sealed class ConformanceTests
                     out_["frames"] = new JsonArray([.. box.Recorded()
                         .Where(frame => !Keepalive(frame.Type, frame.Payload))
                         .Select(frame => new JsonArray(frame.Type, Convert.ToHexStringLower(frame.Payload)))]);
+                }
+                else if (step["extension"] is not null)
+                {
+                    outcome = Extension(device, step);
                 }
                 else if (step["snapshot"] is not null)
                 {

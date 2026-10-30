@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use super::mock::{BoxState, respond, usb, wire};
 use super::*;
 use crate::backend::Signal;
 use crate::capability::{Direction, Execution, StableId};
@@ -16,17 +17,6 @@ use crate::key::{Key, MediaKey};
 use crate::transport::fake::{FakeBox, FakeSystem};
 
 const WAIT: Duration = Duration::from_secs(3);
-
-fn wire(text: &str) -> Vec<u8> {
-    let total = u16::try_from(text.len() + 14).unwrap();
-    [
-        b"<START>".as_slice(),
-        &total.to_be_bytes(),
-        text.as_bytes(),
-        b"<END>",
-    ]
-    .concat()
-}
 
 fn upload(b: i64, x: i64, y: i64, wh: i64) -> Vec<u8> {
     wire(&format!(
@@ -41,99 +31,6 @@ fn report(keys: &[u8]) -> Vec<u8> {
         keys.len()
     );
     wire(&serde_json::json!({"code": 200, "message": "kbd", "data": data}).to_string())
-}
-
-struct BoxState {
-    version: String,
-    debug: Option<String>,
-    echo: bool,
-    wrong_echo: bool,
-    /// only the next text command gets someone else's echo, so a retry can't race the test switching it off
-    wrong_echo_once: bool,
-    partial: bool,
-    partial_text: bool,
-    key_error: bool,
-    key_silent: bool,
-    key_unreadable: bool,
-    /// echo is off, and `km.echo(1)` turns it on without echoing itself
-    echo_switch: bool,
-}
-
-impl Default for BoxState {
-    fn default() -> Self {
-        Self {
-            version: "ysc-towmcu-L v1.0".into(),
-            debug: Some(r#"{"code":702,"data":"{\"debug\":false}"}"#.into()),
-            echo: true,
-            wrong_echo: false,
-            wrong_echo_once: false,
-            partial: false,
-            partial_text: false,
-            key_error: false,
-            key_silent: false,
-            key_unreadable: false,
-            echo_switch: false,
-        }
-    }
-}
-
-fn respond(state: &mut BoxState, bytes: &[u8]) -> Vec<Vec<u8>> {
-    if bytes == b"<START>\x00\x19{\"cmd\":132}<END>" {
-        return vec![wire(&format!(
-            "{{\"code\":200,\"message\":\"{}\",\"data\":\"\"}}",
-            state.version
-        ))];
-    }
-    if bytes == b"<START>\x00\x19{\"cmd\":702}<END>" {
-        return state.debug.as_deref().map(wire).into_iter().collect();
-    }
-    if bytes.starts_with(b"<START>") {
-        if bytes.windows(8).any(|bytes| bytes == b"\"cmd\":45") {
-            if state.key_silent {
-                return Vec::new();
-            }
-            if state.key_unreadable {
-                return vec![wire(r#"{"code":400,"message":"2","data":null}"#)];
-            }
-            if state.key_error {
-                return vec![wire(r#"{"code":404,"message":"no_keyboard","data":""}"#)];
-            }
-            let message = if bytes.ends_with(b"\"down\":1}<END>") {
-                "key_down"
-            } else {
-                "key_up"
-            };
-            return vec![wire(&format!(
-                "{{\"code\":200,\"message\":\"{message}\",\"data\":null}}"
-            ))];
-        }
-        return Vec::new();
-    }
-    if !state.echo {
-        state.echo = state.echo_switch && bytes == b"km.echo(1)\r\n";
-        return Vec::new();
-    }
-    if bytes == b"km.echo(1)\r\n" {
-        return vec![b"km.echo(1)\r\n>>> ".to_vec()];
-    }
-    if state.partial {
-        return vec![b"<START>\x00\x80{".to_vec()];
-    }
-    if state.partial_text {
-        return vec![bytes.to_vec()];
-    }
-    if state.wrong_echo || std::mem::take(&mut state.wrong_echo_once) {
-        return vec![b"km.move(99,99)\r\n>>> ".to_vec()];
-    }
-    vec![[bytes, b">>> "].concat()]
-}
-
-fn usb(role: Option<&str>) -> Option<crate::transport::PortUsb> {
-    Some(crate::transport::PortUsb {
-        vid: 0x1a86,
-        pid: 0xfe0c,
-        serial: role.map(str::to_owned),
-    })
 }
 
 struct Rig {
@@ -1980,4 +1877,228 @@ fn a_port_that_opens_at_no_rate_gives_the_driver_error_and_one_rate_short_is_sti
         attach_at(&system, "COM3"),
         Err(Error::NotFound { .. })
     ));
+}
+
+#[test]
+fn a_text_goes_out_as_cmd_47_and_waits_for_cmd_48_to_say_done() {
+    let rig = Rig::new();
+    let device = rig.device();
+    device.type_text("a\"b\\").unwrap();
+    assert_eq!(rig.state.lock().unwrap().texts, ["a\"", "b\\"]);
+    assert!(
+        rig.fake
+            .written()
+            .contains(&wire(r#"{"cmd":47,"s":"a\""}"#))
+    );
+}
+
+#[test]
+fn a_text_the_box_types_short_is_rejected() {
+    let rig = Rig::new();
+    rig.state.lock().unwrap().types_short = true;
+    let device = rig.device();
+    assert!(matches!(
+        device.type_text("ab"),
+        Err(Error::Rejected {
+            action: Action::TypeText,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn a_box_already_typing_is_rejected() {
+    let rig = Rig::new();
+    rig.state.lock().unwrap().text_reply = Some(r#"{"code":409,"message":"busy","data":""}"#);
+    let device = rig.device();
+    assert!(matches!(
+        device.type_text("ab"),
+        Err(Error::Rejected {
+            action: Action::TypeText,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn no_keyboard_before_a_text_starts_is_unsupported_and_turns_typing_off() {
+    let rig = Rig::new();
+    let device = rig.device();
+    device.type_text("ab").unwrap();
+    rig.state.lock().unwrap().text_reply =
+        Some(r#"{"code":404,"message":"no_keyboard","data":""}"#);
+    match device.type_text("abcd") {
+        Err(Error::Unsupported {
+            action: Action::TypeText,
+            ..
+        }) => {}
+        other => panic!("{other:?}"),
+    }
+    device.settle();
+    assert!(
+        !device
+            .snapshot()
+            .capabilities
+            .get(Action::TypeText)
+            .is_supported()
+    );
+}
+
+#[test]
+fn no_keyboard_while_the_first_piece_types_is_rejected_and_never_unsupported() {
+    let rig = Rig::new();
+    rig.state.lock().unwrap().status_reply =
+        Some(r#"{"code":404,"message":"no_keyboard","data":""}"#);
+    let device = rig.device();
+    match device.type_text("abcd") {
+        Err(Error::Rejected {
+            action: Action::TypeText,
+            detail,
+        }) => assert!(detail.contains("0 of 4"), "{detail}"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(rig.state.lock().unwrap().texts, ["ab"]);
+}
+
+#[test]
+fn ysc_can_type_but_has_no_chords() {
+    let rig = Rig::new();
+    let device = rig.device();
+    let capabilities = &device.snapshot().capabilities;
+    assert!(capabilities.get(Action::TypeText).is_supported());
+    assert!(!capabilities.get(Action::KeyChord).is_supported());
+    assert!(matches!(
+        device.press_keys(&[Key::A, Key::B]),
+        Err(Error::Unsupported {
+            action: Action::KeyChord,
+            ..
+        })
+    ));
+}
+
+// the YSC's own calls
+
+#[test]
+fn interpolation_reads_every_field_the_box_sends_and_none_for_the_rest() {
+    let rig = Rig::new();
+    let device = rig.device();
+    let ysc = device.ysc().unwrap();
+    assert_eq!(
+        ysc.interpolation().unwrap(),
+        YscInterpolation {
+            enabled: true,
+            profile: YscProfile::MinJerk,
+            window: Some(Duration::ZERO),
+            max_window: Some(Duration::from_millis(50)),
+            measured_interval: Some(Duration::from_millis(4)),
+        }
+    );
+    rig.state.lock().unwrap().interp_short = true;
+    let short = ysc.interpolation().unwrap();
+    assert_eq!((short.window, short.max_window), (None, None));
+    assert_eq!(short.measured_interval, Some(Duration::from_micros(500)));
+    // a number past what a Duration holds is as good as not sent, never a panic
+    let mut state = rig.state.lock().unwrap();
+    state.interp_short = false;
+    state.ema = "1e30";
+    drop(state);
+    assert_eq!(ysc.interpolation().unwrap().measured_interval, None);
+}
+
+#[test]
+fn a_set_goes_out_like_the_sdk_writes_it_and_is_read_back() {
+    let rig = Rig::new();
+    let device = rig.device();
+    let ysc = device.ysc().unwrap();
+    let settings = YscInterpolationSettings {
+        enabled: false,
+        profile: YscProfile::Linear,
+        window: Duration::from_millis(8),
+        max_window: Duration::from_millis(40),
+    };
+    ysc.set_interpolation(settings).unwrap();
+    assert!(
+        rig.fake
+            .written()
+            .contains(&wire(r#"{"cmd":51,"e":0,"p":0,"w":8,"mx":40}"#))
+    );
+    assert_eq!(rig.state.lock().unwrap().interp, (0, 0, 8, 40));
+    rig.state.lock().unwrap().ignores_interp = true;
+    assert!(matches!(
+        ysc.set_interpolation(YscInterpolationSettings {
+            enabled: true,
+            ..settings
+        }),
+        Err(Error::Rejected { .. })
+    ));
+    for window in [Duration::from_micros(500), Duration::from_secs(61)] {
+        assert!(matches!(
+            ysc.set_interpolation(YscInterpolationSettings { window, ..settings }),
+            Err(Error::InvalidArgument { .. })
+        ));
+    }
+}
+
+#[test]
+fn a_reset_returns_what_the_box_went_back_to() {
+    let rig = Rig::new();
+    rig.state.lock().unwrap().interp = (0, 0, 9, 9);
+    let device = rig.device();
+    let back = device.ysc().unwrap().reset_interpolation().unwrap();
+    assert!(back.enabled);
+    assert_eq!(back.profile, YscProfile::Linear);
+}
+
+#[test]
+fn the_serial_has_each_field_the_box_sent() {
+    let rig = Rig::new();
+    let device = rig.device();
+    assert_eq!(
+        device.ysc().unwrap().serial().unwrap(),
+        YscSerial {
+            custom: Some(String::new()),
+            physical: Some("PHYS01".into()),
+            active: Some("PHYS01".into()),
+        }
+    );
+    rig.state.lock().unwrap().serial = r#"{\"active\":\"X\"}"#;
+    let serial = device.ysc().unwrap().serial().unwrap();
+    assert_eq!((serial.custom, serial.active), (None, Some("X".into())));
+}
+
+#[test]
+fn silence_is_a_missed_reply_and_never_turns_the_call_off() {
+    let rig = Rig::new();
+    let device = rig.device();
+    rig.state.lock().unwrap().extension_silent = true;
+    assert!(matches!(
+        device.ysc().unwrap().interpolation(),
+        Err(Error::Disconnected)
+    ));
+    assert!(
+        device
+            .snapshot()
+            .capabilities
+            .get(Action::Ysc(YscAction::Interpolation))
+            .is_supported()
+    );
+}
+
+#[test]
+fn a_400_is_rejected_and_a_key_press_after_a_read_still_gets_its_own_answer() {
+    let rig = Rig::new();
+    let device = rig.device();
+    rig.state.lock().unwrap().extension_400 = true;
+    assert!(matches!(
+        device.ysc().unwrap().serial(),
+        Err(Error::Rejected {
+            action: Action::Ysc(YscAction::Serial),
+            ..
+        })
+    ));
+    rig.state.lock().unwrap().extension_400 = false;
+    device.ysc().unwrap().serial().unwrap();
+    device.tap_key(Key::A).unwrap();
+    assert!(device.ysc().unwrap().interpolation().is_ok());
+    assert!(device.makcu().is_none() && device.ferrum().is_none());
 }

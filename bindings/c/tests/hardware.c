@@ -1,6 +1,8 @@
 /* a manual run through C on a real box: it connects, prints what it found, moves the cursor right and back,
-   clicks the left button where the cursor is, then waits up to 20 s for you to press any button on the mouse
-   behind the box and closes. pass a port to open that one, otherwise it takes the first box it finds */
+   clicks the left button where the cursor is, waits up to 20 s for you to press any button on the mouse behind
+   the box, presses a B with Shift as a chord and a c as a chord tap, types " anybox types 1!" and Enter into
+   whatever has focus, tries the MAKCU calls (interpolation, moving, autorelease), and closes. pass a port to open
+   that one, otherwise it takes the first box it finds */
 
 #include <stdio.h>
 
@@ -85,6 +87,60 @@ int main(int argc, char **argv) {
                (unsigned long long)((anybox_monotonic_ns() - event.received_ns) / 1000));
     } else {
         printf("no button came: %s\n", anybox_last_error_message());
+    }
+
+    printf("click into a text field, typing in 3 s\n");
+    {
+        /* a busy wait keeps this file plain C with no OS header */
+        uint64_t until = anybox_monotonic_ns() + 3000000000ull;
+        const uint8_t chord[] = {ANYBOX_KEY_LEFT_SHIFT, ANYBOX_KEY_B};
+        const uint8_t tap[] = {ANYBOX_KEY_C};
+        while (anybox_monotonic_ns() < until) {
+        }
+        /* chords first, a MAKCU refuses a key write for about 10 ms after a tap and typing waits for it to be done */
+        status = anybox_device_press_keys(device, chord, 2);
+        if (status == ANYBOX_STATUS_OK) {
+            status = anybox_device_release_keys(device, chord, 2);
+        }
+        if (status == ANYBOX_STATUS_OK) {
+            status = anybox_device_tap_keys(device, tap, 1);
+        }
+        printf("chords: %s\n", status == ANYBOX_STATUS_OK ? "ok" : anybox_last_error_message());
+        status = anybox_device_type_text(device, " anybox types 1!");
+        if (status == ANYBOX_STATUS_OK) {
+            status = anybox_device_tap_key(device, ANYBOX_KEY_ENTER);
+        }
+        printf("typing: %s\n", status == ANYBOX_STATUS_OK ? "ok" : anybox_last_error_message());
+    }
+    {
+        /* on another box each of these says only a MAKCU has it */
+        AnyboxMakcuInterpolation before, half = {false, 50};
+        bool moving = true;
+        uint32_t ms = 0;
+        status = anybox_makcu_interpolation(device, &before);
+        if (status == ANYBOX_STATUS_OK) {
+            status = anybox_makcu_set_interpolation(device, &half);
+        }
+        if (status == ANYBOX_STATUS_OK) {
+            status = anybox_device_move_by(device, 100, 0);
+        }
+        while (status == ANYBOX_STATUS_OK && moving) {
+            status = anybox_makcu_moving(device, &moving);
+        }
+        if (status == ANYBOX_STATUS_OK) {
+            anybox_device_move_by(device, -100, 0);
+            status = anybox_makcu_set_interpolation(device, &before);
+        }
+        printf("MAKCU interpolation: %s\n", status == ANYBOX_STATUS_OK ? "ok" : anybox_last_error_message());
+        status = anybox_makcu_set_autorelease(device, 1500);
+        if (status == ANYBOX_STATUS_OK) {
+            status = anybox_makcu_autorelease(device, &ms);
+        }
+        if (status == ANYBOX_STATUS_OK) {
+            printf("autorelease set to %u ms\n", (unsigned)ms);
+            status = anybox_makcu_set_autorelease(device, 0);
+        }
+        printf("MAKCU autorelease: %s\n", status == ANYBOX_STATUS_OK ? "ok" : anybox_last_error_message());
     }
 
     status = anybox_device_close(device);

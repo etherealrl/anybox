@@ -1,15 +1,18 @@
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
 use crate::backend::{Command, InputKind, InputKinds, LockSlot, Sign, Usage};
 use crate::capability::{
-    Action, Axis, Button, Capabilities, Capability, Direction, Execution, Quirk,
+    Action, Axis, Button, Capabilities, Capability, Direction, Execution, Family, MakcuAction,
+    Quirk,
 };
 use crate::click::{Click, ClickTiming};
 use crate::error::Error;
 use crate::event::{DropSource, Event, EventKinds, RecvTimeoutError, TryRecvError};
+use crate::extension::{Extension, Interpolation};
 use crate::family::fake::{self, mouse};
 use crate::key::{Key, MediaKey};
 
@@ -1840,4 +1843,629 @@ fn a_timeout_too_long_for_the_clock_waits_like_recv() {
         events.recv_timeout(Duration::MAX),
         Err(crate::event::RecvTimeoutError::Closed)
     );
+}
+
+fn typing_box(quirks: &[Quirk]) -> Capabilities {
+    let typing = quirks
+        .iter()
+        .fold(Capability::native(), |capability, quirk| {
+            capability.with(quirk.clone())
+        });
+    mouse()
+        .set(Action::KeyPress, Capability::native())
+        .set(Action::KeyRelease, Capability::native())
+        .set(Action::TypeText, typing)
+        .set(Action::KeyChord, Capability::native())
+}
+
+#[test]
+fn a_text_goes_to_the_box_two_characters_at_a_time() {
+    let (device, fake) = fake::open(typing_box(&[]), ClickTiming::Makcu);
+    device.type_text("hello").unwrap();
+    assert_eq!(
+        fake.pieces(),
+        vec![b"he".to_vec(), b"ll".to_vec(), b"o".to_vec()]
+    );
+}
+
+#[test]
+fn a_box_that_cant_type_says_so_before_it_looks_at_the_text() {
+    let (device, fake) = fake::open(mouse(), ClickTiming::Makcu);
+    for text in ["hi\n", ""] {
+        assert!(matches!(
+            device.type_text(text),
+            Err(Error::Unsupported {
+                action: Action::TypeText,
+                ..
+            })
+        ));
+    }
+    assert!(fake.pieces().is_empty());
+}
+
+#[test]
+fn only_printable_ascii_gets_typed_and_a_bad_character_sends_nothing() {
+    let (device, fake) = fake::open(typing_box(&[]), ClickTiming::Makcu);
+    for (text, position) in [("hi\nthere", "3"), ("caf\u{e9}", "4"), ("\t", "1")] {
+        match device.type_text(text) {
+            Err(Error::InvalidArgument {
+                action: Action::TypeText,
+                detail,
+            }) => assert!(
+                detail.contains(&format!("character {position} ")),
+                "{detail}"
+            ),
+            other => panic!("{other:?}"),
+        }
+    }
+    device.type_text("").unwrap();
+    assert!(fake.pieces().is_empty());
+}
+
+#[test]
+fn a_box_that_stops_typing_halfway_is_rejected_and_never_unsupported() {
+    let (device, fake) = fake::open(typing_box(&[]), ClickTiming::Makcu);
+    fake.on_piece(|index| {
+        (index == 1).then(|| Error::Unsupported {
+            action: Action::TypeText,
+            family: crate::capability::Family::Ysc,
+            reason: "the keyboard went away".into(),
+        })
+    });
+    match device.type_text("abcdef") {
+        Err(Error::Rejected {
+            action: Action::TypeText,
+            detail,
+        }) => assert!(detail.contains("2 of 6"), "{detail}"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(fake.pieces(), vec![b"ab".to_vec()]);
+}
+
+#[test]
+fn a_box_that_fails_with_the_first_piece_sent_is_rejected_and_never_unsupported() {
+    let (device, fake) = fake::open(typing_box(&[]), ClickTiming::Makcu);
+    fake.on_piece(|index| {
+        (index == 0).then(|| Error::Unsupported {
+            action: Action::TypeText,
+            family: crate::capability::Family::Ysc,
+            reason: "the keyboard went away".into(),
+        })
+    });
+    match device.type_text("abcdef") {
+        Err(Error::Rejected {
+            action: Action::TypeText,
+            detail,
+        }) => assert!(detail.contains("0 of 6"), "{detail}"),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn a_disconnect_between_pieces_stops_the_text_and_stays_a_disconnect() {
+    let (device, fake) = fake::open(typing_box(&[]), ClickTiming::Makcu);
+    fake.on_piece(|index| (index == 1).then_some(Error::Disconnected));
+    assert!(matches!(
+        device.type_text("abcdef"),
+        Err(Error::Disconnected)
+    ));
+    assert_eq!(fake.pieces(), vec![b"ab".to_vec()]);
+}
+
+#[test]
+fn a_move_from_another_thread_goes_out_while_a_text_types() {
+    let (device, fake) = fake::open(typing_box(&[]), ClickTiming::Makcu);
+    let started = Arc::new(std::sync::Barrier::new(2));
+    let moved = Arc::new(AtomicBool::new(false));
+    let moved_before_the_last_piece = Arc::new(AtomicBool::new(false));
+    {
+        let (started, moved, before) = (
+            started.clone(),
+            moved.clone(),
+            moved_before_the_last_piece.clone(),
+        );
+        fake.on_piece(move |index| {
+            match index {
+                0 => {
+                    started.wait();
+                }
+                9 => before.store(moved.load(Ordering::Acquire), Ordering::Release),
+                _ => {}
+            }
+            None
+        });
+    }
+    thread::scope(|scope| {
+        scope.spawn(|| {
+            started.wait();
+            device.move_by(1, 0).unwrap();
+            moved.store(true, Ordering::Release);
+        });
+        // ten pieces, so the move has nine gaps to get the output lock in
+        device.type_text("abcdefghijklmnopqrst").unwrap();
+    });
+    assert!(moved_before_the_last_piece.load(Ordering::Acquire));
+}
+
+#[test]
+fn a_box_that_lets_go_of_typed_keys_takes_them_off_what_anybox_holds() {
+    let (device, _fake) = fake::open(
+        typing_box(&[Quirk::TypingReleasesHeldKeys]),
+        ClickTiming::Makcu,
+    );
+    for key in [Key::A, Key::LEFT_SHIFT, Key::F1] {
+        device.press_key(key).unwrap();
+    }
+    device.type_text("aB").unwrap();
+    assert_eq!(device.held(), HashSet::from([Usage::Key(Key::F1)]));
+}
+
+#[test]
+fn a_box_without_that_quirk_keeps_its_held_keys_through_a_text() {
+    let (device, _fake) = fake::open(typing_box(&[]), ClickTiming::Makcu);
+    device.press_key(Key::A).unwrap();
+    device.type_text("a").unwrap();
+    assert_eq!(device.held(), HashSet::from([Usage::Key(Key::A)]));
+}
+
+#[test]
+fn close_during_a_text_stops_it_after_the_piece_that_was_going() {
+    let (device, fake) = fake::open(typing_box(&[]), ClickTiming::Makcu);
+    let device = Arc::new(device);
+    let started = Arc::new(std::sync::Barrier::new(2));
+    {
+        let started = started.clone();
+        fake.on_piece(move |index| {
+            if index == 0 {
+                started.wait();
+                thread::sleep(Duration::from_millis(100));
+            }
+            None
+        });
+    }
+    let closer = {
+        let device = device.clone();
+        thread::spawn(move || {
+            started.wait();
+            device.close()
+        })
+    };
+    assert!(matches!(device.type_text("abcdef"), Err(Error::Closed)));
+    closer.join().unwrap().unwrap();
+    assert_eq!(fake.pieces(), vec![b"ab".to_vec()]);
+}
+
+#[test]
+fn a_chord_goes_out_as_one_command_and_its_keys_are_held() {
+    let (device, fake) = fake::open(typing_box(&[]), ClickTiming::Makcu);
+    device.press_keys(&[Key::LEFT_CTRL, Key::A]).unwrap();
+    assert_eq!(
+        device.held(),
+        HashSet::from([Usage::Key(Key::LEFT_CTRL), Usage::Key(Key::A)])
+    );
+    device.tap_keys(&[Key::B, Key::C]).unwrap();
+    device.release_keys(&[Key::LEFT_CTRL, Key::A]).unwrap();
+    assert!(device.held().is_empty());
+    let kinds: Vec<_> = fake
+        .log()
+        .into_iter()
+        .map(|command| match command {
+            Command::KeyChord { kind, keys } => (kind, keys.as_slice().to_vec()),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    use crate::backend::ChordKind;
+    assert_eq!(
+        kinds,
+        vec![
+            (ChordKind::Press, vec![Key::LEFT_CTRL, Key::A]),
+            (ChordKind::Tap, vec![Key::B, Key::C]),
+            (ChordKind::Release, vec![Key::LEFT_CTRL, Key::A]),
+        ]
+    );
+}
+
+#[test]
+fn a_bad_chord_sends_nothing() {
+    let (device, fake) = fake::open(typing_box(&[]), ClickTiming::Makcu);
+    let fifteen: Vec<Key> = (0x04..0x13).map(Key).collect();
+    for keys in [&[Key::A, Key::A][..], &fifteen, &[Key(0x02)]] {
+        for call in [
+            crate::device::Device::press_keys,
+            crate::device::Device::tap_keys,
+            crate::device::Device::release_keys,
+        ] {
+            assert!(
+                matches!(call(&device, keys), Err(Error::InvalidArgument { .. })),
+                "{keys:?}"
+            );
+        }
+    }
+    device.press_keys(&[]).unwrap();
+    assert!(fake.log().is_empty());
+    assert!(device.held().is_empty());
+}
+
+#[test]
+fn a_box_without_chords_says_so_and_still_lets_go_of_keys_one_at_a_time() {
+    let keyboard = mouse()
+        .set(Action::KeyPress, Capability::native())
+        .set(Action::KeyRelease, Capability::native());
+    let (device, fake) = fake::open(keyboard, ClickTiming::Makcu);
+    for call in [
+        crate::device::Device::press_keys,
+        crate::device::Device::tap_keys,
+    ] {
+        assert!(matches!(
+            call(&device, &[Key::A, Key::A]),
+            Err(Error::Unsupported {
+                action: Action::KeyChord,
+                ..
+            })
+        ));
+    }
+    device.press_key(Key::A).unwrap();
+    device.release_keys(&[Key::A, Key::B]).unwrap();
+    assert_eq!(
+        fake.log(),
+        vec![
+            Command::KeyPress(Key::A),
+            Command::KeyRelease(Key::A),
+            Command::KeyRelease(Key::B)
+        ]
+    );
+    assert!(device.held().is_empty());
+}
+
+#[test]
+fn a_chord_release_of_held_keys_goes_out_even_after_the_box_lost_its_chords() {
+    let (device, fake) = fake::open(typing_box(&[]), ClickTiming::Makcu);
+    device.press_keys(&[Key::A, Key::B]).unwrap();
+    fake.changed(mouse());
+    device.settle();
+    device.release_keys(&[Key::A, Key::B]).unwrap();
+    assert!(device.held().is_empty());
+}
+
+// the calls only one box has
+
+fn makcu_box(interpolation: Capability) -> Capabilities {
+    mouse().set(Action::Makcu(MakcuAction::Interpolation), interpolation)
+}
+
+#[test]
+fn a_box_only_has_its_own_family_s_calls() {
+    let (device, _fake) = fake::open(mouse(), ClickTiming::Makcu);
+    assert!(device.makcu().is_none() && device.ysc().is_none() && device.ferrum().is_none());
+    let (device, _fake) = fake::open_as(Family::MakcuV4, mouse(), ClickTiming::Makcu);
+    assert!(device.makcu().is_some() && device.ysc().is_none() && device.ferrum().is_none());
+}
+
+#[test]
+fn an_extension_call_checks_closed_then_the_link_then_the_capability_then_its_arguments() {
+    let too_much = Interpolation::Percent(101);
+    let (device, fake) = fake::open_as(
+        Family::MakcuV4,
+        makcu_box(Capability::unsupported("not here")),
+        ClickTiming::Makcu,
+    );
+    assert!(matches!(
+        device.makcu().unwrap().set_interpolation(too_much),
+        Err(Error::Unsupported {
+            action: Action::Makcu(MakcuAction::Interpolation),
+            ..
+        })
+    ));
+    let (device, fake2) = fake::open_as(
+        Family::MakcuV4,
+        makcu_box(Capability::native()),
+        ClickTiming::Makcu,
+    );
+    let makcu = device.makcu().unwrap();
+    assert!(matches!(
+        makcu.set_interpolation(too_much),
+        Err(Error::InvalidArgument { .. })
+    ));
+    assert_eq!(makcu.interpolation().unwrap(), Interpolation::Auto);
+    fake2.disconnect();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !matches!(makcu.interpolation(), Err(Error::Disconnected)) {
+        assert!(std::time::Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(5));
+    }
+    device.close().unwrap();
+    assert!(device.makcu().is_none());
+    assert_eq!(fake.extensions(), vec![]);
+    // only reads got through, the refused set never reached the box
+    assert!(
+        fake2
+            .extensions()
+            .iter()
+            .all(|request| *request == Extension::MakcuInterpolation)
+    );
+}
+
+// forcing a key up and giving it back
+
+fn with_force() -> Capabilities {
+    with_locks()
+        .set(Action::ForceReleaseKey, Capability::native())
+        .set(Action::KeyChord, Capability::native())
+        .set(Action::TypeText, Capability::native())
+}
+
+fn forces(fake: &fake::Handle) -> Vec<(Key, bool)> {
+    fake.log()
+        .into_iter()
+        .filter_map(|command| match command {
+            Command::KeyForce { key, force } => Some((key, force)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn refused(result: crate::error::Result<()>) -> bool {
+    matches!(
+        result,
+        Err(Error::InvalidArgument {
+            action: Action::ForceReleaseKey
+                | Action::KeyPress
+                | Action::KeyTap
+                | Action::KeyChord
+                | Action::TypeText
+                | Action::LockKey,
+            ..
+        })
+    )
+}
+
+#[test]
+fn a_force_and_its_restore_go_out_and_drop_restores_what_is_left() {
+    let (device, fake) = fake::open(with_force(), ClickTiming::Makcu);
+    device.force_release_key(Key::W).unwrap();
+    device.restore_key(Key::W).unwrap();
+    device.force_release_key(Key::A).unwrap();
+    drop(device);
+    assert_eq!(
+        forces(&fake),
+        vec![
+            (Key::W, true),
+            (Key::W, false),
+            (Key::A, true),
+            (Key::A, false)
+        ]
+    );
+}
+
+#[test]
+fn what_would_come_out_differently_on_each_box_is_refused_and_sends_nothing() {
+    let (device, fake) = fake::open(with_force(), ClickTiming::Makcu);
+    device.press_key(Key::A).unwrap();
+    device.lock_key(Key::B).unwrap();
+    device.force_release_key(Key::W).unwrap();
+    device.force_release_key(Key::LEFT_SHIFT).unwrap();
+    let sent = fake.log().len();
+    // a key anybox holds or locks can't be forced or restored
+    assert!(refused(device.force_release_key(Key::A)));
+    assert!(refused(device.restore_key(Key::A)));
+    assert!(refused(device.force_release_key(Key::B)));
+    assert!(refused(device.restore_key(Key::B)));
+    // and a forced key can't be pressed, tapped, typed or locked
+    assert!(refused(device.press_key(Key::W)));
+    assert!(refused(device.tap_key(Key::W)));
+    assert!(refused(device.press_keys(&[Key::C, Key::W])));
+    assert!(refused(device.tap_keys(&[Key::W])));
+    assert!(refused(device.type_text("w")));
+    assert!(refused(device.lock_key(Key::W)));
+    // a capital needs Left Shift, which is forced too
+    assert!(refused(device.type_text("C")));
+    assert_eq!(fake.log().len(), sent, "{:?}", &fake.log()[sent..]);
+    assert!(fake.pieces().is_empty());
+}
+
+#[test]
+fn letting_go_of_a_forced_key_sends_nothing_and_a_release_chord_leaves_it_out() {
+    let (device, fake) = fake::open(with_force(), ClickTiming::Makcu);
+    device.press_keys(&[Key::A, Key::B]).unwrap();
+    device.force_release_key(Key::W).unwrap();
+    device.release_key(Key::W).unwrap();
+    device.release_keys(&[Key::A, Key::W, Key::B]).unwrap();
+    device.release_keys(&[Key::W]).unwrap();
+    device.unlock_key(Key::W).unwrap();
+    let log = fake.log();
+    assert!(!log.contains(&Command::KeyRelease(Key::W)));
+    let releases: Vec<Vec<Key>> = log
+        .iter()
+        .filter_map(|command| match command {
+            Command::KeyChord {
+                kind: crate::backend::ChordKind::Release,
+                keys,
+            } => Some(keys.as_slice().to_vec()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(releases, vec![vec![Key::A, Key::B]]);
+    assert_eq!(forces(&fake), vec![(Key::W, true)]);
+    // an unlock would drop a MAKCU's force, which is the same mask
+    assert!(!log.iter().any(|command| matches!(
+        command,
+        Command::Lock {
+            slot: LockSlot::Key(Key::W),
+            ..
+        }
+    )));
+}
+
+#[test]
+fn a_restore_nobody_asked_for_still_goes_out_and_a_bad_key_or_box_is_refused() {
+    let (device, fake) = fake::open(with_force(), ClickTiming::Makcu);
+    device.restore_key(Key::Q).unwrap();
+    assert_eq!(forces(&fake), vec![(Key::Q, false)]);
+    assert!(matches!(
+        device.force_release_key(Key(0x01)),
+        Err(Error::InvalidArgument {
+            action: Action::ForceReleaseKey,
+            ..
+        })
+    ));
+    let (device, fake) = fake::open(with_keyboard(None), ClickTiming::Makcu);
+    assert!(matches!(
+        device.force_release_key(Key::W),
+        Err(Error::Unsupported {
+            action: Action::ForceReleaseKey,
+            ..
+        })
+    ));
+    assert!(fake.log().is_empty());
+}
+
+#[test]
+fn a_force_that_ran_out_of_time_counts_and_its_restore_goes_out_after_the_keyboard_went_away() {
+    let (device, fake) = fake::open(with_force(), ClickTiming::Makcu);
+    fake.fail_next(Error::Disconnected);
+    assert!(device.force_release_key(Key::W).is_err());
+    fake.change_quietly(mouse());
+    // only a recorded force skips the gate, and the box can't force keys any more, so the record has it
+    device.restore_key(Key::W).unwrap();
+    assert_eq!(forces(&fake), vec![(Key::W, false)]);
+    // a failed restore stays, so drop tries it again
+    let (device, fake) = fake::open(with_force(), ClickTiming::Makcu);
+    device.force_release_key(Key::A).unwrap();
+    fake.fail_next(Error::Io(std::io::Error::other("refused")));
+    assert!(device.restore_key(Key::A).is_err());
+    drop(device);
+    // the fake doesn't log a write that failed, so this restore is drop's
+    assert_eq!(forces(&fake), vec![(Key::A, true), (Key::A, false)]);
+}
+
+#[test]
+fn forces_go_again_after_a_reconnect_and_a_reset_unless_the_box_keeps_them() {
+    let (device, fake) = fake::open(with_force(), ClickTiming::Makcu);
+    device.force_release_key(Key::W).unwrap();
+    fake.disconnect();
+    fake.reconnect(with_force());
+    device.settle();
+    fake.session_reset();
+    device.settle();
+    assert_eq!(forces(&fake), vec![(Key::W, true); 3]);
+
+    let keeping = with_force().set(
+        Action::ForceReleaseKey,
+        Capability::native().with(Quirk::KeepsLocked),
+    );
+    let (device, fake) = fake::open(keeping.clone(), ClickTiming::Makcu);
+    device.force_release_key(Key::W).unwrap();
+    fake.disconnect();
+    fake.reconnect(keeping);
+    device.settle();
+    assert_eq!(forces(&fake), vec![(Key::W, true)]);
+}
+
+#[test]
+fn a_key_held_by_a_tap_timed_on_the_pc_cant_be_forced_during_the_hold() {
+    let (device, fake) = fake::open(with_force(), ClickTiming::Makcu);
+    let device = Arc::new(device);
+    let tapping = {
+        let device = device.clone();
+        thread::spawn(move || device.tap_key_with(Key::W, Click::hold(Duration::from_millis(300))))
+    };
+    fake.wait_for(Command::KeyPress(Key::W));
+    assert!(refused(device.force_release_key(Key::W)));
+    assert!(refused(device.restore_key(Key::W)));
+    tapping.join().unwrap().unwrap();
+    assert!(forces(&fake).is_empty());
+}
+
+#[test]
+fn a_key_held_in_a_chord_cant_be_restored() {
+    let (device, fake) = fake::open(with_force(), ClickTiming::Makcu);
+    device.press_keys(&[Key::A, Key::B]).unwrap();
+    assert!(refused(device.restore_key(Key::A)));
+    assert!(forces(&fake).is_empty());
+}
+
+#[test]
+fn drop_gives_forced_keys_back_after_the_releases_and_before_the_unlocks() {
+    let (device, fake) = fake::open(with_force(), ClickTiming::Makcu);
+    device.press_key(Key::A).unwrap();
+    device.force_release_key(Key::W).unwrap();
+    device.lock_key(Key::B).unwrap();
+    drop(device);
+    assert_eq!(fake.cleanup(), ["release_all", "restore_all", "unlock_all"]);
+}
+
+#[test]
+fn a_force_checks_the_link_then_the_box_then_the_key() {
+    let (device, fake) = fake::open(with_force(), ClickTiming::Makcu);
+    fake.disconnect();
+    device.settle();
+    assert!(matches!(
+        device.force_release_key(Key(0x01)),
+        Err(Error::Disconnected)
+    ));
+    let (device, _fake) = fake::open(with_keyboard(None), ClickTiming::Makcu);
+    assert!(matches!(
+        device.force_release_key(Key(0x01)),
+        Err(Error::Unsupported {
+            action: Action::ForceReleaseKey,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn a_key_cant_be_forced_while_a_text_types() {
+    let (device, fake) = fake::open(with_force(), ClickTiming::Makcu);
+    let device = Arc::new(device);
+    let (sender, forced) = std::sync::mpsc::channel();
+    let racer = device.clone();
+    fake.on_piece(move |index| {
+        if index == 0 {
+            let racer = racer.clone();
+            let sender = sender.clone();
+            // it waits for the output lock, which it gets between two pieces
+            thread::spawn(move || sender.send(racer.force_release_key(Key::Z)).unwrap());
+        }
+        None
+    });
+    device.type_text(&"ab".repeat(40)).unwrap();
+    let result = forced.recv_timeout(Duration::from_secs(2)).unwrap();
+    let shown = format!("{result:?}");
+    assert!(refused(result), "{shown}");
+    assert!(forces(&fake).is_empty());
+    // once it's done the key can be forced
+    device.force_release_key(Key::Z).unwrap();
+}
+
+#[test]
+fn a_short_text_ending_doesnt_let_a_force_into_a_longer_one() {
+    let (device, fake) = fake::open(with_force(), ClickTiming::Makcu);
+    let device = Arc::new(device);
+    let (sender, forced) = std::sync::mpsc::channel();
+    let done = Arc::new(AtomicBool::new(false));
+    let racer = device.clone();
+    let racer_done = done.clone();
+    fake.on_piece(move |index| {
+        if index == 0 {
+            let racer = racer.clone();
+            let sender = sender.clone();
+            let racer_done = racer_done.clone();
+            thread::spawn(move || {
+                racer.type_text("x").unwrap();
+                sender.send(racer.force_release_key(Key::Z)).unwrap();
+                racer_done.store(true, Ordering::Release);
+            });
+        }
+        // the long text stops once the other thread has tried, so it's still typing when it does
+        done.load(Ordering::Acquire).then(|| Error::Rejected {
+            action: Action::TypeText,
+            detail: "stopped by the test".into(),
+        })
+    });
+    let long = device.type_text(&"ab".repeat(2000));
+    assert!(matches!(long, Err(Error::Rejected { .. })), "{long:?}");
+    let result = forced.recv_timeout(Duration::from_secs(2)).unwrap();
+    let shown = format!("{result:?}");
+    assert!(refused(result), "{shown}");
+    assert!(forces(&fake).is_empty());
 }

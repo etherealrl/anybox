@@ -36,12 +36,18 @@ const CALLS: &[&str] = &[
     "release_key",
     "tap_key",
     "tap_key_with",
+    "type_text",
+    "press_keys",
+    "release_keys",
+    "tap_keys",
     "press_media",
     "release_media",
     "tap_media",
     "tap_media_with",
     "lock_button",
     "unlock_button",
+    "force_release_key",
+    "restore_key",
     "lock_key",
     "unlock_key",
     "lock_axis",
@@ -51,6 +57,26 @@ const CALLS: &[&str] = &[
     "pan",
     "discard_pending_moves",
     // the end of what bindings/gen makes (calls)
+];
+
+/// every call only one family has, by its identity in the suite
+const EXTENSIONS: &[&str] = &[
+    // made by bindings/gen from its call table (makcu_calls), change the table and run cargo run -p anybox-gen
+    "makcu.interpolation",
+    "makcu.set_interpolation",
+    "makcu.moving",
+    "makcu.autorelease",
+    "makcu.set_autorelease",
+    // the end of what bindings/gen makes (makcu_calls)
+    // made by bindings/gen from its call table (ysc_calls), change the table and run cargo run -p anybox-gen
+    "ysc.interpolation",
+    "ysc.set_interpolation",
+    "ysc.reset_interpolation",
+    "ysc.serial",
+    // the end of what bindings/gen makes (ysc_calls)
+    // made by bindings/gen from its call table (ferrum_calls), change the table and run cargo run -p anybox-gen
+    "ferrum.catch_xy",
+    // the end of what bindings/gen makes (ferrum_calls)
 ];
 
 /// the device functions that aren't a plain call, each one has its own scenario step or its own tests
@@ -103,10 +129,27 @@ fn upper(name: &str) -> String {
     out
 }
 
+/// a value's anybox.h name after its prefix, a nested one joined by its parts, so `Makcu(Interpolation)` is
+/// `MAKCU_INTERPOLATION`
+fn header_name(value: impl std::fmt::Debug) -> String {
+    format!("{value:?}")
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|part| !part.is_empty())
+        .map(upper)
+        .collect::<Vec<_>>()
+        .join("_")
+}
+
 /// a fieldless value's anybox.h name, checked to be there under its prefix, so a name that drifted fails here
 fn name(header: &BTreeMap<String, i64>, prefix: &str, value: impl std::fmt::Debug) -> Value {
     let debug = format!("{value:?}");
-    let named = upper(debug.split(|c: char| !c.is_alphanumeric()).next().unwrap());
+    // an error with fields is named by its variant, a nested action by all its parts
+    let first = upper(debug.split(|c: char| !c.is_alphanumeric()).next().unwrap());
+    let named = if header.contains_key(&format!("ANYBOX_{prefix}_{first}")) {
+        first
+    } else {
+        header_name(&value)
+    };
     let key = format!("ANYBOX_{prefix}_{named}");
     assert!(
         header.contains_key(&key),
@@ -125,7 +168,7 @@ fn button_name(header: &BTreeMap<String, i64>, button: Button) -> Value {
 /// the Rust value with that anybox.h name, out of the list of them
 fn by_name<T: Copy + std::fmt::Debug>(all: &[T], wanted: &str) -> T {
     *all.iter()
-        .find(|value| upper(&format!("{value:?}")) == wanted)
+        .find(|value| header_name(value) == wanted)
         .unwrap_or_else(|| panic!("the suite has no value named {wanted}"))
 }
 
@@ -156,6 +199,15 @@ fn call(
         extra => Button::Extra(extra["Extra"].as_u64().unwrap() as u8),
     };
     let key = |index| anybox::Key(header_number(header, "KEY", arg(args, index, "Key")) as u8);
+    let text = |index| arg(args, index, "Text").as_str().unwrap().to_string();
+    let keys = |index| -> Vec<anybox::Key> {
+        arg(args, index, "Keys")
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|key| anybox::Key(header_number(header, "KEY", key) as u8))
+            .collect()
+    };
     let media = |index| {
         anybox::MediaKey(header_number(header, "MEDIA", arg(args, index, "MediaKey")) as u16)
     };
@@ -187,12 +239,18 @@ fn call(
         "release_key" => device.release_key(key(0)),
         "tap_key" => device.tap_key(key(0)),
         "tap_key_with" => device.tap_key_with(key(0), click(1)),
+        "type_text" => device.type_text(&text(0)),
+        "press_keys" => device.press_keys(&keys(0)),
+        "release_keys" => device.release_keys(&keys(0)),
+        "tap_keys" => device.tap_keys(&keys(0)),
         "press_media" => device.press_media(media(0)),
         "release_media" => device.release_media(media(0)),
         "tap_media" => device.tap_media(media(0)),
         "tap_media_with" => device.tap_media_with(media(0), click(1)),
         "lock_button" => device.lock_button(button(0)),
         "unlock_button" => device.unlock_button(button(0)),
+        "force_release_key" => device.force_release_key(key(0)),
+        "restore_key" => device.restore_key(key(0)),
         "lock_key" => device.lock_key(key(0)),
         "unlock_key" => device.unlock_key(key(0)),
         "lock_axis" => device.lock_axis(axis(0), direction(1)),
@@ -673,7 +731,146 @@ fn kinds(name: &str) -> anybox::EventKinds {
 /// what comes in after the events a step waits for, so an extra one shows up instead of being left in the queue
 const QUIET: Duration = Duration::from_millis(150);
 
+/// one call only one family has, `makcu.interpolation` and the like. on another box the handle is none, which every
+/// binding gives as `{"none": null}`
+fn extension(device: &Device, header: &BTreeMap<String, i64>, step: &Value) -> Value {
+    let name = step["extension"].as_str().unwrap();
+    let args = step["args"].as_array().unwrap();
+    let interpolation = |index| match &arg(args, index, "Interpolation") {
+        Value::String(auto) if auto == "AUTO" => anybox::Interpolation::Auto,
+        percent => anybox::Interpolation::Percent(percent.as_u64().unwrap() as u8),
+    };
+    let ysc_settings = |index| {
+        let settings = arg(args, index, "YscSettings");
+        let ms = |field: &str| Duration::from_millis(settings[field].as_u64().unwrap());
+        anybox::YscInterpolationSettings {
+            enabled: settings["enabled"].as_bool().unwrap(),
+            profile: profile(settings["profile"].as_u64().unwrap() as u32),
+            window: ms("window_ms"),
+            max_window: ms("max_window_ms"),
+        }
+    };
+    let ms_or_off = |index| arg(args, index, "ms").as_u64().map(Duration::from_millis);
+    let ms = |index| ms_or_off(index).unwrap();
+    let flag = |index| arg(args, index, "bool").as_bool().unwrap();
+    let result: Option<anybox::Result<Value>> = match name {
+        // made by bindings/gen from its call table (makcu_dispatch), change the table and run cargo run -p anybox-gen
+        "makcu.interpolation" => device
+            .makcu()
+            .map(|makcu| makcu.interpolation().map(interpolation_json)),
+        "makcu.set_interpolation" => device.makcu().map(|makcu| {
+            makcu
+                .set_interpolation(interpolation(0))
+                .map(|()| Value::Null)
+        }),
+        "makcu.moving" => device.makcu().map(|makcu| makcu.moving().map(Value::Bool)),
+        "makcu.autorelease" => device.makcu().map(|makcu| makcu.autorelease().map(ms_json)),
+        "makcu.set_autorelease" => device
+            .makcu()
+            .map(|makcu| makcu.set_autorelease(ms_or_off(0)).map(|()| Value::Null)),
+        // the end of what bindings/gen makes (makcu_dispatch)
+        // made by bindings/gen from its call table (ysc_dispatch), change the table and run cargo run -p anybox-gen
+        "ysc.interpolation" => device.ysc().map(|ysc| ysc.interpolation().map(ysc_json)),
+        "ysc.set_interpolation" => device
+            .ysc()
+            .map(|ysc| ysc.set_interpolation(ysc_settings(0)).map(|()| Value::Null)),
+        "ysc.reset_interpolation" => device
+            .ysc()
+            .map(|ysc| ysc.reset_interpolation().map(ysc_json)),
+        "ysc.serial" => device.ysc().map(|ysc| ysc.serial().map(serial_json)),
+        // the end of what bindings/gen makes (ysc_dispatch)
+        // made by bindings/gen from its call table (ferrum_dispatch), change the table and run cargo run -p anybox-gen
+        "ferrum.catch_xy" => device
+            .ferrum()
+            .map(|ferrum| ferrum.catch_xy(ms(0), flag(1)).map(xy_json)),
+        // the end of what bindings/gen makes (ferrum_dispatch)
+        other => panic!("there's no extension call {other}"),
+    };
+    match result {
+        None => json!({"none": null}),
+        Some(Ok(value)) => json!({"ok": value}),
+        Some(Err(failed)) => json!({"error": error(header, &failed)}),
+    }
+}
+
+fn interpolation_json(value: anybox::Interpolation) -> Value {
+    match value {
+        anybox::Interpolation::Auto => json!({"Interpolation": "AUTO"}),
+        anybox::Interpolation::Percent(n) => json!({"Interpolation": n}),
+    }
+}
+
+fn ms_json(value: Option<Duration>) -> Value {
+    json!(value.map(|value| value.as_millis() as u64))
+}
+
+fn ysc_json(value: anybox::YscInterpolation) -> Value {
+    json!({
+        "enabled": value.enabled,
+        "profile": profile_number(value.profile),
+        "window_ms": ms_json(value.window),
+        "max_window_ms": ms_json(value.max_window),
+        "measured_interval_us": value.measured_interval.map(micros),
+    })
+}
+
+fn serial_json(serial: anybox::YscSerial) -> Value {
+    json!({"custom": serial.custom, "physical": serial.physical, "active": serial.active})
+}
+
+fn xy_json((x, y): (i32, i32)) -> Value {
+    json!([x, y])
+}
+
+fn profile_number(profile: anybox::YscProfile) -> u32 {
+    match profile {
+        anybox::YscProfile::Linear => 0,
+        anybox::YscProfile::EaseInOut => 1,
+        anybox::YscProfile::MinJerk => 2,
+        anybox::YscProfile::Other(n) => n,
+        other => panic!("the suite has no number for {other:?}"),
+    }
+}
+
+fn profile(number: u32) -> anybox::YscProfile {
+    match number {
+        0 => anybox::YscProfile::Linear,
+        1 => anybox::YscProfile::EaseInOut,
+        2 => anybox::YscProfile::MinJerk,
+        n => anybox::YscProfile::Other(n),
+    }
+}
+
+/// a scenario on one family's mock, which only has extension steps since the mock records no frames
+fn run_family(scenario: &Value, header: &BTreeMap<String, i64>, family: &str) -> Value {
+    let timing = ClickTiming::Fixed(Duration::from_millis(5));
+    let device = match family {
+        "makcu" => Device::mock_makcu(timing),
+        "ysc" => Device::mock_ysc(timing),
+        "ferrum" => Device::mock_ferrum(timing),
+        other => panic!("there's no mock {other}"),
+    }
+    .unwrap();
+    let steps: Vec<Value> = scenario["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|step| {
+            let mut out = step.as_object().unwrap().clone();
+            out.insert("outcome".into(), extension(&device, header, step));
+            Value::Object(out)
+        })
+        .collect();
+    device.close().unwrap();
+    let mut out = scenario.as_object().unwrap().clone();
+    out.insert("steps".into(), Value::Array(steps));
+    Value::Object(out)
+}
+
 fn run(scenario: &Value, header: &BTreeMap<String, i64>) -> Value {
+    if let Some(family) = scenario.get("box") {
+        return run_family(scenario, header, family.as_str().unwrap());
+    }
     let keyboard = scenario["keyboard"].as_bool().unwrap();
     let session = Session::open(keyboard);
     let events = scenario.get("events").map(|wanted| {
@@ -742,6 +939,8 @@ fn run(scenario: &Value, header: &BTreeMap<String, i64>) -> Value {
                     Ok(()) => json!({"ok": null}),
                     Err(failed) => json!({"error": error(header, &failed)}),
                 }
+            } else if step.get("extension").is_some() {
+                extension(session.device(), header, step)
             } else if step.get("snapshot").is_some() {
                 json!({"snapshot": snapshot(header, &session.device().snapshot())})
             } else if step.get("push").is_some() {

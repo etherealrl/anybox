@@ -144,6 +144,14 @@ void call(const anybox::Device& device, const std::string& name, const Array& ar
     const auto key = [&](std::size_t index) {
         return anybox::Key{static_cast<std::uint8_t>(number("KEY", arg(index, "Key")))};
     };
+    const auto text = [&](std::size_t index) { return arg(index, "Text").as_string(); };
+    const auto keys = [&](std::size_t index) {
+        std::vector<anybox::Key> out;
+        for (const auto& key : arg(index, "Keys").as_array()) {
+            out.push_back(anybox::Key{static_cast<std::uint8_t>(number("KEY", key))});
+        }
+        return out;
+    };
     const auto media = [&](std::size_t index) {
         return anybox::MediaKey{static_cast<std::uint16_t>(number("MEDIA", arg(index, "MediaKey")))};
     };
@@ -175,12 +183,18 @@ void call(const anybox::Device& device, const std::string& name, const Array& ar
     if (name == "release_key") return device.release_key(key(0));
     if (name == "tap_key") return device.tap_key(key(0));
     if (name == "tap_key_with") return device.tap_key(key(0), click(1));
+    if (name == "type_text") return device.type_text(text(0));
+    if (name == "press_keys") return device.press_keys(keys(0));
+    if (name == "release_keys") return device.release_keys(keys(0));
+    if (name == "tap_keys") return device.tap_keys(keys(0));
     if (name == "press_media") return device.press_media(media(0));
     if (name == "release_media") return device.release_media(media(0));
     if (name == "tap_media") return device.tap_media(media(0));
     if (name == "tap_media_with") return device.tap_media(media(0), click(1));
     if (name == "lock_button") return device.lock_button(button(0));
     if (name == "unlock_button") return device.unlock_button(button(0));
+    if (name == "force_release_key") return device.force_release_key(key(0));
+    if (name == "restore_key") return device.restore_key(key(0));
     if (name == "lock_key") return device.lock_key(key(0));
     if (name == "unlock_key") return device.unlock_key(key(0));
     if (name == "lock_axis") return device.lock_axis(axis(0), direction(1));
@@ -619,7 +633,114 @@ anybox::EventKinds kinds(const std::string& kinds_name) {
     return static_cast<anybox::EventKinds>(header_value("EVENTS_" + kinds_name));
 }
 
+template <class D>
+Value optional_count(const std::optional<D>& value) {
+    return value ? Value(static_cast<std::int64_t>(value->count())) : Value(nullptr);
+}
+
+Value interpolation_json(const anybox::Interpolation& value) {
+    return Value(Object{{"Interpolation", value.is_automatic ? Value("AUTO") : Value(value.percentage)}});
+}
+
+Value ysc_json(const anybox::YscInterpolation& value) {
+    return Value(Object{{"enabled", Value(value.enabled)},
+                        {"profile", Value(static_cast<std::uint32_t>(value.profile))},
+                        {"window_ms", optional_count(value.window)},
+                        {"max_window_ms", optional_count(value.max_window)},
+                        {"measured_interval_us", optional_count(value.measured_interval)}});
+}
+
+Value ms_json(const std::optional<std::chrono::milliseconds>& value) { return optional_count(value); }
+
+Value serial_json(const anybox::YscSerial& serial) {
+    return Value(Object{{"custom", optional_text(serial.custom)},
+                        {"physical", optional_text(serial.physical)},
+                        {"active", optional_text(serial.active)}});
+}
+
+Value xy_json(const std::pair<std::int32_t, std::int32_t>& xy) { return Value(Array{xy.first, xy.second}); }
+
+// the handle's call in the suite's form, {"none": null} when the device isn't that family
+template <class Handle, class Call>
+Value on(const std::optional<Handle>& handle, Call call) {
+    if (!handle) {
+        return Value(Object{{"none", nullptr}});
+    }
+    return Value(Object{{"ok", call(*handle)}});
+}
+
+// one call only one family has, `makcu.interpolation` and the like
+Value extension(const anybox::Device& device, const Value& step) {
+    const auto& name = step["extension"].as_string();
+    std::vector<Value> args;
+    for (const auto& arg : step["args"].as_array()) {
+        args.push_back(arg.as_object().front().second);
+    }
+    const auto interpolation = [&](std::size_t index) {
+        return args[index].is_string() ? anybox::Interpolation::automatic()
+                                       : anybox::Interpolation::percent(static_cast<std::uint8_t>(args[index].as_int()));
+    };
+    const auto ysc_settings = [&](std::size_t index) {
+        const auto& settings = args[index];
+        return anybox::YscInterpolationSettings{settings["enabled"].as_bool(),
+                                                static_cast<anybox::YscProfile>(settings["profile"].as_int()),
+                                                std::chrono::milliseconds(settings["window_ms"].as_int()),
+                                                std::chrono::milliseconds(settings["max_window_ms"].as_int())};
+    };
+    const auto ms_or_off = [&](std::size_t index) {
+        return args[index].is_null() ? std::optional<std::chrono::milliseconds>()
+                                     : std::chrono::milliseconds(args[index].as_int());
+    };
+    const auto ms = [&](std::size_t index) { return ms_or_off(index).value(); };
+    const auto flag = [&](std::size_t index) { return args[index].as_bool(); };
+    try {
+        // made by bindings/gen from its call table (makcu_dispatch), change the table and run cargo run -p anybox-gen
+        if (name == "makcu.interpolation") return on(device.makcu(), [&](const anybox::Makcu& makcu) { return interpolation_json(makcu.interpolation()); });
+        if (name == "makcu.set_interpolation") return on(device.makcu(), [&](const anybox::Makcu& makcu) { makcu.set_interpolation(interpolation(0)); return Value(); });
+        if (name == "makcu.moving") return on(device.makcu(), [&](const anybox::Makcu& makcu) { return Value(makcu.moving()); });
+        if (name == "makcu.autorelease") return on(device.makcu(), [&](const anybox::Makcu& makcu) { return ms_json(makcu.autorelease()); });
+        if (name == "makcu.set_autorelease") return on(device.makcu(), [&](const anybox::Makcu& makcu) { makcu.set_autorelease(ms_or_off(0)); return Value(); });
+        // the end of what bindings/gen makes (makcu_dispatch)
+        // made by bindings/gen from its call table (ysc_dispatch), change the table and run cargo run -p anybox-gen
+        if (name == "ysc.interpolation") return on(device.ysc(), [&](const anybox::Ysc& ysc) { return ysc_json(ysc.interpolation()); });
+        if (name == "ysc.set_interpolation") return on(device.ysc(), [&](const anybox::Ysc& ysc) { ysc.set_interpolation(ysc_settings(0)); return Value(); });
+        if (name == "ysc.reset_interpolation") return on(device.ysc(), [&](const anybox::Ysc& ysc) { return ysc_json(ysc.reset_interpolation()); });
+        if (name == "ysc.serial") return on(device.ysc(), [&](const anybox::Ysc& ysc) { return serial_json(ysc.serial()); });
+        // the end of what bindings/gen makes (ysc_dispatch)
+        // made by bindings/gen from its call table (ferrum_dispatch), change the table and run cargo run -p anybox-gen
+        if (name == "ferrum.catch_xy") return on(device.ferrum(), [&](const anybox::Ferrum& ferrum) { return xy_json(ferrum.catch_xy(ms(0), flag(1))); });
+        // the end of what bindings/gen makes (ferrum_dispatch)
+        throw Failure("there's no extension call " + name);
+    } catch (const anybox::Error& error) {
+        const auto* expected = step.find("outcome");
+        const bool wants_error = expected && expected->is_object() && expected->find("error");
+        return wants_error ? Value(Object{{"error", error_json(error)}})
+                           : Value(Object{{"error", std::string(error.what())}});
+    }
+}
+
+Array run_family(const Value& scenario) {
+    const auto& family = scenario["box"].as_string();
+    const auto timing = anybox::ClickTiming::fixed(5ms);
+    const auto device = family == "makcu" ? anybox::Mock::makcu(timing)
+                        : family == "ysc" ? anybox::Mock::ysc(timing)
+                        : family == "ferrum"
+                            ? anybox::Mock::ferrum(timing)
+                            : throw Failure("there's no mock " + family);
+    Array steps;
+    for (const auto& step : scenario["steps"].as_array()) {
+        auto out = step;
+        out.set("outcome", extension(device, step));
+        steps.push_back(std::move(out));
+    }
+    device.close();
+    return steps;
+}
+
 Array run(const Value& scenario) {
+    if (scenario.find("box")) {
+        return run_family(scenario);
+    }
     auto opened = anybox::Mock::medius_manual(anybox::ClickTiming::fixed(5ms), scenario["keyboard"].as_bool());
     auto& device = opened.first;
     auto& box = opened.second;
@@ -670,6 +791,8 @@ Array run(const Value& scenario) {
                 }
             }
             out.set("frames", Value(std::move(frames)));
+        } else if (step.find("extension")) {
+            outcome = extension(device, step);
         } else if (step.find("snapshot")) {
             outcome = snapshot_json(device.snapshot(), *expected);
         } else if (step.find("push")) {

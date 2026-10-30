@@ -97,6 +97,7 @@ impl Poller {
             keyboard,
             directional: self.shared.directional.load(Ordering::Acquire),
             peripheral: None,
+            firmware: current.info.firmware.clone(),
         };
         if self.shared.api == FerrumApi::Software {
             // the roles are news on their own, so a failed id query only leaves the ids out
@@ -104,7 +105,7 @@ impl Poller {
                 roles.peripheral = peripheral;
             }
         }
-        let fresh = snapshot(self.shared.api, roles);
+        let fresh = snapshot(self.shared.api, &roles);
         // a reprobe only runs while the port is down, so holding it up here means none can slip in between
         self.link.while_up(|| {
             if self.shared.generation.load(Ordering::Acquire) != generation {

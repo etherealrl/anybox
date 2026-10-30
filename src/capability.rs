@@ -111,6 +111,37 @@ pub enum Action {
     LockAxis,
     LockKey,
     ScaleAxis,
+    TypeText,
+    KeyChord,
+    /// `force_release_key` and `restore_key`
+    ForceReleaseKey,
+    /// what only a MAKCU has, through `device.makcu()`
+    Makcu(MakcuAction),
+    /// what only a YSC8K has, through `device.ysc()`
+    Ysc(YscAction),
+    /// what only a Ferrum has, through `device.ferrum()`
+    Ferrum(FerrumAction),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum MakcuAction {
+    Interpolation,
+    Moving,
+    Autorelease,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum YscAction {
+    Interpolation,
+    Serial,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum FerrumAction {
+    CatchXy,
 }
 
 impl fmt::Display for Action {
@@ -139,6 +170,15 @@ impl fmt::Display for Action {
             Self::MediaPress => "press a media key",
             Self::MediaRelease => "release a media key",
             Self::MediaTap => "tap a media key",
+            Self::TypeText => "type text",
+            Self::KeyChord => "press several keys at once",
+            Self::ForceReleaseKey => "force a key up or give it back",
+            Self::Makcu(MakcuAction::Interpolation) => "read or set the MAKCU's interpolation",
+            Self::Makcu(MakcuAction::Moving) => "ask the MAKCU whether it's still moving",
+            Self::Makcu(MakcuAction::Autorelease) => "read or set the MAKCU's autorelease",
+            Self::Ysc(YscAction::Interpolation) => "read or set the YSC's interpolation",
+            Self::Ysc(YscAction::Serial) => "read the serial the YSC gives its mouse",
+            Self::Ferrum(FerrumAction::CatchXy) => "read the Ferrum's recent mouse motion",
         })
     }
 }
@@ -186,6 +226,11 @@ pub enum Quirk {
     MaxKeysHeld(u8),
     /// the box puts locks back by itself after a reconnect or a session reset
     KeepsLocked,
+    /// the box types the text the same way whether Caps Lock is on or not, so with it on the case comes out flipped
+    TypedTextIgnoresCapsLock,
+    /// typing lets go of a key you hold when the text types that key, and of Left Shift when the text needs Shift.
+    /// anybox takes those off what it holds for you and doesn't press them again
+    TypingReleasesHeldKeys,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

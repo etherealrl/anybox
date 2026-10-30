@@ -1,5 +1,5 @@
 use super::{Lang, doc, find, marked, pascal, replace, wrap};
-use crate::table::{CALLS, Call, On, Ty};
+use crate::table::{CALLS, Call, On, Ret, Ty};
 
 #[test]
 fn a_region_gets_replaced_with_its_marks_and_indent_kept() {
@@ -94,6 +94,8 @@ fn a_doc_naming_a_call_that_isnt_there_stops_even_in_c() {
         doc: "see {missing_call}",
         folds_into: None,
         only_in_c: true,
+        ret: Ret::Unit,
+        action: None,
     };
     doc(&call, Lang::C);
 }
@@ -109,4 +111,22 @@ fn a_region_marked_twice_or_left_unknown_is_refused() {
     );
     let other = format!("{text}// made by bindings/gen from its call table (y)\n");
     assert_eq!(marked(&other), ["x", "x", "y"]);
+}
+
+#[test]
+fn an_extension_doc_says_off_rejected_and_its_arguments_each_languages_way() {
+    let set_autorelease = find(On::Makcu, "set_autorelease");
+    assert!(doc(set_autorelease, Lang::C).contains("or off with 0"));
+    assert!(doc(set_autorelease, Lang::Python).contains("or off with None"));
+    assert!(doc(set_autorelease, Lang::CSharp).contains("or off with null"));
+    assert!(doc(set_autorelease, Lang::Cpp).contains("or off with an empty one"));
+    let set_interpolation = find(On::Ysc, "set_interpolation");
+    assert!(doc(set_interpolation, Lang::C).contains("is `ANYBOX_STATUS_REJECTED`"));
+    assert!(doc(set_interpolation, Lang::CSharp).contains("<see cref=\"RejectedException\"/>"));
+    // the C argument is in milliseconds, and a call on the device is the device's in C#
+    let catch_xy = find(On::Ferrum, "catch_xy");
+    assert!(doc(catch_xy, Lang::C).contains("`window_ms`"));
+    assert!(doc(catch_xy, Lang::C).contains("`anybox_device_move_by`"));
+    assert!(doc(catch_xy, Lang::CSharp).contains("<paramref name=\"withSoftware\"/>"));
+    assert!(doc(catch_xy, Lang::CSharp).contains("<see cref=\"Device.MoveBy\"/>"));
 }
