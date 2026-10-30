@@ -559,12 +559,8 @@ impl YscBackend {
         if code == Some(200)
             && value.get("message").and_then(serde_json::Value::as_str) == Some(message)
         {
-            // the data is JSON inside a string, like type_status
-            return Ok(value
-                .get("data")
-                .and_then(serde_json::Value::as_str)
-                .and_then(|data| serde_json::from_str(data).ok())
-                .unwrap_or_default());
+            // read like every other data, as an object or as JSON inside a string
+            return Ok(frames::data(&value).unwrap_or_default());
         }
         Err(Error::Rejected {
             action,
@@ -682,11 +678,7 @@ impl Backend for YscBackend {
                 until,
             )?;
             let value = self.typing_reply(reply.as_deref())?;
-            let status: serde_json::Value = value
-                .get("data")
-                .and_then(serde_json::Value::as_str)
-                .and_then(|data| serde_json::from_str(data).ok())
-                .unwrap_or_default();
+            let status = frames::data(&value).unwrap_or_default();
             let count = |name: &str| status.get(name).and_then(serde_json::Value::as_u64);
             // the vendor documents 0 or 1 and its own host only checks it's falsy, so false counts too
             let busy = status.get("busy").is_none_or(|busy| {

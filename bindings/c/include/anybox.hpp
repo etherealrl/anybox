@@ -1827,9 +1827,6 @@ private:
     std::unique_ptr<State> state_;
 };
 
-/// one open box. every method can be called from any thread at the same time, and a copy shares the box. the last
-/// copy to go lets go of what you held, unlocks and closes the port, `close()` does it now and throws when that
-/// didn't work
 /// how long a MAKCU spreads a move, `Interpolation::automatic()` or `Interpolation::percent(n)` with n from 0 to 100
 struct Interpolation {
     bool is_automatic = true;
@@ -2057,6 +2054,9 @@ private:
     std::shared_ptr<AnyboxDevice> device_;
 };
 
+/// one open box. every method can be called from any thread at the same time, and a copy shares the box. the last
+/// copy to go lets go of what you held, unlocks and closes the port, `close()` does it now and throws when that
+/// didn't work
 class Device {
 public:
     /// takes a handle from anybox.h over
@@ -2234,8 +2234,10 @@ public:
     /// read empty, `events()` gives one that's already ended, `medius()` nothing, and `snapshot()` still works. a
     /// second close throws ClosedError, like in Rust
     void close() const {
+        // get() first, a moved from device has no closed_ and throws there
+        const AnyboxDevice* handle = get();
         *closed_ = true;
-        detail::check(anybox_device_close(get()));
+        detail::check(anybox_device_close(handle));
     }
 
     /// what only a MAKCU has, nothing on another box and once this device is closed
@@ -2252,7 +2254,10 @@ public:
     }
 
 private:
-    bool is(Family family) const { return !*closed_ && snapshot().info.family == family; }
+    bool is(Family family) const {
+        get();
+        return !*closed_ && snapshot().info.family == family;
+    }
 
     std::shared_ptr<AnyboxDevice> handle_;
     // shared by every copy of this device, like the handle

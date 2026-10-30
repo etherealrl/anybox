@@ -98,7 +98,7 @@ fn names_iap(value: &Value) -> bool {
     }
 }
 
-fn data(value: &Value) -> Option<Value> {
+pub(super) fn data(value: &Value) -> Option<Value> {
     match value.get("data")? {
         Value::Object(_) => Some(value["data"].clone()),
         Value::String(text) if text.len() <= MAX_PAYLOAD => {

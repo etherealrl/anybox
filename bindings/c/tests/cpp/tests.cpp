@@ -324,6 +324,8 @@ void a_moved_device_is_empty_and_a_copy_shares_the_box() {
     auto opened = Mock::medius_manual();
     Device moved = std::move(opened.first);
     throws<ClosedError>([&] { opened.first.get(); }, "a moved-from device", "moved from");
+    throws<ClosedError>([&] { opened.first.close(); }, "close() on a moved-from device", "moved from");
+    throws<ClosedError>([&] { opened.first.makcu(); }, "makcu() on a moved-from device", "moved from");
     std::optional<Device> copy(moved);
     { Device gone = std::move(moved); }
     check(copy->snapshot().info.family == Family::Medius, "the copy still has the box");

@@ -176,11 +176,6 @@ public sealed class Device : IDisposable
         return new Events(events, this);
     }
 
-    /// <summary>on a Medius, its own device for everything only Medius does (clips, transforms, rendering, the
-    /// polling rate and so on), and null on any other box or once this device is closed. it shares this device's
-    /// connection, and keeping it holds the port open after this device is gone. anybox doesn't know about anything
-    /// you press or lock through it, and its <c>Reset()</c> lets go of and unlocks EVERYTHING, what anybox did
-    /// too</summary>
     /// <summary>what only a MAKCU has, null on another box and once this device is closed</summary>
     public Makcu? Makcu() => Is(Family.MakcuV4) ? new Makcu(this) : null;
 
@@ -192,6 +187,11 @@ public sealed class Device : IDisposable
 
     bool Is(Family family) => !closed && !handle.IsClosed && Snapshot().Info.Family == family;
 
+    /// <summary>on a Medius, its own device for everything only Medius does (clips, transforms, rendering, the
+    /// polling rate and so on), and null on any other box or once this device is closed. it shares this device's
+    /// connection, and keeping it holds the port open after this device is gone. anybox doesn't know about anything
+    /// you press or lock through it, and its <c>Reset()</c> lets go of and unlocks EVERYTHING, what anybox did
+    /// too</summary>
     public Anybox.Medius.Device? Medius()
     {
         var status = Native.anybox_device_medius(Handle, out var medius);
