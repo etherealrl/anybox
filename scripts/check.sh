@@ -58,14 +58,15 @@ fi
 # the C# tests, the global.json next to them turns on the test runner they need
 if command -v dotnet >/dev/null; then
   (cd bindings/csharp && dotnet test --project tests/Anybox.Tests)
-  # the C# examples in the docs have to build, each one as a file-based app on the package, with no warnings
+  # the C# examples in the docs have to build, each one as a file-based app on the package, with no warnings. not
+  # AOT, which a file app is by default, the ILCompiler package that pulls in is for a publish this never does
   rm -rf target/docs-csharp
   mkdir -p target/docs-csharp
   project="$(pwd -W 2>/dev/null || pwd)/bindings/csharp/src/Anybox/Anybox.csproj"
   for doc in docs/bindings.md bindings/csharp/README.md; do
     awk -v dir=target/docs-csharp -v name="$(basename "$(dirname "$doc")")" -v project="$project" \
       '/^```csharp$/ {n++; file = dir "/" name n ".cs"; print "#:project " project > file
-        print "#:property TreatWarningsAsErrors=true" > file; next}
+        print "#:property TreatWarningsAsErrors=true" > file; print "#:property PublishAot=false" > file; next}
        /^```/ {file = ""; next} file != "" {print > file}' "$doc"
   done
   for example in target/docs-csharp/*.cs; do

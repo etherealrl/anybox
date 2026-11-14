@@ -3,7 +3,7 @@
 one API for the most popular passthrough boxes, from Python. it's the [anybox](https://github.com/etherealrl/anybox) Rust library through its C ABI, so it does exactly what the Rust one does, and the [README there](https://github.com/etherealrl/anybox#readme) has which boxes it supports and how each one behaves
 
 ```sh
-pip install anybox-rs
+pip install anybox-py
 ```
 
 it's still `import anybox` in your code. the wheel has the library inside, so you don't need Rust. it's Windows and Linux on x64 and Python 3.11 or newer for now, if you need something else open an issue. on Linux your user has to be allowed to open serial ports, the `dialout` group on most distros (`uucp` on Arch)
@@ -45,7 +45,7 @@ durations like a click's `hold` are seconds, and an event's stamp is nanoseconds
 what only one box can do stays reachable through that box's own API. on a Medius, `device.medius()` gives you the [medius](https://pypi.org/project/medius/) package's own device for clips, transforms, rendering and the rest, and None on every other box. it needs the extra:
 
 ```sh
-pip install anybox-rs[medius]
+pip install anybox-py[medius]
 ```
 
 ```python

@@ -11,7 +11,7 @@ Ferrum and YSC8K (the V1 that's sold and the V2 that isn't out yet) are written 
 | method                   | Medius        | MAKCU            | Ferrum           | YSC8K           |
 | ------------------------ | ------------- | ---------------- | ---------------- | --------------- |
 | `move_by`                | ✓             | ✓                | ✓                | ✓               |
-| `move_now`               | ✓             | V4.086 and up    | ✗                | ✗               |
+| `move_now`               | ✓             | V4.097 and up    | ✗                | ✗               |
 | `press`, `release`       | ✓             | ✓                | ✓                | ✓               |
 | `click`, `click_with`    | on your PC    | ✓                | ✓, a hold on PC  | on your PC      |
 | `wheel`                  | ✓             | ✓                | ✓                | one notch       |
@@ -151,6 +151,7 @@ a lot of the MAKCU and Medius notes line up with K4's [comparison of stock MAKCU
 - `release_key` only takes your own press back, a key the user holds stays down for the PC (the docs say so, i haven't checked it)
 - key events carry the box's own time like buttons and motion do
 - held buttons, keys and locks come back by themselves after the box reconnects or resets
+- a forced key too, the thing is that the box drops every force when it doesn't hear from your PC for a second, re-clones the keyboard, resets, or the game PC switches the keyboard's configuration, and until the medius crate forces it again the PC sees what the finger does. that put back has only run on the crate's mock so far, so if you force a key for a whole session, call `force_release_key` again on every `SessionReset` and `Reconnected` (a force on a key that's already forced just goes out again)
 - `device.medius()` gives you the medius crate's own device, for clips, transforms, rendering, the polling rate (`query_rate()`) and the identity the box shows the PC (`device_info()`)
 - it can't type text and has no chords. its clips can press up to 8 keys in one report, but a clip gets loaded first and played by the box, so that stays in `device.medius()`
 - anybox doesn't know what you press or lock through `medius()`, and its `reset()` lets go of and unlocks EVERYTHING, what anybox did too

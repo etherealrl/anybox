@@ -64,7 +64,7 @@ it's all in `anybox::medius`, which has its own `Device`, `Button`, `Key` and so
 ## Python
 
 ```sh
-pip install anybox-rs
+pip install anybox-py
 ```
 
 ```python
@@ -75,7 +75,7 @@ with anybox.connect() as device:
     device.click(anybox.Button.LEFT)
 ```
 
-it's the same API with Python names, on top of the C library, which comes inside the wheel so you don't need Rust. Python 3.11 or newer, and the [package's readme](../bindings/python/README.md) has the rest. one thing works differently from Rust on purpose, a receiver keeps its device open, because Python closes a device whenever the garbage collector gets to it, so `anybox.connect().events()` would lose the box right away otherwise. `pip install anybox-rs[medius]` also gets you `device.medius()`, the medius package's own device
+it's the same API with Python names, on top of the C library, which comes inside the wheel so you don't need Rust. Python 3.11 or newer, and the [package's readme](../bindings/python/README.md) has the rest. one thing works differently from Rust on purpose, a receiver keeps its device open, because Python closes a device whenever the garbage collector gets to it, so `anybox.connect().events()` would lose the box right away otherwise. `pip install anybox-py[medius]` also gets you `device.medius()`, the medius package's own device
 
 ## C#
 

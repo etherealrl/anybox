@@ -9,6 +9,10 @@ one API for the most popular passthrough boxes
   <a href="https://docs.rs/anybox-rs#gh-light-mode-only"><img src="docs/badges/rust-light.svg" alt="Rust docs on docs.rs" /></a>
   <a href="https://crates.io/crates/anybox-rs#gh-dark-mode-only"><img src="docs/badges/crates.svg" alt="anybox-rs on crates.io" /></a>
   <a href="https://crates.io/crates/anybox-rs#gh-light-mode-only"><img src="docs/badges/crates-light.svg" alt="anybox-rs on crates.io" /></a>
+  <a href="https://www.nuget.org/packages/Anybox#gh-dark-mode-only"><img src="docs/badges/nuget.svg" alt="Anybox on NuGet" /></a>
+  <a href="https://www.nuget.org/packages/Anybox#gh-light-mode-only"><img src="docs/badges/nuget-light.svg" alt="Anybox on NuGet" /></a>
+  <a href="https://pypi.org/project/anybox-py#gh-dark-mode-only"><img src="docs/badges/pypi.svg" alt="anybox-py on PyPI" /></a>
+  <a href="https://pypi.org/project/anybox-py#gh-light-mode-only"><img src="docs/badges/pypi-light.svg" alt="anybox-py on PyPI" /></a>
   <br />
   <a href="https://github.com/etherealrl/anybox/releases/latest#gh-dark-mode-only"><img src="docs/badges/windows.svg" alt="Windows downloads" /></a>
   <a href="https://github.com/etherealrl/anybox/releases/latest#gh-light-mode-only"><img src="docs/badges/windows-light.svg" alt="Windows downloads" /></a>
@@ -63,7 +67,7 @@ if a box acts weird and you want to see what actually goes over the wire, turn o
 
 ### other languages
 
-there's a C library with a header for C and one for C++, a Python package (`pip install anybox-rs`) and a C# package (`dotnet add package Anybox`), all on top of the same core, so they're the same API with the names of their language and they do exactly what the Rust crate does. if one doesn't, that's a bug, open an issue. how to install and use each one is in [bindings](docs/bindings.md)
+there's a C library with a header for C and one for C++, a Python package (`pip install anybox-py`) and a C# package (`dotnet add package Anybox`), all on top of the same core, so they're the same API with the names of their language and they do exactly what the Rust crate does. if one doesn't, that's a bug, open an issue. how to install and use each one is in [bindings](docs/bindings.md)
 
 ## usage
 

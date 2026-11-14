@@ -2,6 +2,8 @@
 // looked up once per process. with `default-filter` it's the other way round: a default Medius filter used first
 // thing still finds the library
 #:project ../../src/Anybox/Anybox.csproj
+// a file program is native AOT by default, and that pulls in the ILCompiler package for a publish this never does
+#:property PublishAot=false
 
 try
 {

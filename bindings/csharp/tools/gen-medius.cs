@@ -3,6 +3,8 @@
 // bottom) and the Rust test that pins the layout, all from bindings/c/include/medius.h. check.sh runs it and fails on
 // a diff, so a medius bump that changes the header shows up as a change to look at, and on a header its tables don't
 // fit. run it from the repo root with dotnet run bindings/csharp/tools/gen-medius.cs
+// not AOT, which a file program is by default, the ILCompiler package that pulls in is for a publish this never does
+#:property PublishAot=false
 using System.Text;
 using System.Text.RegularExpressions;
 

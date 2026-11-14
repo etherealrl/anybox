@@ -541,7 +541,7 @@ class Device:
     def medius(self) -> Any:
         """on a Medius, the medius package's own `Device` for everything only Medius does (clips, transforms,
         rendering, the polling rate and so on), and None on any other box or once this device is closed. it needs
-        `pip install anybox-rs[medius]`. it shares this device's connection, and keeping it holds the port open
+        `pip install anybox-py[medius]`. it shares this device's connection, and keeping it holds the port open
         after this device is gone. anybox doesn't know about anything you press or lock through it, and its
         `reset()` lets go of and unlocks EVERYTHING, what anybox did too"""
         out = ctypes.c_void_p()
@@ -594,7 +594,7 @@ def _medius_package() -> Any:
         import medius
     except ImportError as error:
         raise ImportError(
-            f"device.medius() needs the medius package, install it with pip install anybox-rs[medius] ({error})"
+            f"device.medius() needs the medius package, install it with pip install anybox-py[medius] ({error})"
         ) from error
     # the loader hands back the same handle for a library it already has, whatever path or name it was asked by,
     # and a name from find_library isn't a path samefile could look at

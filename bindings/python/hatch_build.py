@@ -14,7 +14,7 @@ class CustomBuildHook(BuildHookInterface):
     def initialize(self, version, build_data):
         if self.target_name != "wheel":
             # an sdist would install without the library and fail on import, so there isn't one
-            raise RuntimeError("anybox-rs only ships wheels, build one with --wheel")
+            raise RuntimeError("anybox-py only ships wheels, build one with --wheel")
         from packaging.tags import sys_tags
 
         build_data["pure_python"] = False

@@ -318,7 +318,7 @@ def _find() -> str:
     if found:
         return found
     raise ImportError(
-        f"couldn't find {_LIBRARY}, it ships inside the wheel, so reinstall anybox-rs. if you built it "
+        f"couldn't find {_LIBRARY}, it ships inside the wheel, so reinstall anybox-py. if you built it "
         "yourself, point ANYBOX_LIB at it"
     )
 
@@ -332,7 +332,7 @@ def load(path: str, abi: int = ABI_VERSION) -> ctypes.CDLL:
         raise ImportError(f"{path} isn't an anybox library, point ANYBOX_LIB at the right one") from None
     if found != abi:
         raise ImportError(
-            f"{path} speaks C ABI {found} and this package needs {abi}, so install the anybox-rs "
+            f"{path} speaks C ABI {found} and this package needs {abi}, so install the anybox-py "
             "wheel that matches it, or build the library from the same release as this package"
         )
     functions = dict(_FUNCTIONS)
