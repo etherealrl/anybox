@@ -186,7 +186,7 @@ RECV_CLOSED = RecvClosedError.status
 
 
 def unknown(what: str, value: int) -> Error:
-    return Error(f"the library sent {what} this package doesn't know ({value}), so update anybox-rs")
+    return Error(f"the library sent {what} this package doesn't know ({value}), so update anybox-py")
 
 
 def firmware(raw: ctypes.Structure, prefix: str) -> Firmware | None:

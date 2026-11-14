@@ -24,7 +24,8 @@ pub(super) fn open(path: &Path, baud: u32) -> io::Result<Box<dyn Port>> {
         if libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) != 0 {
             return Err(io::Error::last_os_error());
         }
-        if libc::ioctl(fd, libc::TIOCEXCL) != 0 {
+        // the request's type differs per OS (c_ulong on Linux, the constant a c_uint on macOS)
+        if libc::ioctl(fd, libc::TIOCEXCL as _) != 0 {
             return Err(io::Error::last_os_error());
         }
     }

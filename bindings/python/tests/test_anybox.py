@@ -75,7 +75,7 @@ def test_a_library_that_isnt_there_says_what_to_do(tmp_path):
     shutil.copytree(
         package / "anybox", copy / "anybox", ignore=shutil.ignore_patterns("__pycache__", "*.dll", "*.so")
     )
-    assert "so reinstall anybox-rs" in import_error({}, copy)
+    assert "so reinstall anybox-py" in import_error({}, copy)
 
 
 @pytest.mark.parametrize(
@@ -642,7 +642,7 @@ def test_every_event_kind_comes_across_with_its_fields():
     ]:
         assert _event(_native.Event(**raw)) == event
     assert _event(_native.Event(kind=3, since_open_ns=1, received_since_open_ns=2)).at == anybox.Stamp(1, 2, 0, 0)
-    with pytest.raises(anybox.Error, match="update anybox-rs"):
+    with pytest.raises(anybox.Error, match="update anybox-py"):
         _event(_native.Event(kind=10))
 
 
@@ -680,7 +680,7 @@ def test_every_info_field_comes_across():
     mac = _info(_native.Info(family=1, id_kind=1, id_mac=(1, 2, 3, 4, 5, 6)))
     assert mac.id == anybox.StableId(mac=bytes([1, 2, 3, 4, 5, 6]))
     for fields in [dict(firmware_kind=5), dict(id_kind=3)]:
-        with pytest.raises(anybox.Error, match="update anybox-rs"):
+        with pytest.raises(anybox.Error, match="update anybox-py"):
             _info(_native.Info(family=1, **fields))
 
 
@@ -898,7 +898,7 @@ device, _ = anybox.mock_medius()
 try:
     device.medius()
 except ImportError as error:
-    print("refused", "pip install anybox-rs[medius]" in str(error), len(freed))
+    print("refused", "pip install anybox-py[medius]" in str(error), len(freed))
 device.move_by(1, 1)
 device.close()
 print("closed", device.medius())

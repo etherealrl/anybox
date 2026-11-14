@@ -27,7 +27,8 @@ mod poller;
 use frames::{MakcuFrames, frame, parts, refused};
 pub(crate) use poller::Poller;
 
-/// the two rates a V4 box can run at. the button next to USB1 switches between them and the box remembers it
+/// the two rates a V4 box can run at. holding the button next to USB1 switches between them (3 s since V4.097, a
+/// short press before) and the box remembers it
 pub(crate) const BAUDS: [u32; 2] = [4_000_000, 115_200];
 /// the official build when this backend was written, nothing older was checked against it
 pub(crate) const MIN_BUILD: u32 = 4085;
