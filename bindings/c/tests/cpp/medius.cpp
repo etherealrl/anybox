@@ -207,7 +207,7 @@ void the_mock_is_there() {
 }
 
 void the_meta_functions_answer() {
-    check(abi_version() == 10u, "the medius ABI is " + std::to_string(abi_version()));
+    check(abi_version() == 11u, "the medius ABI is " + std::to_string(abi_version()));
     check(!version().empty(), "the medius version");
     check(default_query_timeout_ms() > 0 && default_keepalive_cadence_ms() > 0 && default_transfer_timeout_ms() > 0,
           "the defaults");
@@ -261,6 +261,18 @@ void a_silent_mock_fails_the_open() {
     const MockBox mock;
     mock.silent();
     throws<Error>([&] { Device::open_mock(mock); }, "opening a silent mock");
+}
+
+void a_box_on_another_protocol_opens_to_update_only() {
+    const MockBox mock;
+    check(!Device::open_mock_for_update(mock).is_update_only(), "a box on this protocol is update only");
+    mock.set_version(Version{9, 3, 4, 7, {}, ""});
+    check(Device::open_mock_for_update(mock).is_update_only(), "a box on protocol 9 isn't update only");
+    // below the oldest protocol the update path speaks
+    mock.set_version(Version{4, 3, 0, 0, {}, ""});
+    throws<BadProtoVerError>([&] { Device::open_mock_for_update(mock); }, "opening a box on protocol 4 to update");
+    const MockBox plain;
+    check(!Device::open_mock(plain).is_update_only(), "a plain open is update only");
 }
 
 void a_bad_protocol_version_says_its_status_and_protocol() {
@@ -730,7 +742,7 @@ void the_status_codes_are_the_headers() {
         check(error->medius_status() == static_cast<Status>(value) && said == name,
               line + " is " + error->what() + " here");
     }
-    check(declared == 36, std::to_string(declared) + " statuses in medius.h");
+    check(declared == 39, std::to_string(declared) + " statuses in medius.h");
     check(static_cast<int>(Status::ErrClipPacketTrigger) == 33, "ErrClipPacketTrigger");
 }
 
@@ -766,12 +778,15 @@ void every_status_has_its_exception() {
         {Status::ErrRawDirection, &typeid(RawDirectionError)},
         {Status::ErrClipFrameCount, &typeid(ClipFrameCountError)},
         {Status::ErrClipFrameTooLong, &typeid(ClipFrameTooLongError)},
-        {Status::ErrClipTransferData, &typeid(ClipTransferDataError)},
+        {Status::ErrTransferData, &typeid(TransferDataError)},
+        {Status::ErrTransferTimeoutRange, &typeid(TransferTimeoutRangeError)},
+        {Status::ErrTransferReplyIncomplete, &typeid(TransferReplyIncompleteError)},
+        {Status::ErrPortBusy, &typeid(PortBusyError)},
         {Status::ErrClipPacketTrigger, &typeid(ClipPacketTriggerError)},
         {Status::ErrRewriteMatchTooLong, &typeid(RewriteMatchTooLongError)},
         {Status::ErrRewritePoolFull, &typeid(RewritePoolFullError)},
     };
-    check(classes.size() == 34, "every status but ok and unknown");
+    check(classes.size() == 37, "every status but ok and unknown");
     for (const auto& entry : classes) {
         const auto status = static_cast<MediusStatus>(entry.first);
         const auto error = detail::make_error(status, "text", 3, std::nullopt);
@@ -992,14 +1007,24 @@ void a_transfer_brings_back_its_answer() {
     const Bytes reply{0x12, 0x01, 0x10, 0x02};
     const MockBox mock;
     mock.set_imperfect_status(allowed);
-    mock.set_transfer_reply(TransferStatus::Ok, reply);
+    mock.set_transfer_reply(TransferStatus::Ok, TransferStage::Status, reply);
     const auto device = mock.with_device();
     const auto outcome = device.transfer(0, Setup{0x80, 0x06, 0x0100, 0, 18});
-    check(outcome == TransferOutcome{TransferStatus::Ok, reply} && outcome.is_ok(), "the reply");
+    check(outcome == TransferOutcome{TransferStatus::Ok, TransferStage::Status, reply} && outcome.is_ok(), "the reply");
     const auto timed = device.transfer(0, Setup{0x80, 0x06, 0x0100, 0, 2}, {},
                                        std::chrono::milliseconds(default_transfer_timeout_ms()));
     check(timed.status == TransferStatus::Ok, "the timed reply");
     check(default_transfer_timeout_ms() >= 800, "the default transfer timeout");
+    // one too long for the call's 32 bits is refused by medius like any other out of its range, and so is none
+    throws<TransferTimeoutRangeError>(
+        [&] { device.transfer(0, Setup{0x80, 0x06, 0x0100, 0, 2}, {}, std::chrono::milliseconds(4294967296LL)); },
+        "a timeout past 32 bits");
+    throws<TransferTimeoutRangeError>(
+        [&] { device.transfer(0, Setup{0x80, 0x06, 0x0100, 0, 2}, {}, std::chrono::milliseconds(0)); }, "no timeout");
+    throws<std::invalid_argument>(
+        [&] { device.transfer(0, Setup{0x80, 0x06, 0x0100, 0, 2}, {}, std::chrono::milliseconds(-1)); },
+        "a negative timeout");
+    check(outcome.data.capacity() < 1024, "the outcome holds the whole reply buffer");
 }
 
 void a_transfer_is_refused_without_the_opt_in() {
@@ -1008,12 +1033,13 @@ void a_transfer_is_refused_without_the_opt_in() {
     check(outcome.status == TransferStatus::Refused && !outcome.is_ok() && outcome.data.empty(), "the refusal");
 }
 
-void a_transfer_that_isnt_ok_carries_no_data() {
+void a_transfer_that_isnt_ok_keeps_where_it_ended_and_what_came_before() {
     const MockBox mock;
     mock.set_imperfect_status(allowed);
-    mock.set_transfer_reply(TransferStatus::Stall, {0x12, 0x01, 0x00, 0x02});
+    mock.set_transfer_reply(TransferStatus::Stall, TransferStage::Data, {0x12, 0x01, 0x00, 0x02});
     const auto outcome = mock.with_device().transfer(0, Setup{0x80, 0x06, 0x0100, 0, 18});
-    check(outcome.status == TransferStatus::Stall && outcome.data.empty(), "the stall");
+    check(outcome == TransferOutcome{TransferStatus::Stall, TransferStage::Data, {0x12, 0x01, 0x00, 0x02}} && !outcome.ok_data(),
+          "the stall");
 }
 
 void a_rewrite_survives_the_query() {
@@ -1290,7 +1316,7 @@ void a_release_the_box_counts_is_recovered() {
     mock.link_lost();
     check(device.query_stats().session == 1, "the session");
     until([&] { return device.query_locks().scale_of(x, Direction::Positive) == 40; }, "the scale never went back");
-    mock.detach(false);
+    mock.detach();
     mock.attach();
     until([&] { return device.query_locks().scale_of(x, Direction::Positive) == 40; },
           "the scale never went back after a replug");
@@ -1444,7 +1470,7 @@ void a_clip_transfers_accessors_read_its_bytes() {
     }
     check(on(0xFD).transfer_status() == TransferStatus::Stall && !on(0xFD).rule_acted() && on(0xFD).data().empty(),
           "the stall");
-    check(on(0xFE).transfer_status() == TransferStatus::Nak, "the NAK");
+    check(on(0xFE).transfer_status() == TransferStatus::NoAnswer, "no answer");
     // a status nothing names stays its byte
     check(on(0x42).transfer_status() == static_cast<TransferStatus>(0x42), "status 0x42");
     check(!traffic(CatchClass::Control, 0, Direction::In, 0, 8, setup).transfer_status(), "control has a transfer status");
@@ -1782,10 +1808,10 @@ void a_refused_frame_throws_its_own_exception_and_sends_nothing() {
             builder.frame(make_frame(0, 0, 0, 0, {}, {{1, Direction::Out, Bytes(static_cast<std::size_t>(ClipEntryMax))}}));
         },
         "a raw report past the entry");
-    refused_on_append<ClipTransferDataError>(
+    refused_on_append<TransferDataError>(
         clip, [&](ClipBuilder& builder) { builder.frame(make_frame(0, 0, 0, 0, {}, {}, {{0, set_report, {4}}})); },
         "OUT data that isn't its length");
-    refused_on_append<ClipTransferDataError>(
+    refused_on_append<TransferDataError>(
         clip,
         [&](ClipBuilder& builder) {
             builder.frame(make_frame(0, 0, 0, 0, {}, {}, {{0, Setup{0xA1, 0x01, 0x0300, 0, 8}, {4}}}));
@@ -2449,7 +2475,7 @@ void every_header_function_is_bound() {
     }
     std::sort(declared.begin(), declared.end());
     declared.erase(std::unique(declared.begin(), declared.end()), declared.end());
-    check(declared.size() == 258, std::to_string(declared.size()) + " functions in medius.h");
+    check(declared.size() == 261, std::to_string(declared.size()) + " functions in medius.h");
     // the code of both headers without their comments, which name functions they don't call
     std::string wrapper;
     for (const auto* path : {"bindings/c/include/anybox_medius.hpp", "bindings/c/include/anybox.hpp"}) {
@@ -2966,6 +2992,7 @@ int main() {
         {"the mock is there", the_mock_is_there},
         {"the meta functions answer", the_meta_functions_answer},
         {"the abi version is the headers", the_abi_version_is_the_headers},
+        {"a box on another protocol opens to update only", a_box_on_another_protocol_opens_to_update_only},
         {"a library with another medius abi is refused", a_library_with_another_medius_abi_is_refused},
         {"a set version comes back on open", a_set_version_comes_back_on_open},
         {"a name can be set and cleared", a_name_can_be_set_and_cleared},
@@ -3023,7 +3050,8 @@ int main() {
         {"raw refuses a direction that isnt a flow", raw_refuses_a_direction_that_isnt_a_flow},
         {"a transfer brings back its answer", a_transfer_brings_back_its_answer},
         {"a transfer is refused without the opt in", a_transfer_is_refused_without_the_opt_in},
-        {"a transfer that isnt ok carries no data", a_transfer_that_isnt_ok_carries_no_data},
+        {"a transfer that isnt ok keeps where it ended and what came before",
+         a_transfer_that_isnt_ok_keeps_where_it_ended_and_what_came_before},
         {"a rewrite survives the query", a_rewrite_survives_the_query},
         {"a rewrites refusals have their own exception", a_rewrites_refusals_have_their_own_exception},
         {"a rewrite match past the limit has its own exception", a_rewrite_match_past_the_limit_has_its_own_exception},

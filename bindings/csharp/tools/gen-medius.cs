@@ -1996,6 +1996,7 @@ static class Tables
         ["MediusRebootTarget"] = new("RebootTarget", "which chip reboots, and into what"),
         ["MediusRewriteAction"] = new("RewriteAction", "what the most specific matching rewrite rule does to the packet") { Default = "Pass" },
         ["MediusRewriteClass"] = new("RewriteClass", "the traffic a rewrite rule works on, `Any` is every surface a packet crosses") { Default = "Emit" },
+        ["MediusTransferStage"] = new("TransferStage", "where a control transfer ended, a finished one ends in `Status`. one this header has no name for comes through as its number, both ways", Read: "Any", CheckIn: false),
         ["MediusTransferStatus"] = new("TransferStatus", "how a control transfer ended. one this header has no name for comes through as its number, both ways", Read: "Any", CheckIn: false),
         ["MediusTransformOp"] = new("TransformOp", "what a transform does. `Remap` moves a field's value into another one and clears it, `Swap` exchanges two axes at once"),
         ["MediusKey"] = new("Key", "a keyboard key by its HID usage, `Key{0x64}` gets you any other one. just know that windows.h has a DELETE macro, so `Key::DELETE` needs an `#undef DELETE` after it", Form: "struct"),
@@ -2068,10 +2069,7 @@ static class Tables
         },
         ["MediusMotion"] = new HandRecord("Motion", "uint8_t kind, int16_t dx, int16_t dy, int16_t wheel, int16_t pan"),
         ["MediusLockTarget"] = new HandRecord("LockTarget", "uint8_t kind, MediusUsage usage"),
-        ["MediusTransferOutcome"] = new MadeRecord("TransferOutcome",
-            "the real device's reply to a control transfer. a status that isn't ok is the protocol's answer and not a link error, and it carries no data",
-            new() { ["status"] = "TransferStatus", ["data"] = "bytes(len)" },
-            [new("bool is_ok() const"), new("std::optional<std::vector<std::uint8_t>> ok_data() const", "the data when the transfer went through, empty when it didn't")]),
+        ["MediusTransferOutcome"] = new HandRecord("TransferOutcome", "uint8_t status, uint8_t stage, uintptr_t len"),
         ["MediusRewriteRule"] = new MadeRecord("RewriteRule",
             "a rewrite rule, keyed by its class, id, direction, match and mask. the match and mask compare the masked head and are as long as each other, an empty match takes every packet on the address. `payload` is for the actions that carry one, and `offset` is where a patch writes",
             new()
@@ -2294,6 +2292,8 @@ static class Tables
         ["medius_clip_query_status"] = new MadeFunction(""),
         ["medius_clip_query_config"] = new MadeFunction(""),
         ["medius_device_open"] = new HandFunction("Device::open", "MediusStatus medius_device_open(const char *path, struct MediusDevice **out)"),
+        ["medius_device_open_for_update"] = new HandFunction("Device::open_for_update", "MediusStatus medius_device_open_for_update(const char *path, struct MediusDevice **out)"),
+        ["medius_device_is_update_only"] = new HandFunction("Device::is_update_only", "bool medius_device_is_update_only(const struct MediusDevice *dev)"),
         ["medius_device_find"] = new HandFunction("Device::find", "MediusStatus medius_device_find(struct MediusDevice **out)"),
         ["medius_device_clone"] = new HandFunction("Device::clone", "struct MediusDevice *medius_device_clone(const struct MediusDevice *dev)"),
         ["medius_device_free"] = new HandFunction("Device's destructor", "void medius_device_free(struct MediusDevice *dev)"),
@@ -2338,9 +2338,9 @@ static class Tables
             "puts `bytes` as they are on the cloned endpoint `ep_num` (0 to 15, only its low 4 bits go over), `Direction::In` to the game PC and `Direction::Out` to the real device, without waiting for anything. with the imperfect clone opt in off the box drops it silently and this still returns, `query_imperfect()` says which it is",
             "ep_num:number", "dir:Direction"),
         ["medius_device_transfer"] = new HandFunction("Device::transfer",
-            "MediusStatus medius_device_transfer(struct MediusDevice *dev, uint8_t ep, struct MediusSetup setup, const uint8_t *out_data, uintptr_t out_len, struct MediusTransferOutcome *out)"),
+            "MediusStatus medius_device_transfer(struct MediusDevice *dev, uint8_t ep, struct MediusSetup setup, const uint8_t *out_data, uintptr_t out_len, uint8_t *reply, uintptr_t reply_cap, struct MediusTransferOutcome *out)"),
         ["medius_device_transfer_timeout"] = new HandFunction("Device::transfer",
-            "MediusStatus medius_device_transfer_timeout(struct MediusDevice *dev, uint8_t ep, struct MediusSetup setup, const uint8_t *out_data, uintptr_t out_len, uint32_t timeout_ms, struct MediusTransferOutcome *out)"),
+            "MediusStatus medius_device_transfer_timeout(struct MediusDevice *dev, uint8_t ep, struct MediusSetup setup, const uint8_t *out_data, uintptr_t out_len, uint32_t timeout_ms, uint8_t *reply, uintptr_t reply_cap, struct MediusTransferOutcome *out)"),
         ["medius_device_set_rewrite"] = new MadeFunction("adds or overwrites one rewrite rule, it needs the opt in. `query_rewrite()` says what the box holds"),
         ["medius_device_remove_rewrite"] = new HandFunction("Device::remove_rewrite", "MediusStatus medius_device_remove_rewrite(struct MediusDevice *dev, const struct MediusRewriteRule *rule)"),
         ["medius_device_clear_rewrite"] = new MadeFunction(""),
@@ -2512,7 +2512,7 @@ static class Tables
             "the mock's `query_imperfect()` answer. with the opt in off it drops its consuming clip packet triggers, like the box does"),
         ["medius_mock_set_transfer_reply"] = new MadeFunction(
             "the canned answer to a transfer while the opt in is on, with it off the mock answers refused. a status this header has no name for is sent as its number",
-            "status:TransferStatus", "data={}"),
+            "status:TransferStatus", "stage:TransferStage", "data={}"),
         ["medius_mock_set_movement_riding"] = new HandFunction("MockBox::set_movement_riding",
             "void medius_mock_set_movement_riding(struct MediusMockBox *mock, bool enabled, uint32_t window_ms)", Mock: true),
         ["medius_mock_set_bearing"] = new HandFunction("MockBox::set_bearing", "void medius_mock_set_bearing(struct MediusMockBox *mock, uint16_t window_ms, uint8_t mode)", Mock: true),
@@ -2532,8 +2532,7 @@ static class Tables
         ["medius_mock_link_lost"] = new MadeFunction(
             "acts like the link between the chips dropping and coming back, so what the PC set goes, counted in `Stats::session`, and the clone stays up"),
         ["medius_mock_detach"] = new MadeFunction(
-            "acts like the real device unplugging. with `back_within_grace` it's back inside the 250 ms grace and the clone stays up, otherwise the clone goes when the grace ends until `attach()`",
-            "back_within_grace=false"),
+            "acts like the real device unplugging, so what the PC set goes and the clone is down until `attach()`"),
         ["medius_mock_attach"] = new MadeFunction(""),
         ["medius_mock_refuse_next_activate"] = new MadeFunction(
             "refuses the next activate with that update status (protocol §4.16), and whatever is staged stays staged", "status:number"),
@@ -2553,5 +2552,6 @@ static class Tables
             "uintptr_t medius_mock_recorded_frame(struct MediusMockBox *mock, uintptr_t idx, MediusFrameType *out_ty, uint8_t *out_seq, uint8_t *payload_buf, uintptr_t cap)", Mock: true),
         ["medius_device_with_mock"] = new HandFunction("Device::with_mock", "MediusStatus medius_device_with_mock(const struct MediusMockBox *mock, struct MediusDevice **out)", Mock: true),
         ["medius_device_open_mock"] = new HandFunction("Device::open_mock", "MediusStatus medius_device_open_mock(const struct MediusMockBox *mock, struct MediusDevice **out)", Mock: true),
+        ["medius_device_open_mock_for_update"] = new HandFunction("Device::open_mock_for_update", "MediusStatus medius_device_open_mock_for_update(const struct MediusMockBox *mock, struct MediusDevice **out)", Mock: true),
     };
 }

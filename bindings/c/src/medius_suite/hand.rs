@@ -281,6 +281,7 @@ pub(super) fn call_by_hand(
         ("Device", "transfer") => setup_from_json(&args[1]).and_then(|setup| {
             let data = unhex(&args[2], "transfer data");
             let mut out: MediusTransferOutcome = unsafe { std::mem::zeroed() };
+            let mut reply = vec![0u8; MEDIUS_MAX_TRANSFER_REPLY];
             let code = if args[3].is_null() {
                 unsafe {
                     medius_device_transfer(
@@ -289,6 +290,8 @@ pub(super) fn call_by_hand(
                         setup,
                         data.as_ptr(),
                         data.len(),
+                        reply.as_mut_ptr(),
+                        reply.len(),
                         &mut out,
                     )
                 }
@@ -301,11 +304,19 @@ pub(super) fn call_by_hand(
                         data.as_ptr(),
                         data.len(),
                         number(&args[3], "timeout"),
+                        reply.as_mut_ptr(),
+                        reply.len(),
                         &mut out,
                     )
                 }
             };
-            status(code, || transfer_outcome_to_json(&out))
+            status(code, || {
+                json!({
+                    "status": enum_name("TransferStatus", i64::from(out.status)),
+                    "stage": enum_name("TransferStage", i64::from(out.stage)),
+                    "data": hex(&reply[..out.len.min(reply.len())]),
+                })
+            })
         }),
         // the payload isn't read, so one past what medius.h holds still removes like in Rust
         ("Device", "remove_rewrite") => {

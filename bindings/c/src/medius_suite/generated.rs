@@ -254,29 +254,6 @@ pub(super) fn box_info_from_json(value: &Value) -> Result<MediusBoxInfo, Failure
     Ok(raw)
 }
 
-pub(super) fn transfer_outcome_to_json(raw: &MediusTransferOutcome) -> Value {
-    let mut out = Map::new();
-    out.insert(
-        "status".into(),
-        enum_name("TransferStatus", raw.status as i64),
-    );
-    out.insert(
-        "data".into(),
-        hex(&raw.data[..usize::from(raw.len).min(raw.data.len())]),
-    );
-    Value::Object(out)
-}
-
-pub(super) fn transfer_outcome_from_json(value: &Value) -> Result<MediusTransferOutcome, Failure> {
-    // every medius.h struct is plain data and every enum in one has a member at 0, so zero is a valid value
-    let mut raw: MediusTransferOutcome = unsafe { std::mem::zeroed() };
-    raw.status = enum_value("TransferStatus", &value["status"])? as u8;
-    raw.len = fill(&mut raw.data, &value["data"], "MediusTransferOutcome.data")?
-        .try_into()
-        .unwrap();
-    Ok(raw)
-}
-
 pub(super) fn rewrite_rule_to_json(raw: &MediusRewriteRule) -> Value {
     let mut out = Map::new();
     out.insert("class_".into(), enum_name("RewriteClass", raw.class as i64));
@@ -731,6 +708,7 @@ pub(super) fn stats_to_json(raw: &MediusStats) -> Value {
     out.insert("host_rx_drops".into(), Value::from(raw.host_rx_drops));
     out.insert("relay_drops".into(), Value::from(raw.relay_drops));
     out.insert("session".into(), Value::from(raw.session));
+    out.insert("host_restarts".into(), Value::from(raw.host_restarts));
     Value::Object(out)
 }
 
@@ -749,6 +727,7 @@ pub(super) fn stats_from_json(value: &Value) -> Result<MediusStats, Failure> {
     raw.host_rx_drops = number(&value["host_rx_drops"], "MediusStats.host_rx_drops");
     raw.relay_drops = number(&value["relay_drops"], "MediusStats.relay_drops");
     raw.session = number(&value["session"], "MediusStats.session");
+    raw.host_restarts = number(&value["host_restarts"], "MediusStats.host_restarts");
     Ok(raw)
 }
 
@@ -2062,9 +2041,10 @@ pub(super) fn call(ctx: &Context, class: &str, method: &str, args: &[Value]) -> 
         },
         ("MockBox", "set_transfer_reply") => |ctx, args| {
             let a1 = enum_value("TransferStatus", &args[0])? as u8;
-            let a2 = unhex(&args[1], "medius_mock_set_transfer_reply data");
+            let a2 = enum_value("TransferStage", &args[1])? as u8;
+            let a3 = unhex(&args[2], "medius_mock_set_transfer_reply data");
             {
-                unsafe { medius_mock_set_transfer_reply(ctx.mock, a1, a2.as_ptr(), a2.len()) };
+                unsafe { medius_mock_set_transfer_reply(ctx.mock, a1, a2, a3.as_ptr(), a3.len()) };
                 Ok(Value::Null)
             }
         },
@@ -2113,12 +2093,9 @@ pub(super) fn call(ctx: &Context, class: &str, method: &str, args: &[Value]) -> 
             unsafe { medius_mock_link_lost(ctx.mock) };
             Ok(Value::Null)
         },
-        ("MockBox", "detach") => |ctx, args| {
-            let a1 = flag(&args[0]);
-            {
-                unsafe { medius_mock_detach(ctx.mock, a1) };
-                Ok(Value::Null)
-            }
+        ("MockBox", "detach") => |ctx, _args| {
+            unsafe { medius_mock_detach(ctx.mock) };
+            Ok(Value::Null)
         },
         ("MockBox", "attach") => |ctx, _args| {
             unsafe { medius_mock_attach(ctx.mock) };
@@ -2229,10 +2206,13 @@ pub(super) fn enum_name(name: &str, value: i64) -> Value {
         ("Status", 29) => "ErrRawDirection",
         ("Status", 30) => "ErrClipFrameCount",
         ("Status", 31) => "ErrClipFrameTooLong",
-        ("Status", 32) => "ErrClipTransferData",
+        ("Status", 32) => "ErrTransferData",
         ("Status", 33) => "ErrClipPacketTrigger",
         ("Status", 34) => "ErrRewriteMatchTooLong",
         ("Status", 35) => "ErrRewritePoolFull",
+        ("Status", 36) => "ErrTransferTimeoutRange",
+        ("Status", 37) => "ErrTransferReplyIncomplete",
+        ("Status", 38) => "ErrPortBusy",
         ("EmitMode", 0) => "Learned",
         ("EmitMode", 1) => "Interval",
         ("EmitMode", 2) => "Fixed",
@@ -2376,10 +2356,16 @@ pub(super) fn enum_name(name: &str, value: i64) -> Value {
         ("RewriteClass", 8) => "Control",
         ("RewriteClass", 9) => "Emit",
         ("RewriteClass", 255) => "Any",
+        ("TransferStage", 0) => "Setup",
+        ("TransferStage", 1) => "Data",
+        ("TransferStage", 2) => "Status",
         ("TransferStatus", 0) => "Ok",
+        ("TransferStatus", 249) => "Busy",
+        ("TransferStatus", 250) => "Suspended",
+        ("TransferStatus", 251) => "Error",
         ("TransferStatus", 252) => "Refused",
         ("TransferStatus", 253) => "Stall",
-        ("TransferStatus", 254) => "Nak",
+        ("TransferStatus", 254) => "NoAnswer",
         ("TransferStatus", 255) => "NoDevice",
         ("TransformOp", 0) => "Remap",
         ("TransformOp", 1) => "Swap",
@@ -2450,10 +2436,13 @@ pub(super) fn enum_number(name: &str, member: &str) -> i64 {
         ("Status", "ErrRawDirection") => 29,
         ("Status", "ErrClipFrameCount") => 30,
         ("Status", "ErrClipFrameTooLong") => 31,
-        ("Status", "ErrClipTransferData") => 32,
+        ("Status", "ErrTransferData") => 32,
         ("Status", "ErrClipPacketTrigger") => 33,
         ("Status", "ErrRewriteMatchTooLong") => 34,
         ("Status", "ErrRewritePoolFull") => 35,
+        ("Status", "ErrTransferTimeoutRange") => 36,
+        ("Status", "ErrTransferReplyIncomplete") => 37,
+        ("Status", "ErrPortBusy") => 38,
         ("EmitMode", "Learned") => 0,
         ("EmitMode", "Interval") => 1,
         ("EmitMode", "Fixed") => 2,
@@ -2601,10 +2590,16 @@ pub(super) fn enum_number(name: &str, member: &str) -> i64 {
         ("RewriteClass", "Control") => 8,
         ("RewriteClass", "Emit") => 9,
         ("RewriteClass", "Any") => 255,
+        ("TransferStage", "Setup") => 0,
+        ("TransferStage", "Data") => 1,
+        ("TransferStage", "Status") => 2,
         ("TransferStatus", "Ok") => 0,
+        ("TransferStatus", "Busy") => 249,
+        ("TransferStatus", "Suspended") => 250,
+        ("TransferStatus", "Error") => 251,
         ("TransferStatus", "Refused") => 252,
         ("TransferStatus", "Stall") => 253,
-        ("TransferStatus", "Nak") => 254,
+        ("TransferStatus", "NoAnswer") => 254,
         ("TransferStatus", "NoDevice") => 255,
         ("TransformOp", "Remap") => 0,
         ("TransformOp", "Swap") => 1,

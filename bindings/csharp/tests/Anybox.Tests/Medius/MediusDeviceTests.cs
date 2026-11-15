@@ -25,7 +25,7 @@ public sealed class MediusDeviceTests
     [Fact]
     public void TheMetaFunctionsAnswer()
     {
-        Assert.Equal(10u, MediusLibrary.AbiVersion);
+        Assert.Equal(11u, MediusLibrary.AbiVersion);
         Assert.NotEmpty(MediusLibrary.Version);
         Assert.True(MediusLibrary.DefaultQueryTimeoutMs > 0);
         Assert.True(MediusLibrary.DefaultKeepaliveCadenceMs > 0);
@@ -86,6 +86,25 @@ public sealed class MediusDeviceTests
         using var mock = new MockBox();
         mock.Silent();
         Assert.ThrowsAny<MediusException>(() => Device.OpenMock(mock));
+    }
+
+    [Fact]
+    public void ABoxOnAnotherProtocolOpensToUpdateOnly()
+    {
+        using var mock = new MockBox();
+        using (var same = Device.OpenMockForUpdate(mock))
+        {
+            Assert.False(same.IsUpdateOnly);
+        }
+        mock.SetVersion(new BoxVersion(9, 3, 4, 7, new byte[6], ""));
+        using var older = Device.OpenMockForUpdate(mock);
+        Assert.True(older.IsUpdateOnly);
+        // below the oldest protocol the update path speaks
+        mock.SetVersion(new BoxVersion(4, 3, 0, 0, new byte[6], ""));
+        Assert.Throws<BadProtoVerException>(() => Device.OpenMockForUpdate(mock));
+        using var plain = new MockBox();
+        using var device = Device.OpenMock(plain);
+        Assert.False(device.IsUpdateOnly);
     }
 
     [Fact]

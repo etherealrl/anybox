@@ -22,6 +22,8 @@ public static class Constants
     public const int MaxRewriteMatch = 16;
     public const int RewritePayloadPool = 2048;
     public const int MaxDevPayload = 512;
+    public const int MaxTransferOut = 501;
+    public const int MaxTransferReply = 65536;
     public const int CatchClassBtn = 0;
     public const int CatchClassKey = 1;
     public const int CatchClassMedia = 2;
@@ -50,7 +52,7 @@ public static class Constants
     public const int ClipEdgesMax = 8;
     public const int ClipRawMax = 8;
     public const int ClipEntryMax = 512;
-    public const int AbiVersion = 10;
+    public const int AbiVersion = 11;
 }
 
 public enum Status : int
@@ -87,10 +89,13 @@ public enum Status : int
     ErrRawDirection = 29,
     ErrClipFrameCount = 30,
     ErrClipFrameTooLong = 31,
-    ErrClipTransferData = 32,
+    ErrTransferData = 32,
     ErrClipPacketTrigger = 33,
     ErrRewriteMatchTooLong = 34,
     ErrRewritePoolFull = 35,
+    ErrTransferTimeoutRange = 36,
+    ErrTransferReplyIncomplete = 37,
+    ErrPortBusy = 38,
 }
 
 public enum EmitMode : byte
@@ -365,12 +370,22 @@ public enum RewriteClass : byte
     Any = 255,
 }
 
+public enum TransferStage : byte
+{
+    Setup = 0,
+    Data = 1,
+    Status = 2,
+}
+
 public enum TransferStatus : byte
 {
     Ok = 0,
+    Busy = 249,
+    Suspended = 250,
+    Error = 251,
     Refused = 252,
     Stall = 253,
-    Nak = 254,
+    NoAnswer = 254,
     NoDevice = 255,
 }
 
@@ -608,8 +623,8 @@ internal unsafe struct MediusLockTarget
 internal unsafe struct MediusTransferOutcome
 {
     public byte status;
-    public ushort len;
-    public fixed byte data[512];
+    public byte stage;
+    public nuint len;
 }
 
 [StructLayout(LayoutKind.Sequential)]
@@ -790,6 +805,7 @@ internal unsafe struct MediusStats
     public uint host_rx_drops;
     public uint relay_drops;
     public ushort session;
+    public ushort host_restarts;
 }
 
 [StructLayout(LayoutKind.Sequential)]
@@ -1294,6 +1310,12 @@ internal static unsafe partial class MediusImports
     internal static partial Status medius_device_open(byte* path, out MediusDeviceHandle @out);
 
     [LibraryImport(Library)]
+    internal static partial Status medius_device_open_for_update(byte* path, out MediusDeviceHandle @out);
+
+    [LibraryImport(Library)]
+    internal static partial byte medius_device_is_update_only(MediusDeviceHandle dev);
+
+    [LibraryImport(Library)]
     internal static partial Status medius_device_find(out MediusDeviceHandle @out);
 
     [LibraryImport(Library)]
@@ -1399,10 +1421,10 @@ internal static unsafe partial class MediusImports
     internal static partial Status medius_device_raw(MediusDeviceHandle dev, byte ep_num, byte dir, byte* bytes, nuint len);
 
     [LibraryImport(Library)]
-    internal static partial Status medius_device_transfer(MediusDeviceHandle dev, byte ep, MediusSetup setup, byte* out_data, nuint out_len, MediusTransferOutcome* @out);
+    internal static partial Status medius_device_transfer(MediusDeviceHandle dev, byte ep, MediusSetup setup, byte* out_data, nuint out_len, byte* reply, nuint reply_cap, MediusTransferOutcome* @out);
 
     [LibraryImport(Library)]
-    internal static partial Status medius_device_transfer_timeout(MediusDeviceHandle dev, byte ep, MediusSetup setup, byte* out_data, nuint out_len, uint timeout_ms, MediusTransferOutcome* @out);
+    internal static partial Status medius_device_transfer_timeout(MediusDeviceHandle dev, byte ep, MediusSetup setup, byte* out_data, nuint out_len, uint timeout_ms, byte* reply, nuint reply_cap, MediusTransferOutcome* @out);
 
     [LibraryImport(Library)]
     internal static partial Status medius_device_set_rewrite(MediusDeviceHandle dev, MediusRewriteRule* rule);
@@ -1828,7 +1850,7 @@ internal static unsafe partial class MediusImports
     internal static partial void medius_mock_set_imperfect_status(MediusMockBoxHandle mock, MediusImperfectStatus value);
 
     [LibraryImport(Library)]
-    internal static partial void medius_mock_set_transfer_reply(MediusMockBoxHandle mock, byte status, byte* data, nuint len);
+    internal static partial void medius_mock_set_transfer_reply(MediusMockBoxHandle mock, byte status, byte stage, byte* data, nuint len);
 
     [LibraryImport(Library)]
     internal static partial void medius_mock_set_movement_riding(MediusMockBoxHandle mock, byte enabled, uint window_ms);
@@ -1864,7 +1886,7 @@ internal static unsafe partial class MediusImports
     internal static partial void medius_mock_link_lost(MediusMockBoxHandle mock);
 
     [LibraryImport(Library)]
-    internal static partial void medius_mock_detach(MediusMockBoxHandle mock, byte back_within_grace);
+    internal static partial void medius_mock_detach(MediusMockBoxHandle mock);
 
     [LibraryImport(Library)]
     internal static partial void medius_mock_attach(MediusMockBoxHandle mock);
@@ -1910,4 +1932,7 @@ internal static unsafe partial class MediusImports
 
     [LibraryImport(Library)]
     internal static partial Status medius_device_open_mock(MediusMockBoxHandle mock, out MediusDeviceHandle @out);
+
+    [LibraryImport(Library)]
+    internal static partial Status medius_device_open_mock_for_update(MediusMockBoxHandle mock, out MediusDeviceHandle @out);
 }

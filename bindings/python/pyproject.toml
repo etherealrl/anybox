@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "anybox-py"
-version = "0.11.1"
+version = "0.12.0"
 description = "one API for the most popular passthrough boxes"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -26,7 +26,7 @@ Homepage = "https://github.com/etherealrl/anybox"
 [project.optional-dependencies]
 test = ["pytest"]
 # the medius package for `device.medius()`, at the medius version this library has inside
-medius = ["medius==3.4.6"]
+medius = ["medius==3.5.0"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["anybox"]

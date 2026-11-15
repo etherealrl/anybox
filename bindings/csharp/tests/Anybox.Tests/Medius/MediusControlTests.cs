@@ -267,17 +267,24 @@ public sealed class MediusControlTests
         byte[] reply = [0x12, 0x01, 0x10, 0x02];
         using var mock = new MockBox();
         mock.SetImperfectStatus(Allowed);
-        mock.SetTransferReply(TransferStatus.Ok, reply);
+        mock.SetTransferReply(TransferStatus.Ok, TransferStage.Status, reply);
         using var device = Device.WithMock(mock);
         var outcome = device.Transfer(0, new Setup(0x80, 0x06, 0x0100, 0, 18));
-        Assert.Equal(new TransferOutcome(TransferStatus.Ok, reply), outcome);
+        Assert.Equal(new TransferOutcome(TransferStatus.Ok, TransferStage.Status, reply), outcome);
         Assert.True(outcome.IsOk);
         var timed = device.Transfer(0, new Setup(0x80, 0x06, 0x0100, 0, 2), timeout: TimeSpan.FromMilliseconds(MediusLibrary.DefaultTransferTimeoutMs));
         Assert.Equal(TransferStatus.Ok, timed.Status);
         Assert.True(MediusLibrary.DefaultTransferTimeoutMs >= 800);
-        var tooLong = Assert.Throws<ArgumentOutOfRangeException>(
+        // one too long for the call's 32 bits is refused by medius like any other out of its range, and so is none
+        Assert.Throws<TransferTimeoutRangeException>(
             () => device.Transfer(0, new Setup(0x80, 0x06, 0x0100, 0, 2), timeout: TimeSpan.FromMilliseconds(4294967296.0)));
-        Assert.Contains("a timeout is from 0 to 4294967295 ms", tooLong.Message);
+        Assert.Throws<TransferTimeoutRangeException>(
+            () => device.Transfer(0, new Setup(0x80, 0x06, 0x0100, 0, 2), timeout: TimeSpan.Zero));
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => device.Transfer(0, new Setup(0x80, 0x06, 0x0100, 0, 2), timeout: TimeSpan.FromMilliseconds(-1)));
+        // the outcome has its own bytes, not a view of the 64 KiB the call reads into
+        Assert.True(System.Runtime.InteropServices.MemoryMarshal.TryGetArray(outcome.Data, out var held));
+        Assert.Equal(reply.Length, held.Array!.Length);
     }
 
     [Fact]
@@ -292,15 +299,15 @@ public sealed class MediusControlTests
     }
 
     [Fact]
-    public void ATransferThatIsntOkCarriesNoData()
+    public void ATransferThatIsntOkKeepsWhereItEndedAndWhatCameBefore()
     {
         using var mock = new MockBox();
         mock.SetImperfectStatus(Allowed);
-        mock.SetTransferReply(TransferStatus.Stall, [0x12, 0x01, 0x00, 0x02]);
+        mock.SetTransferReply(TransferStatus.Stall, TransferStage.Data, [0x12, 0x01, 0x00, 0x02]);
         using var device = Device.WithMock(mock);
         var outcome = device.Transfer(0, new Setup(0x80, 0x06, 0x0100, 0, 18));
-        Assert.Equal(TransferStatus.Stall, outcome.Status);
-        Assert.True(outcome.Data.IsEmpty);
+        Assert.Equal(new TransferOutcome(TransferStatus.Stall, TransferStage.Data, new byte[] { 0x12, 0x01, 0x00, 0x02 }), outcome);
+        Assert.Null(outcome.OkData);
     }
 
     [Fact]
@@ -576,7 +583,7 @@ public sealed class MediusControlTests
         mock.LinkLost();
         Assert.Equal(1, device.QueryStats().Session);
         Until(() => device.QueryLocks().ScaleOf(x, Direction.Positive) == 40, "the scale never went back");
-        mock.Detach(backWithinGrace: false);
+        mock.Detach();
         mock.Attach();
         Until(() => device.QueryLocks().ScaleOf(x, Direction.Positive) == 40, "the scale never went back after a replug");
         Assert.Equal(0ul, device.Counters().Restarts);

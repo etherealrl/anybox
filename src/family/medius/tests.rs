@@ -25,10 +25,10 @@ const MAC: [u8; 6] = [0x5c, 0x68, 0x24, 0x46, 0x73, 0x01];
 fn mouse(buttons: u8, wheel: bool) -> MockBox {
     MockBox::new()
         .with_version(Version {
-            proto_ver: 9,
+            proto_ver: 10,
             fw_major: 3,
-            fw_minor: 4,
-            fw_patch: 5,
+            fw_minor: 5,
+            fw_patch: 0,
             mac: MAC,
             name: "Medius-test".into(),
         })
@@ -122,15 +122,15 @@ fn until(mut done: impl FnMut() -> bool) {
 // the snapshot
 
 #[test]
-fn a_protocol_9_box_gives_a_snapshot_with_its_firmware_mac_and_buttons() {
+fn a_box_gives_a_snapshot_with_its_firmware_mac_and_buttons() {
     let (_backend, snapshot, _poller, _signals) = backend(&mouse(5, true));
     assert_eq!(snapshot.info.family, Family::Medius);
     assert_eq!(
         snapshot.info.firmware,
         Some(Firmware::Version {
             major: 3,
-            minor: 4,
-            patch: 5
+            minor: 5,
+            patch: 0
         })
     );
     assert_eq!(snapshot.info.id, Some(StableId::Mac(MAC)));
@@ -199,12 +199,12 @@ fn a_box_on_another_protocol_is_told_which_side_to_update() {
         open_failure("COM9".as_ref(), error),
         Error::FirmwareTooOld {
             found: Firmware::Protocol(4),
-            needed: Firmware::Protocol(9),
+            needed: Firmware::Protocol(10),
             ..
         }
     ));
     let new = mouse(5, true).with_version(Version {
-        proto_ver: 10,
+        proto_ver: 11,
         fw_major: 4,
         fw_minor: 0,
         fw_patch: 0,
@@ -215,9 +215,17 @@ fn a_box_on_another_protocol_is_told_which_side_to_update() {
     assert!(matches!(
         open_failure("COM9".as_ref(), error),
         Error::LibraryTooOld {
-            found: Firmware::Protocol(10),
+            found: Firmware::Protocol(11),
             ..
         }
+    ));
+    // the crate found the port held on Linux, which is our own busy error
+    let held = medius::Error::PortBusy {
+        holders: vec!["other (pid 1)".into()],
+    };
+    assert!(matches!(
+        open_failure("COM9".as_ref(), held),
+        Error::PortBusy { port } if port == "COM9"
     ));
 }
 
@@ -395,7 +403,7 @@ fn a_box_session_release_gives_session_reset_and_the_crate_presses_held_buttons_
     let (device, mut poller) = device(&mock);
     device.press(Button::Left).unwrap();
     mock.clear_recorded();
-    mock.detach(true);
+    mock.link_lost();
     poller.tick();
     device.settle();
     assert_eq!(
@@ -463,7 +471,7 @@ fn a_box_reboot_is_one_disconnect_and_reconnect_never_a_session_reset() {
     let (backend, _snapshot, mut poller, signals) = backend(&mock);
     // a session release happens first, so the reboot can take the session back to 0
     backend.send(Command::Press(Button::Left)).unwrap();
-    mock.detach(true);
+    mock.link_lost();
     poller.tick();
     assert_eq!(link_events(&signals), vec!["session reset"]);
     mock.restart();
@@ -567,7 +575,7 @@ fn a_restart_and_a_session_change_on_one_tick_are_one_reconnect() {
     let mock = plain_box();
     let (backend, _snapshot, mut poller, signals) = backend(&mock);
     backend.send(Command::Press(Button::Left)).unwrap();
-    mock.detach(true);
+    mock.link_lost();
     mock.restart();
     wait_for_restart(&backend);
     poller.tick();
@@ -1247,7 +1255,7 @@ fn the_crate_presses_held_keys_again_after_a_session_release() {
     let (device, mut poller) = device(&mock);
     device.press_key(Key::A).unwrap();
     mock.clear_recorded();
-    mock.detach(true);
+    mock.link_lost();
     poller.tick();
     device.settle();
     assert_eq!(
@@ -1264,7 +1272,7 @@ fn the_crate_forces_a_key_up_again_after_a_session_release() {
     let (device, mut poller) = device(&mock);
     device.force_release_key(Key::W).unwrap();
     mock.clear_recorded();
-    mock.detach(true);
+    mock.link_lost();
     poller.tick();
     device.settle();
     until(|| injects_of(&mock, 1).contains(&(0x1A, 2)));
@@ -2050,7 +2058,7 @@ mod public_mock {
             Device::mock_medius_manual(mock.clone(), ClickTiming::Fixed(Duration::from_millis(5)))
                 .unwrap();
         let events = device.events();
-        mock.detach(true);
+        mock.link_lost();
         poller.tick();
         assert!(matches!(
             events.recv_timeout(Duration::from_secs(2)),

@@ -38,7 +38,7 @@ some boxes can do things the others can't, and anybox doesn't hide those. you ge
 
 |            | firmware       | mouse | wheel | pan | keys | media keys | typing | chords | locks | scale | events        |
 | ---------- | -------------- | :---: | :---: | :-: | :--: | :--------: | :----: | :----: | :---: | :---: | ------------- |
-| **Medius** | 3.4.2+         |   ✓   |   ✓   |  ✓  |  ✓   |     ✓      |   ✗    |   ✗    |   ✓   |   ✓   | all           |
+| **Medius** | 3.5.0+         |   ✓   |   ✓   |  ✓  |  ✓   |     ✓      |   ✗    |   ✗    |   ✓   |   ✓   | all           |
 | **MAKCU**  | V4.085+        |   ✓   |   ✓   |  ✗  |  ✓   |     ✗      |   ✓    |   ✓    |   ✓   |   ✗   | buttons, keys |
 | Ferrum     | docs only      |   ✓   |   ✓   |  ✗  | app  |     ✗      |   ✗    |  app   |   ✓   |   ✗   | all but media |
 | YSC8K      | V1 Oct 10 2026 |   ✓   |   ✓   |  ✗  |  ✓   |     ✗      |   ✓    |   ✗    |   ✓   |   ✗   | all but media |

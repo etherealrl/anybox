@@ -208,7 +208,7 @@ Device::factory_reset | suite | Device.FactoryReset | Device::factory_reset
 Device::find | hardware | Device.Find | Device::find
 Device::find_keyboard_box | hardware | Device.FindKeyboardBox | Device::find_keyboard_box
 Device::find_mouse_box | hardware | Device.FindMouseBox | Device::find_mouse_box
-Device::find_where | hardware | Device.FindWhere | Device::find_where
+Device::find_where | hardware | Device.FindWhere | Device::find_where | built on the listing, so with nothing found it says not found where Rust on Linux names a port another program holds, medius.h has no call that tells
 Device::firmware_info | suite | Device.FirmwareInfo | Device::firmware_info
 Device::flush_motion | suite | Device.FlushMotion | Device::flush_motion
 Device::force_release | suite | Device.ForceRelease | Device::force_release
@@ -224,9 +224,12 @@ Device::logs | suite | Device.Logs | Device::logs
 Device::move_axis | suite | Device.MoveAxis | Device::move_axis
 Device::move_rel | suite | Device.MoveRel | Device::move_rel
 Device::move_rel_now | suite | Device.MoveRelNow | Device::move_rel_now
+Device::is_update_only | hand | Device.IsUpdateOnly | Device::is_update_only
 Device::open | hardware | Device.Open | Device::open
 Device::open_by_id | hardware | Device.OpenById | Device::open_by_id
+Device::open_for_update | hardware | Device.OpenForUpdate | Device::open_for_update
 Device::open_mock (mock) | hand | Device.OpenMock | Device::open_mock
+Device::open_mock_for_update (mock) | hand | Device.OpenMockForUpdate | Device::open_mock_for_update
 Device::pan | suite | Device.Pan | Device::pan
 Device::pan_now | suite | Device.PanNow | Device::pan_now
 Device::press | suite | Device.Press | Device::press
@@ -404,6 +407,7 @@ LogStream::recv_timeout | suite | LogStream.RecvTimeout | LogStream::recv | C++'
 LogStream::try_iter | language | LogStream.TryRecv | LogStream::try_recv | TryRecv until it comes back empty
 LogStream::try_recv | suite | LogStream.TryRecv | LogStream::try_recv
 MAX_PAYLOAD | upstream | | | medius.h doesn't have it
+MIN_PROTO_VER | upstream | | | medius.h doesn't have it
 MediaKey | generated | MediaKey | MediaKey
 MediaKey::CONSTANTS | generated | MediaKey | MediaKey
 MediaKey::new | language | | | a cast
@@ -549,6 +553,7 @@ Stamped | generated | Stamped | Stamped
 Stats | generated | Stats | Stats
 StreamCloser | language | | | a stream closes from any thread, so C# and C++ hand out the stream itself
 StreamCloser::close | language | | | a stream closes from any thread, so C# and C++ hand out the stream itself
+TRANSFER_OUT_MAX | generated | Constants.MaxTransferOut | MaxTransferOut
 TRANSFORM_MAX_ENTRIES | generated | Constants.MaxTransformEntries | MaxTransformEntries
 Timeline | hand | Timeline | Timeline
 Timeline: Default | language | Timeline.ctor | Timeline::Timeline | the constructor
@@ -578,10 +583,13 @@ TrafficEvent::setup | suite | TrafficEvent.SetupBytes | TrafficEvent::setup_byte
 TrafficEvent::transfer_status | suite | TrafficEvent.Transfer | TrafficEvent::transfer_status
 TrafficEvent::truncated | suite | TrafficEvent.Truncated | TrafficEvent::truncated
 TrafficEvent::zlp | suite | TrafficEvent.Zlp | TrafficEvent::zlp
-TransferOutcome | generated | TransferOutcome | TransferOutcome
-TransferOutcome::data | language | TransferOutcome.Data | TransferOutcome::data | the field
+TransferOutcome | hand | TransferOutcome | TransferOutcome | the reply comes in a buffer of the call, so each binding puts it together
+TransferOutcome::data | language | TransferOutcome.Data | TransferOutcome::data | the field, `stage` is one too
 TransferOutcome::is_ok | suite | TransferOutcome.IsOk | TransferOutcome::is_ok
 TransferOutcome::ok_data | suite | TransferOutcome.OkData | TransferOutcome::ok_data
+TransferStage | generated | TransferStage | TransferStage
+TransferStage::as_u8 | language | | | a cast
+TransferStage::from_u8 | language | | | a cast, checked like the other enums
 TransferStatus | generated | TransferStatus | TransferStatus
 TransferStatus::as_u8 | language | | | a cast
 TransferStatus::from_u8 | language | | | a cast, checked like the other enums

@@ -184,8 +184,8 @@ fn the_medius_layout_is_the_committed_one() {
         align_of::<MediusTransferOutcome>()
     );
     layout += &format!("  status {}\n", offset_of!(MediusTransferOutcome, status));
+    layout += &format!("  stage {}\n", offset_of!(MediusTransferOutcome, stage));
     layout += &format!("  len {}\n", offset_of!(MediusTransferOutcome, len));
-    layout += &format!("  data {}\n", offset_of!(MediusTransferOutcome, data));
     layout += &format!(
         "MediusRewriteRule size {} align {}\n",
         size_of::<MediusRewriteRule>(),
@@ -450,6 +450,10 @@ fn the_medius_layout_is_the_committed_one() {
     );
     layout += &format!("  relay_drops {}\n", offset_of!(MediusStats, relay_drops));
     layout += &format!("  session {}\n", offset_of!(MediusStats, session));
+    layout += &format!(
+        "  host_restarts {}\n",
+        offset_of!(MediusStats, host_restarts)
+    );
     layout += &format!(
         "MediusLockEntry size {} align {}\n",
         size_of::<MediusLockEntry>(),
