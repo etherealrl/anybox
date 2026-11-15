@@ -141,6 +141,8 @@ public sealed class MediusSuiteTests
                     ["dz"] = input.Dz,
                     ["pan"] = input.Pan,
                 };
+            case TransferOutcome outcome:
+                return new JsonObject { ["status"] = ToJson(outcome.Status), ["stage"] = ToJson(outcome.Stage), ["data"] = ToJson(outcome.Data) };
             case ITuple pair:
                 return new JsonArray(Enumerable.Range(0, pair.Length).Select(at => ToJson(pair[at])).ToArray());
             case IEnumerable items:
@@ -220,6 +222,13 @@ public sealed class MediusSuiteTests
         if (type == typeof(Usage))
         {
             return new Usage((Class)FromJson(node!["kind"], typeof(Class))!, (ushort)(long)node["id"]!);
+        }
+        if (type == typeof(TransferOutcome))
+        {
+            return new TransferOutcome(
+                (TransferStatus)FromJson(node!["status"], typeof(TransferStatus))!,
+                (TransferStage)FromJson(node["stage"], typeof(TransferStage))!,
+                Unhex(node["data"]!));
         }
         if (type == typeof(LockTarget))
         {
@@ -373,7 +382,7 @@ public sealed class MediusSuiteTests
             return new JsonObject { ["action"] = ToJson(action), ["consumed"] = consumed };
         },
         ["MockBox.push_raw"] = (ctx, args) => { ctx.Mock.PushRaw(Unhex(args[0]!)); return null; },
-        ["MockBox.set_transfer_reply"] = (ctx, args) => { ctx.Mock.SetTransferReply(From<TransferStatus>(args[0]), Unhex(args[1]!)); return null; },
+        ["MockBox.set_transfer_reply"] = (ctx, args) => { ctx.Mock.SetTransferReply(From<TransferStatus>(args[0]), From<TransferStage>(args[1]), Unhex(args[2]!)); return null; },
         ["EventStream.recv"] = (ctx, args) => ToJson(ctx.Events!.RecvTimeout(TimeSpan.FromMilliseconds((long)args[0]!))),
         ["EventStream.try_recv"] = (ctx, _) => ToJson(ctx.Events!.TryRecv()),
         ["InputStream.recv"] = (ctx, args) => ToJson(ctx.Inputs!.RecvTimeout(TimeSpan.FromMilliseconds((long)args[0]!))),

@@ -44,7 +44,7 @@ a Medius holds as many keys at once as the keyboard behind it can report, six on
 | `scale_axis`                     | ✓             | ✗                | ✗                | ✗               |
 | `force_release_key`, `restore_key` | ✓            | ✓                | ✗                | ✗               |
 
-a lock blocks what the user does, your own presses and moves still go through (both vendors say so, i haven't checked it myself). the events keep showing what the user does (that one's checked on both), so you can lock something, read its events and send your own. the thing is that a lock on a key that's already held doesn't always take it away from the PC, on a Medius it stays down until the unlock. `force_release_key` is for that, the PC sees the key up while the finger stays on it, and `restore_key` gives it back, down again if it's still held. while a key is forced up, pressing, typing or locking it is refused, and so is forcing a key you hold or locked yourself, because each box would do something else with it
+a lock blocks what the user does, your own presses and moves still go through (both vendors say so, i haven't checked it myself). the events keep showing what the user does (that one's checked on both), so you can lock something, read its events and send your own. what a lock does to a key that's already held depends on the box. on a Medius it takes it away, the PC sees it up until you unlock and down again after if the finger is still on it (checked on 3.5.0 with a keyboard), and i haven't checked the other boxes. so when a held key has to be gone for sure use `force_release_key`, the PC sees the key up while the finger stays on it, and `restore_key` gives it back, down again if it's still held. while a key is forced up, pressing, typing or locking it is refused, and so is forcing a key you hold or locked yourself, because each box would do something else with it
 
 ## events
 
@@ -144,9 +144,10 @@ a lot of the MAKCU and Medius notes line up with K4's [comparison of stock MAKCU
 
 ### Medius
 
+- it needs firmware 3.5.0 or newer. an older box gets `FirmwareTooOld` when you connect, so update it from the Medius dashboard first, and an anybox before 0.12.0 is the one for firmware 3.4.x
 - with the mouse still, a move shows up about 1 ms after you send it, `move_by` and `move_now` alike, and none got lost in K4's runs
 - if your app gets killed, the box lets go of a button it held
-- a lock on a button that's already held keeps it down until you unlock it, and an app on the medius crate saw the same for keys, so to take a held key away from the PC use `force_release_key`, the box's own force release
+- a lock on a key that's already held takes it away from the PC until you unlock it, and it's down again after if it's still held (checked on 3.5.0 with a keyboard, the vendor says buttons do the same, i haven't checked those). `force_release_key` is the box's own force release, it does that without locking the key
 - checked on 3.4.7 with a keyboard: a key held through `force_release_key` stops reaching the PC, `restore_key` brings it back while it's still held, closing the device looked like it brings it back too, and the key events keep showing the finger the whole time
 - `release_key` only takes your own press back, a key the user holds stays down for the PC (the docs say so, i haven't checked it)
 - key events carry the box's own time like buttons and motion do

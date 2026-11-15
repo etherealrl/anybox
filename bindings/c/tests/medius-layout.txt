@@ -85,10 +85,10 @@ MediusMotion size 10 align 2
 MediusLockTarget size 6 align 2
   kind 0
   usage 2
-MediusTransferOutcome size 516 align 2
+MediusTransferOutcome size 16 align 8
   status 0
-  len 2
-  data 4
+  stage 1
+  len 8
 MediusRewriteRule size 558 align 2
   class_ 0
   id 2
@@ -205,6 +205,7 @@ MediusStats size 32 align 4
   host_rx_drops 20
   relay_drops 24
   session 28
+  host_restarts 30
 MediusLockEntry size 10 align 2
   target 0
   is_blanket 6

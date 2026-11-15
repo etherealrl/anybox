@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "anybox-capi"
-version = "0.11.1"
+version = "0.12.0"
 dependencies = [
  "anybox-rs",
  "medius",
@@ -15,11 +15,11 @@ dependencies = [
 
 [[package]]
 name = "anybox-gen"
-version = "0.11.1"
+version = "0.12.0"
 
 [[package]]
 name = "anybox-rs"
-version = "0.11.1"
+version = "0.12.0"
 dependencies = [
  "libc",
  "medius",
@@ -234,9 +234,9 @@ dependencies = [
 
 [[package]]
 name = "medius"
-version = "3.4.6"
+version = "3.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "452b309eacd092b23676f0f2cfc55b2e8efd5a48867d251f70a81f8cd669ff5a"
+checksum = "5e67034e097e7a7a1d45329eb573fd0710ea42803dd65b6a2bcb011b75427494"
 dependencies = [
  "flume",
  "parking_lot",
@@ -249,9 +249,9 @@ dependencies = [
 
 [[package]]
 name = "medius-capi"
-version = "3.4.6"
+version = "3.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a17333a86c501354ec2fcbafd20171485a1eaa71dcaa6b381d90ab6908cedccf"
+checksum = "ba9375d662df4b7687ccb94b0c359cb194bbc290b413a952ee0f3b69e430ab56"
 dependencies = [
  "medius",
 ]

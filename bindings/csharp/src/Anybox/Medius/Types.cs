@@ -142,8 +142,21 @@ public sealed partial record ClockEstimate
     }
 }
 
-public sealed partial record TransferOutcome
+/// <summary>how a control transfer ended and where, with the real device's whole reply. a status that isn't ok is
+/// the protocol's answer and not a link error, and <see cref="Data"/> still has what came before it, like the bytes
+/// ahead of a stall</summary>
+public sealed record TransferOutcome(
+    TransferStatus Status,
+    TransferStage Stage,
+    ReadOnlyMemory<byte> Data = default)
 {
+    public bool Equals(TransferOutcome? other) => other is not null &&
+        Status == other.Status &&
+        Stage == other.Stage &&
+        MediusLibrary.Same(Data, other.Data);
+
+    public override int GetHashCode() => HashCode.Combine(Status, Stage, MediusLibrary.Hash(Data));
+
     public bool IsOk => Status == TransferStatus.Ok;
 
     /// <summary>the data when the transfer went through, null when it didn't</summary>

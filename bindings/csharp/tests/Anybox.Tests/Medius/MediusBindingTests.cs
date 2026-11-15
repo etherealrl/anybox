@@ -54,7 +54,7 @@ public sealed class MediusBindingTests
         var declared = Regex.Matches(header, @"\b(medius_\w+)\((?:[^()]|\([^()]*\))*\);").Select(match => match.Groups[1].Value).ToHashSet();
         var bound = typeof(MediusImports).GetMethods(BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.DeclaredOnly)
             .Select(method => method.Name).Where(name => name.StartsWith("medius_")).ToHashSet();
-        Assert.Equal(258, declared.Count);
+        Assert.Equal(261, declared.Count);
         Assert.Equal(declared.Order(), bound.Order());
     }
 
@@ -139,7 +139,7 @@ public sealed class MediusBindingTests
         var bound = typeof(MediusImports).GetMethods(BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.DeclaredOnly)
             .Where(method => method.Name.StartsWith("medius_")).ToDictionary(method => method.Name);
         var declarations = Regex.Matches(MediusHeader, @"(?<return>[A-Za-z][\w ]*?\**)\s*\b(?<name>medius_\w+)\((?<parameters>(?:[^()]|\([^()]*\))*)\);");
-        Assert.Equal(258, declarations.Count);
+        Assert.Equal(261, declarations.Count);
         foreach (Match declaration in declarations)
         {
             var function = declaration.Groups["name"].Value;

@@ -62,12 +62,12 @@ public sealed unsafe class MockBox : IDisposable
     public void SetImperfectStatus(ImperfectStatus status) => MediusImports.medius_mock_set_imperfect_status(Handle, status.ToNative());
 
     /// <summary>the canned answer to a transfer while the opt in is on, with it off the mock answers refused. a
-    /// status the package has no name for is sent as its number</summary>
-    public void SetTransferReply(TransferStatus status, ReadOnlySpan<byte> data = default)
+    /// status or stage the package has no name for is sent as its number</summary>
+    public void SetTransferReply(TransferStatus status, TransferStage stage, ReadOnlySpan<byte> data = default)
     {
         fixed (byte* bytes = data)
         {
-            MediusImports.medius_mock_set_transfer_reply(Handle, (byte)status, bytes, (nuint)data.Length);
+            MediusImports.medius_mock_set_transfer_reply(Handle, (byte)status, (byte)stage, bytes, (nuint)data.Length);
         }
     }
 
@@ -123,10 +123,9 @@ public sealed unsafe class MockBox : IDisposable
     /// counted in <see cref="Stats.Session"/>, and the clone stays up</summary>
     public void LinkLost() => MediusImports.medius_mock_link_lost(Handle);
 
-    /// <summary>acts like the real device unplugging. with <paramref name="backWithinGrace"/> it's back inside the
-    /// 250 ms grace and the clone stays up, otherwise the clone goes when the grace ends until
+    /// <summary>acts like the real device unplugging, so what the PC set goes and the clone is down until
     /// <see cref="Attach"/></summary>
-    public void Detach(bool backWithinGrace = false) => MediusImports.medius_mock_detach(Handle, Flag(backWithinGrace));
+    public void Detach() => MediusImports.medius_mock_detach(Handle);
 
     public void Attach() => MediusImports.medius_mock_attach(Handle);
 

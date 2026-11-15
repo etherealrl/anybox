@@ -559,7 +559,9 @@ class Device:
             free.restype = None
             free(out.value)
             raise
-        return medius.Device(out.value)
+        # the package refuses its own constructor, `_adopt` is what its opens end in. the extra pins the exact
+        # medius version, so a rename fails the tests
+        return medius.Device._adopt(out.value)
 
     def close(self) -> None:
         """lets go of what you held, unlocks, and closes the port, and raises if that didn't work. it waits up to

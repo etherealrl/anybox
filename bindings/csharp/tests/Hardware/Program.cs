@@ -161,6 +161,10 @@ static void ThroughMedius(string port)
     {
         Console.WriteLine($"opened by id: {opened.QueryVersion()}");
     }
+    using (var opened = MediusDevice.OpenForUpdate(port))
+    {
+        Console.WriteLine($"opened to update: update only {opened.IsUpdateOnly}");
+    }
     using (var opened = MediusDevice.FindWhere(box => box.Port.Path == port))
     {
         Console.WriteLine($"opened by a match on the port: {opened.QueryVersion()}");

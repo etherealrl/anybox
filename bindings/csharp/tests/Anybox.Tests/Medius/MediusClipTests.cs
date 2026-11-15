@@ -187,8 +187,8 @@ public sealed class MediusClipTests
             (typeof(ClipFrameCountException), builder => builder.Frame(edges: Enumerable.Repeat(((Usage)Medius.Button.Left, InjectAction.Press), Constants.ClipEdgesMax + 1))),
             (typeof(ClipFrameCountException), builder => builder.Frame(raw: Enumerable.Repeat(new ClipRaw(1, Direction.Out, new byte[1]), Constants.ClipRawMax + 1))),
             (typeof(ClipFrameTooLongException), builder => builder.Frame(raw: [new ClipRaw(1, Direction.Out, new byte[Constants.ClipEntryMax])])),
-            (typeof(ClipTransferDataException), builder => builder.Frame(transfers: [new ClipTransfer(0, setReport, new byte[] { 4 })])),
-            (typeof(ClipTransferDataException), builder => builder.Frame(transfers: [new ClipTransfer(0, new Setup(0xA1, 0x01, 0x0300, 0, 8), new byte[] { 4 })])),
+            (typeof(TransferDataException), builder => builder.Frame(transfers: [new ClipTransfer(0, setReport, new byte[] { 4 })])),
+            (typeof(TransferDataException), builder => builder.Frame(transfers: [new ClipTransfer(0, new Setup(0xA1, 0x01, 0x0300, 0, 8), new byte[] { 4 })])),
             (typeof(RawDirectionException), builder => builder.Frame(raw: [new ClipRaw(1, Direction.Both, new byte[1])])),
             (typeof(RelativeDirectionException), builder => builder.Frame(raw: [new ClipRaw(1, Direction.With, new byte[1])])),
         ];

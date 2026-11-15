@@ -31,7 +31,7 @@ mod poller;
 pub(crate) use poller::Poller;
 
 /// the protocol this version of the medius crate speaks. the crate refuses a box on any other one
-pub(crate) const PROTOCOL: u8 = 9;
+pub(crate) const PROTOCOL: u8 = 10;
 
 /// Medius firmware before 3.4.0 ran its control link at 4 Mbaud
 pub(crate) const OLD_BAUD: u32 = 4_000_000;
@@ -117,6 +117,9 @@ pub(crate) fn open_failure(path: &Path, error: medius::Error) -> Error {
     match error {
         medius::Error::BadProtoVer { got } => protocol_mismatch(got),
         medius::Error::Io(io) => open_error(path, io),
+        medius::Error::PortBusy { .. } => Error::PortBusy {
+            port: path.display().to_string(),
+        },
         medius::Error::NoReply | medius::Error::NotFound => not_found(path),
         other => Error::Io(std::io::Error::other(other)),
     }

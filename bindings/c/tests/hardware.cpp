@@ -32,6 +32,7 @@ void through_medius(const std::string& port) {
     }
     std::printf("opened by port: %s\n", medius::to_string(medius::Device::open(port).query_version()).c_str());
     std::printf("opened by id: %s\n", medius::to_string(medius::Device::open_by_id(id).query_version()).c_str());
+    std::printf("opened to update: update only %d\n", medius::Device::open_for_update(port).is_update_only());
     const auto on_port = [&](const medius::BoxInfo& box) { return box.port.path == port; };
     std::printf("opened by a match on the port: %s\n",
                 medius::to_string(medius::Device::find_where(on_port).query_version()).c_str());

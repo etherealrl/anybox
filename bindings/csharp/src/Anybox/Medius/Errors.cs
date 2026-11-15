@@ -17,7 +17,6 @@ public class MediusException(Medius.Status status, string message, byte protoVer
         Medius.Status.ErrClipFrameCount => new ClipFrameCountException(message, protoVer),
         Medius.Status.ErrClipFrameTooLong => new ClipFrameTooLongException(message, protoVer),
         Medius.Status.ErrClipPacketTrigger => new ClipPacketTriggerException(message, protoVer),
-        Medius.Status.ErrClipTransferData => new ClipTransferDataException(message, protoVer),
         Medius.Status.ErrDisconnected => new DisconnectedException(message, protoVer),
         Medius.Status.ErrEmptySubscription => new EmptySubscriptionException(message, protoVer),
         Medius.Status.ErrFrameTooLong => new FrameTooLongException(message, protoVer),
@@ -31,6 +30,7 @@ public class MediusException(Medius.Status status, string message, byte protoVer
         Medius.Status.ErrNotFound => new NotFoundException(message, protoVer),
         Medius.Status.ErrNoReply => new NoReplyException(message, protoVer),
         Medius.Status.ErrPanic => new PanicException(message, protoVer),
+        Medius.Status.ErrPortBusy => new PortBusyException(message, protoVer),
         Medius.Status.ErrQueryTimeout => new QueryTimeoutException(message, protoVer),
         Medius.Status.ErrRawDirection => new RawDirectionException(message, protoVer),
         Medius.Status.ErrRelativeDirection => new RelativeDirectionException(message, protoVer),
@@ -41,6 +41,9 @@ public class MediusException(Medius.Status status, string message, byte protoVer
         Medius.Status.ErrRewritePayloadTooLarge => new RewritePayloadTooLargeException(message, protoVer),
         Medius.Status.ErrRewritePoolFull => new RewritePoolFullException(message, protoVer),
         Medius.Status.ErrRewriteTableFull => new RewriteTableFullException(message, protoVer),
+        Medius.Status.ErrTransferData => new TransferDataException(message, protoVer),
+        Medius.Status.ErrTransferReplyIncomplete => new TransferReplyIncompleteException(message, protoVer),
+        Medius.Status.ErrTransferTimeoutRange => new TransferTimeoutRangeException(message, protoVer),
         Medius.Status.ErrTransformOpFields => new TransformOpFieldsException(message, protoVer),
         Medius.Status.ErrTransformTableFull => new TransformTableFullException(message, protoVer),
         Medius.Status.ErrUpdate => new UpdateException(message, protoVer, update?.op, update?.status, update?.arg),
@@ -60,8 +63,6 @@ public sealed class ClipFrameCountException(string message, byte protoVer) : Med
 public sealed class ClipFrameTooLongException(string message, byte protoVer) : MediusException(Medius.Status.ErrClipFrameTooLong, message, protoVer);
 
 public sealed class ClipPacketTriggerException(string message, byte protoVer) : MediusException(Medius.Status.ErrClipPacketTrigger, message, protoVer);
-
-public sealed class ClipTransferDataException(string message, byte protoVer) : MediusException(Medius.Status.ErrClipTransferData, message, protoVer);
 
 public sealed class DisconnectedException(string message, byte protoVer) : MediusException(Medius.Status.ErrDisconnected, message, protoVer);
 
@@ -89,6 +90,8 @@ public sealed class NoReplyException(string message, byte protoVer) : MediusExce
 
 public sealed class PanicException(string message, byte protoVer) : MediusException(Medius.Status.ErrPanic, message, protoVer);
 
+public sealed class PortBusyException(string message, byte protoVer) : MediusException(Medius.Status.ErrPortBusy, message, protoVer);
+
 public sealed class QueryTimeoutException(string message, byte protoVer) : MediusException(Medius.Status.ErrQueryTimeout, message, protoVer);
 
 public sealed class RawDirectionException(string message, byte protoVer) : MediusException(Medius.Status.ErrRawDirection, message, protoVer);
@@ -108,6 +111,12 @@ public sealed class RewritePayloadTooLargeException(string message, byte protoVe
 public sealed class RewritePoolFullException(string message, byte protoVer) : MediusException(Medius.Status.ErrRewritePoolFull, message, protoVer);
 
 public sealed class RewriteTableFullException(string message, byte protoVer) : MediusException(Medius.Status.ErrRewriteTableFull, message, protoVer);
+
+public sealed class TransferDataException(string message, byte protoVer) : MediusException(Medius.Status.ErrTransferData, message, protoVer);
+
+public sealed class TransferReplyIncompleteException(string message, byte protoVer) : MediusException(Medius.Status.ErrTransferReplyIncomplete, message, protoVer);
+
+public sealed class TransferTimeoutRangeException(string message, byte protoVer) : MediusException(Medius.Status.ErrTransferTimeoutRange, message, protoVer);
 
 public sealed class TransformOpFieldsException(string message, byte protoVer) : MediusException(Medius.Status.ErrTransformOpFields, message, protoVer);
 

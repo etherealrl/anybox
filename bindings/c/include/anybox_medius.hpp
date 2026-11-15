@@ -61,10 +61,13 @@ enum class Status : std::int32_t {
     ErrRawDirection = MEDIUS_STATUS_ERR_RAW_DIRECTION,
     ErrClipFrameCount = MEDIUS_STATUS_ERR_CLIP_FRAME_COUNT,
     ErrClipFrameTooLong = MEDIUS_STATUS_ERR_CLIP_FRAME_TOO_LONG,
-    ErrClipTransferData = MEDIUS_STATUS_ERR_CLIP_TRANSFER_DATA,
+    ErrTransferData = MEDIUS_STATUS_ERR_TRANSFER_DATA,
     ErrClipPacketTrigger = MEDIUS_STATUS_ERR_CLIP_PACKET_TRIGGER,
     ErrRewriteMatchTooLong = MEDIUS_STATUS_ERR_REWRITE_MATCH_TOO_LONG,
     ErrRewritePoolFull = MEDIUS_STATUS_ERR_REWRITE_POOL_FULL,
+    ErrTransferTimeoutRange = MEDIUS_STATUS_ERR_TRANSFER_TIMEOUT_RANGE,
+    ErrTransferReplyIncomplete = MEDIUS_STATUS_ERR_TRANSFER_REPLY_INCOMPLETE,
+    ErrPortBusy = MEDIUS_STATUS_ERR_PORT_BUSY,
 };
 
 /// what paces injected motion
@@ -355,12 +358,23 @@ enum class RewriteClass : std::uint8_t {
     Any = MEDIUS_REWRITE_CLASS_ANY,
 };
 
+/// where a control transfer ended, a finished one ends in `Status`. one this header has no name for comes through as
+/// its number, both ways
+enum class TransferStage : std::uint8_t {
+    Setup = MEDIUS_TRANSFER_STAGE_SETUP,
+    Data = MEDIUS_TRANSFER_STAGE_DATA,
+    Status = MEDIUS_TRANSFER_STAGE_STATUS,
+};
+
 /// how a control transfer ended. one this header has no name for comes through as its number, both ways
 enum class TransferStatus : std::uint8_t {
     Ok = MEDIUS_TRANSFER_STATUS_OK,
+    Busy = MEDIUS_TRANSFER_STATUS_BUSY,
+    Suspended = MEDIUS_TRANSFER_STATUS_SUSPENDED,
+    Error = MEDIUS_TRANSFER_STATUS_ERROR,
     Refused = MEDIUS_TRANSFER_STATUS_REFUSED,
     Stall = MEDIUS_TRANSFER_STATUS_STALL,
-    Nak = MEDIUS_TRANSFER_STATUS_NAK,
+    NoAnswer = MEDIUS_TRANSFER_STATUS_NO_ANSWER,
     NoDevice = MEDIUS_TRANSFER_STATUS_NO_DEVICE,
 };
 
@@ -1183,6 +1197,24 @@ struct Enum<RewriteClass> {
 };
 
 template <>
+struct Enum<TransferStage> {
+    static constexpr const char* name = "TransferStage";
+    static constexpr bool checked = false;
+    static constexpr Read read = Read::Any;
+
+    static constexpr bool named(TransferStage value) noexcept {
+        switch (static_cast<std::uint8_t>(value)) {
+        case MEDIUS_TRANSFER_STAGE_SETUP:
+        case MEDIUS_TRANSFER_STAGE_DATA:
+        case MEDIUS_TRANSFER_STAGE_STATUS:
+            return true;
+        default:
+            return false;
+        }
+    }
+};
+
+template <>
 struct Enum<TransferStatus> {
     static constexpr const char* name = "TransferStatus";
     static constexpr bool checked = false;
@@ -1191,9 +1223,12 @@ struct Enum<TransferStatus> {
     static constexpr bool named(TransferStatus value) noexcept {
         switch (static_cast<std::uint8_t>(value)) {
         case MEDIUS_TRANSFER_STATUS_OK:
+        case MEDIUS_TRANSFER_STATUS_BUSY:
+        case MEDIUS_TRANSFER_STATUS_SUSPENDED:
+        case MEDIUS_TRANSFER_STATUS_ERROR:
         case MEDIUS_TRANSFER_STATUS_REFUSED:
         case MEDIUS_TRANSFER_STATUS_STALL:
-        case MEDIUS_TRANSFER_STATUS_NAK:
+        case MEDIUS_TRANSFER_STATUS_NO_ANSWER:
         case MEDIUS_TRANSFER_STATUS_NO_DEVICE:
             return true;
         default:
@@ -1326,6 +1361,8 @@ inline constexpr auto MaxTransformEntries = MEDIUS_MAX_TRANSFORM_ENTRIES;
 inline constexpr auto MaxRewriteMatch = MEDIUS_MAX_REWRITE_MATCH;
 inline constexpr auto RewritePayloadPool = MEDIUS_REWRITE_PAYLOAD_POOL;
 inline constexpr auto MaxDevPayload = MEDIUS_MAX_DEV_PAYLOAD;
+inline constexpr auto MaxTransferOut = MEDIUS_MAX_TRANSFER_OUT;
+inline constexpr auto MaxTransferReply = MEDIUS_MAX_TRANSFER_REPLY;
 inline constexpr auto CatchClassAny = MEDIUS_CATCH_CLASS_ANY;
 inline constexpr auto CatchIdAny = MEDIUS_CATCH_ID_ANY;
 inline constexpr auto ClockAgeNone = MEDIUS_CLOCK_AGE_NONE;
@@ -1743,9 +1780,9 @@ private:
     void throw_self() const override { throw *this; }
 };
 
-class ClipTransferDataError : public Error {
+class TransferDataError : public Error {
 public:
-    ClipTransferDataError(const std::string& message, std::uint8_t proto_ver) : Error(message, Status::ErrClipTransferData, proto_ver) {}
+    TransferDataError(const std::string& message, std::uint8_t proto_ver) : Error(message, Status::ErrTransferData, proto_ver) {}
 
 private:
     void throw_self() const override { throw *this; }
@@ -1770,6 +1807,30 @@ private:
 class RewritePoolFullError : public Error {
 public:
     RewritePoolFullError(const std::string& message, std::uint8_t proto_ver) : Error(message, Status::ErrRewritePoolFull, proto_ver) {}
+
+private:
+    void throw_self() const override { throw *this; }
+};
+
+class TransferTimeoutRangeError : public Error {
+public:
+    TransferTimeoutRangeError(const std::string& message, std::uint8_t proto_ver) : Error(message, Status::ErrTransferTimeoutRange, proto_ver) {}
+
+private:
+    void throw_self() const override { throw *this; }
+};
+
+class TransferReplyIncompleteError : public Error {
+public:
+    TransferReplyIncompleteError(const std::string& message, std::uint8_t proto_ver) : Error(message, Status::ErrTransferReplyIncomplete, proto_ver) {}
+
+private:
+    void throw_self() const override { throw *this; }
+};
+
+class PortBusyError : public Error {
+public:
+    PortBusyError(const std::string& message, std::uint8_t proto_ver) : Error(message, Status::ErrPortBusy, proto_ver) {}
 
 private:
     void throw_self() const override { throw *this; }
@@ -1843,14 +1904,20 @@ inline std::string status_text(Status status) {
         return "ErrClipFrameCount";
     case Status::ErrClipFrameTooLong:
         return "ErrClipFrameTooLong";
-    case Status::ErrClipTransferData:
-        return "ErrClipTransferData";
+    case Status::ErrTransferData:
+        return "ErrTransferData";
     case Status::ErrClipPacketTrigger:
         return "ErrClipPacketTrigger";
     case Status::ErrRewriteMatchTooLong:
         return "ErrRewriteMatchTooLong";
     case Status::ErrRewritePoolFull:
         return "ErrRewritePoolFull";
+    case Status::ErrTransferTimeoutRange:
+        return "ErrTransferTimeoutRange";
+    case Status::ErrTransferReplyIncomplete:
+        return "ErrTransferReplyIncomplete";
+    case Status::ErrPortBusy:
+        return "ErrPortBusy";
     }
     return std::to_string(static_cast<std::int32_t>(status));
 }
@@ -1919,14 +1986,20 @@ inline std::shared_ptr<Error> make_error(MediusStatus status, const std::string&
         return std::make_shared<ClipFrameCountError>(message, proto_ver);
     case MEDIUS_STATUS_ERR_CLIP_FRAME_TOO_LONG:
         return std::make_shared<ClipFrameTooLongError>(message, proto_ver);
-    case MEDIUS_STATUS_ERR_CLIP_TRANSFER_DATA:
-        return std::make_shared<ClipTransferDataError>(message, proto_ver);
+    case MEDIUS_STATUS_ERR_TRANSFER_DATA:
+        return std::make_shared<TransferDataError>(message, proto_ver);
     case MEDIUS_STATUS_ERR_CLIP_PACKET_TRIGGER:
         return std::make_shared<ClipPacketTriggerError>(message, proto_ver);
     case MEDIUS_STATUS_ERR_REWRITE_MATCH_TOO_LONG:
         return std::make_shared<RewriteMatchTooLongError>(message, proto_ver);
     case MEDIUS_STATUS_ERR_REWRITE_POOL_FULL:
         return std::make_shared<RewritePoolFullError>(message, proto_ver);
+    case MEDIUS_STATUS_ERR_TRANSFER_TIMEOUT_RANGE:
+        return std::make_shared<TransferTimeoutRangeError>(message, proto_ver);
+    case MEDIUS_STATUS_ERR_TRANSFER_REPLY_INCOMPLETE:
+        return std::make_shared<TransferReplyIncompleteError>(message, proto_ver);
+    case MEDIUS_STATUS_ERR_PORT_BUSY:
+        return std::make_shared<PortBusyError>(message, proto_ver);
     default:
         return std::make_shared<Error>(message, static_cast<Status>(status), proto_ver);
     }
@@ -2368,7 +2441,6 @@ struct PortInfo;
 struct Version;
 struct DeviceInfo;
 struct BoxInfo;
-struct TransferOutcome;
 struct RewriteRule;
 struct RewriteEntry;
 struct RewriteTable;
@@ -2765,39 +2837,6 @@ inline MediusBoxInfo BoxInfo::to_c() const {
     if (device) {
         raw.device = device->to_c();
     }
-    return raw;
-}
-
-/// the real device's reply to a control transfer. a status that isn't ok is the protocol's answer and not a link error,
-/// and it carries no data
-struct TransferOutcome {
-    TransferStatus status{};
-    std::vector<std::uint8_t> data;
-
-    bool is_ok() const;
-    /// the data when the transfer went through, empty when it didn't
-    std::optional<std::vector<std::uint8_t>> ok_data() const;
-
-    static TransferOutcome from_c(const MediusTransferOutcome& raw);
-    MediusTransferOutcome to_c() const;
-
-    friend bool operator==(const TransferOutcome& a, const TransferOutcome& b) noexcept {
-        return a.status == b.status && a.data == b.data;
-    }
-    friend bool operator!=(const TransferOutcome& a, const TransferOutcome& b) noexcept { return !(a == b); }
-};
-
-inline TransferOutcome TransferOutcome::from_c(const MediusTransferOutcome& raw) {
-    TransferOutcome out;
-    out.status = detail::read<TransferStatus>(raw.status);
-    out.data = detail::bytes(raw.data, raw.len);
-    return out;
-}
-
-inline MediusTransferOutcome TransferOutcome::to_c() const {
-    MediusTransferOutcome raw{};
-    raw.status = detail::write(status);
-    raw.len = static_cast<std::uint16_t>(detail::bytes(data, raw.data, "data"));
     return raw;
 }
 
@@ -3434,12 +3473,13 @@ struct Stats {
     std::uint32_t host_rx_drops = 0;
     std::uint32_t relay_drops = 0;
     std::uint16_t session = 0;
+    std::uint16_t host_restarts = 0;
 
     static Stats from_c(const MediusStats& raw);
     MediusStats to_c() const;
 
     friend bool operator==(const Stats& a, const Stats& b) noexcept {
-        return a.inject_emits == b.inject_emits && a.tx_drops == b.tx_drops && a.tx_merges == b.tx_merges && a.tx_maxdepth == b.tx_maxdepth && a.tx_wedges == b.tx_wedges && a.wakeups == b.wakeups && a.reset_count == b.reset_count && a.config_count == b.config_count && a.link_rx_drops == b.link_rx_drops && a.host_rx_drops == b.host_rx_drops && a.relay_drops == b.relay_drops && a.session == b.session;
+        return a.inject_emits == b.inject_emits && a.tx_drops == b.tx_drops && a.tx_merges == b.tx_merges && a.tx_maxdepth == b.tx_maxdepth && a.tx_wedges == b.tx_wedges && a.wakeups == b.wakeups && a.reset_count == b.reset_count && a.config_count == b.config_count && a.link_rx_drops == b.link_rx_drops && a.host_rx_drops == b.host_rx_drops && a.relay_drops == b.relay_drops && a.session == b.session && a.host_restarts == b.host_restarts;
     }
     friend bool operator!=(const Stats& a, const Stats& b) noexcept { return !(a == b); }
 };
@@ -3458,6 +3498,7 @@ inline Stats Stats::from_c(const MediusStats& raw) {
     out.host_rx_drops = raw.host_rx_drops;
     out.relay_drops = raw.relay_drops;
     out.session = raw.session;
+    out.host_restarts = raw.host_restarts;
     return out;
 }
 
@@ -3475,6 +3516,7 @@ inline MediusStats Stats::to_c() const {
     raw.host_rx_drops = host_rx_drops;
     raw.relay_drops = relay_drops;
     raw.session = session;
+    raw.host_restarts = host_restarts;
     return raw;
 }
 
@@ -4048,6 +4090,23 @@ inline MediusLogLine LogLine::to_c() const {
     return raw;
 }
 // the end of what gen-medius makes (structs)
+
+/// how a control transfer ended and where, with the real device's whole reply. a status that isn't ok is the
+/// protocol's answer and not a link error, and `data` still has what came before it, like the bytes ahead of a stall
+struct TransferOutcome {
+    TransferStatus status{};
+    TransferStage stage{};
+    std::vector<std::uint8_t> data;
+
+    bool is_ok() const;
+    /// the data when the transfer went through, empty when it didn't
+    std::optional<std::vector<std::uint8_t>> ok_data() const;
+
+    friend bool operator==(const TransferOutcome& a, const TransferOutcome& b) noexcept {
+        return a.status == b.status && a.stage == b.stage && a.data == b.data;
+    }
+    friend bool operator!=(const TransferOutcome& a, const TransferOutcome& b) noexcept { return !(a == b); }
+};
 
 /// the clip's configuration, its autolock, loop, retain, finalized and ride, and both kinds of trigger, the packet
 /// ones in box order with their hits
@@ -5579,6 +5638,18 @@ public:
         return Device(raw);
     }
 
+    /// opens a box only to update it, on any control protocol from 5 on. on a box that speaks another protocol than
+    /// this library the device is update only, see `is_update_only()`
+    static Device open_for_update(const std::string& path) {
+        detail::ready();
+        MediusDevice* raw = nullptr;
+        detail::check(medius_device_open_for_update(anybox::detail::c_text(path).c_str(), &raw));
+        return Device(raw);
+    }
+
+    /// whether this device can only update the box, because it speaks another control protocol
+    bool is_update_only() const { return medius_device_is_update_only(get()); }
+
     static Device find() {
         detail::ready();
         MediusDevice* raw = nullptr;
@@ -5642,6 +5713,9 @@ public:
 #if defined(MEDIUS_FEATURE_MOCK)
     /// a device over a MockBox, after the version handshake
     static Device open_mock(const MockBox& mock);
+
+    /// a device over a MockBox, opened like `open_for_update`
+    static Device open_mock_for_update(const MockBox& mock);
 
     /// a device over a MockBox, without the handshake
     static Device with_mock(const MockBox& mock);
@@ -5997,22 +6071,34 @@ public:
         detail::check(medius_device_set_bearing(get(), detail::window(window), detail::write(mode)));
     }
 
-    /// runs one control transfer on the real device and gives back its reply. a status that isn't ok is returned, not
-    /// thrown, and the box answers refused while the opt in is off. the box gives up after about 800 ms on its own,
-    /// so a shorter `timeout` gives up before a slow device answers. a negative timeout throws std::invalid_argument
+    /// runs one control transfer on the real device and gives back how it ended and the whole reply, the bytes of an
+    /// OUT transfer's status stage too. a status that isn't ok is returned, not thrown, and the box answers refused
+    /// while the opt in is off. `data` is at most 501 bytes, a `timeout` outside 1 to 65535 ms throws
+    /// TransferTimeoutRangeError, and a negative one std::invalid_argument
     TransferOutcome transfer(std::uint8_t ep, const Setup& setup, const std::vector<std::uint8_t>& data = {},
                              std::optional<std::chrono::milliseconds> timeout = std::nullopt) const {
         MediusTransferOutcome raw{};
+        // the longest reply there is, a transfer can't be run again to fetch the rest
+        std::vector<std::uint8_t> reply(MEDIUS_MAX_TRANSFER_REPLY);
         if (timeout) {
-            if (timeout->count() < 0 || timeout->count() > 0xFFFFFFFF) {
-                throw std::invalid_argument("a timeout is from 0 to 4294967295 ms");
+            if (timeout->count() < 0) {
+                throw std::invalid_argument("a timeout can't be negative");
             }
-            detail::check(medius_device_transfer_timeout(get(), ep, setup.to_c(), data.data(), data.size(),
-                                                         static_cast<std::uint32_t>(timeout->count()), &raw));
+            // one too long for the call's 32 bits goes in as the longest there is, which medius refuses like every
+            // other one out of its range
+            const auto ms = static_cast<std::uint32_t>(std::min<long long>(timeout->count(), 0xFFFFFFFFLL));
+            detail::check(medius_device_transfer_timeout(get(), ep, setup.to_c(), data.data(), data.size(), ms,
+                                                         reply.data(), reply.size(), &raw));
         } else {
-            detail::check(medius_device_transfer(get(), ep, setup.to_c(), data.data(), data.size(), &raw));
+            detail::check(medius_device_transfer(get(), ep, setup.to_c(), data.data(), data.size(), reply.data(),
+                                                 reply.size(), &raw));
         }
-        return TransferOutcome::from_c(raw);
+        TransferOutcome out;
+        out.status = detail::read<TransferStatus>(raw.status);
+        out.stage = detail::read<TransferStage>(raw.stage);
+        // a copy, so an outcome somebody keeps doesn't hold the whole 64 KiB buffer
+        out.data.assign(reply.begin(), reply.begin() + static_cast<std::ptrdiff_t>(std::min<std::size_t>(raw.len, reply.size())));
+        return out;
     }
 
     /// writes one image into that chip's spare slot, where it does nothing until `activate_firmware()`. `progress`
@@ -6199,8 +6285,8 @@ public:
 
     /// the canned answer to a transfer while the opt in is on, with it off the mock answers refused. a status this
     /// header has no name for is sent as its number
-    void set_transfer_reply(TransferStatus status, const std::vector<std::uint8_t>& data = {}) const {
-        medius_mock_set_transfer_reply(get(), detail::write(status), data.data(), data.size());
+    void set_transfer_reply(TransferStatus status, TransferStage stage, const std::vector<std::uint8_t>& data = {}) const {
+        medius_mock_set_transfer_reply(get(), detail::write(status), detail::write(stage), data.data(), data.size());
     }
 
     /// the mock's `query_render()` answer, `ready` is whether a profile is armed, which a real box needs before it
@@ -6230,9 +6316,8 @@ public:
     /// `Stats::session`, and the clone stays up
     void link_lost() const { medius_mock_link_lost(get()); }
 
-    /// acts like the real device unplugging. with `back_within_grace` it's back inside the 250 ms grace and the clone
-    /// stays up, otherwise the clone goes when the grace ends until `attach()`
-    void detach(bool back_within_grace = false) const { medius_mock_detach(get(), back_within_grace); }
+    /// acts like the real device unplugging, so what the PC set goes and the clone is down until `attach()`
+    void detach() const { medius_mock_detach(get()); }
 
     void attach() const { medius_mock_attach(get()); }
 
@@ -6342,6 +6427,12 @@ private:
 inline Device Device::open_mock(const MockBox& mock) {
     MediusDevice* raw = nullptr;
     detail::check(medius_device_open_mock(mock.get(), &raw));
+    return Device(raw);
+}
+
+inline Device Device::open_mock_for_update(const MockBox& mock) {
+    MediusDevice* raw = nullptr;
+    detail::check(medius_device_open_mock_for_update(mock.get(), &raw));
     return Device(raw);
 }
 

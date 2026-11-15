@@ -39,6 +39,20 @@ public sealed unsafe class Device : IDisposable
         }
     }
 
+    /// <summary>opens a box only to update it, on any control protocol from 5 on. on a box that speaks another
+    /// protocol than this package the device is update only, see <see cref="IsUpdateOnly"/></summary>
+    public static Device OpenForUpdate(string path)
+    {
+        Ensure();
+        fixed (byte* text = Library.Utf8(path))
+        {
+            return Opened(MediusImports.medius_device_open_for_update(text, out var opened), opened);
+        }
+    }
+
+    /// <summary>whether this device can only update the box, because it speaks another control protocol</summary>
+    public bool IsUpdateOnly => MediusImports.medius_device_is_update_only(Handle) != 0;
+
     public static Device Find()
     {
         Ensure();
@@ -87,6 +101,13 @@ public sealed unsafe class Device : IDisposable
     {
         RequireMock();
         return Opened(MediusImports.medius_device_open_mock(mock.Handle, out var opened), opened);
+    }
+
+    /// <summary>a device over a <see cref="MockBox"/>, opened like <see cref="OpenForUpdate"/></summary>
+    public static Device OpenMockForUpdate(MockBox mock)
+    {
+        RequireMock();
+        return Opened(MediusImports.medius_device_open_mock_for_update(mock.Handle, out var opened), opened);
     }
 
     /// <summary>a device over a <see cref="MockBox"/>, without the handshake</summary>
@@ -503,30 +524,32 @@ public sealed unsafe class Device : IDisposable
         }
     }
 
-    /// <summary>runs one control transfer on the real device and gives back its reply. a status that isn't ok is
-    /// returned, not thrown, and the box answers refused while the opt in is off. the box gives up after about
-    /// 800 ms on its own, so a shorter <paramref name="timeout"/> gives up before a slow device answers</summary>
+    /// <summary>runs one control transfer on the real device and gives back how it ended and the whole reply, the
+    /// bytes of an OUT transfer's status stage too. a status that isn't ok is returned, not thrown, and the box
+    /// answers refused while the opt in is off. <paramref name="data"/> is at most 501 bytes, and a
+    /// <paramref name="timeout"/> outside 1 to 65535 ms throws <see cref="TransferTimeoutRangeException"/></summary>
     public TransferOutcome Transfer(byte ep, Setup setup, ReadOnlySpan<byte> data = default, TimeSpan? timeout = null)
     {
         MediusTransferOutcome raw;
+        // the longest reply there is, a transfer can't be run again to fetch the rest
+        var reply = new byte[Constants.MaxTransferReply];
         fixed (byte* bytes = data)
+        fixed (byte* into = reply)
         {
             Check(timeout is { } wait
                 ? MediusImports.medius_device_transfer_timeout(
-                    Handle, ep, setup.ToNative(), bytes, (nuint)data.Length, TransferMs(wait), &raw)
-                : MediusImports.medius_device_transfer(Handle, ep, setup.ToNative(), bytes, (nuint)data.Length, &raw));
+                    Handle, ep, setup.ToNative(), bytes, (nuint)data.Length, TransferMs(wait), into, (nuint)reply.Length, &raw)
+                : MediusImports.medius_device_transfer(
+                    Handle, ep, setup.ToNative(), bytes, (nuint)data.Length, into, (nuint)reply.Length, &raw));
         }
-        return TransferOutcome.From(raw);
+        var length = (int)Math.Min(raw.len, (nuint)reply.Length);
+        // a copy, so an outcome somebody keeps doesn't hold the whole 64 KiB buffer
+        return new((TransferStatus)raw.status, (TransferStage)raw.stage, reply.AsSpan(0, length).ToArray());
     }
 
-    // rounded up like a stream's, so a timeout above zero never turns into no wait at all
-    static uint TransferMs(TimeSpan timeout)
-    {
-        var ms = Ending.Ms(timeout);
-        return ms <= uint.MaxValue
-            ? (uint)ms
-            : throw new ArgumentOutOfRangeException(nameof(timeout), "a timeout is from 0 to 4294967295 ms");
-    }
+    // rounded up like a stream's, so a timeout above zero never turns into no wait at all. one too long for the
+    // call's 32 bits goes in as the longest there is, which medius refuses like every other one out of its range
+    static uint TransferMs(TimeSpan timeout) => (uint)Math.Min(Ending.Ms(timeout), uint.MaxValue);
 
     /// <summary>adds or overwrites one rewrite rule, it needs the opt in. <see cref="QueryRewrite"/> says what the
     /// box holds</summary>

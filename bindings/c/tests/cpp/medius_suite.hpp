@@ -68,13 +68,19 @@ inline Value write(Status value) {
     case 31:
         return Value("ErrClipFrameTooLong");
     case 32:
-        return Value("ErrClipTransferData");
+        return Value("ErrTransferData");
     case 33:
         return Value("ErrClipPacketTrigger");
     case 34:
         return Value("ErrRewriteMatchTooLong");
     case 35:
         return Value("ErrRewritePoolFull");
+    case 36:
+        return Value("ErrTransferTimeoutRange");
+    case 37:
+        return Value("ErrTransferReplyIncomplete");
+    case 38:
+        return Value("ErrPortBusy");
     default:
         return Value(static_cast<std::int64_t>(value));
     }
@@ -214,8 +220,8 @@ inline void read(const Value& value, Status& out) {
         out = Status::ErrClipFrameTooLong;
         return;
     }
-    if (name == "ErrClipTransferData") {
-        out = Status::ErrClipTransferData;
+    if (name == "ErrTransferData") {
+        out = Status::ErrTransferData;
         return;
     }
     if (name == "ErrClipPacketTrigger") {
@@ -228,6 +234,18 @@ inline void read(const Value& value, Status& out) {
     }
     if (name == "ErrRewritePoolFull") {
         out = Status::ErrRewritePoolFull;
+        return;
+    }
+    if (name == "ErrTransferTimeoutRange") {
+        out = Status::ErrTransferTimeoutRange;
+        return;
+    }
+    if (name == "ErrTransferReplyIncomplete") {
+        out = Status::ErrTransferReplyIncomplete;
+        return;
+    }
+    if (name == "ErrPortBusy") {
+        out = Status::ErrPortBusy;
         return;
     }
     throw std::runtime_error("Status has no member " + name);
@@ -1571,16 +1589,56 @@ inline void read(const Value& value, RewriteClass& out) {
     throw std::runtime_error("RewriteClass has no member " + name);
 }
 
+inline Value write(TransferStage value) {
+    switch (static_cast<std::int64_t>(value)) {
+    case 0:
+        return Value("Setup");
+    case 1:
+        return Value("Data");
+    case 2:
+        return Value("Status");
+    default:
+        return Value(static_cast<std::int64_t>(value));
+    }
+}
+
+inline void read(const Value& value, TransferStage& out) {
+    if (!value.is_string()) {
+        out = static_cast<TransferStage>(value.as_int());
+        return;
+    }
+    const auto& name = value.as_string();
+    if (name == "Setup") {
+        out = TransferStage::Setup;
+        return;
+    }
+    if (name == "Data") {
+        out = TransferStage::Data;
+        return;
+    }
+    if (name == "Status") {
+        out = TransferStage::Status;
+        return;
+    }
+    throw std::runtime_error("TransferStage has no member " + name);
+}
+
 inline Value write(TransferStatus value) {
     switch (static_cast<std::int64_t>(value)) {
     case 0:
         return Value("Ok");
+    case 249:
+        return Value("Busy");
+    case 250:
+        return Value("Suspended");
+    case 251:
+        return Value("Error");
     case 252:
         return Value("Refused");
     case 253:
         return Value("Stall");
     case 254:
-        return Value("Nak");
+        return Value("NoAnswer");
     case 255:
         return Value("NoDevice");
     default:
@@ -1598,6 +1656,18 @@ inline void read(const Value& value, TransferStatus& out) {
         out = TransferStatus::Ok;
         return;
     }
+    if (name == "Busy") {
+        out = TransferStatus::Busy;
+        return;
+    }
+    if (name == "Suspended") {
+        out = TransferStatus::Suspended;
+        return;
+    }
+    if (name == "Error") {
+        out = TransferStatus::Error;
+        return;
+    }
     if (name == "Refused") {
         out = TransferStatus::Refused;
         return;
@@ -1606,8 +1676,8 @@ inline void read(const Value& value, TransferStatus& out) {
         out = TransferStatus::Stall;
         return;
     }
-    if (name == "Nak") {
-        out = TransferStatus::Nak;
+    if (name == "NoAnswer") {
+        out = TransferStatus::NoAnswer;
         return;
     }
     if (name == "NoDevice") {
@@ -1902,8 +1972,6 @@ Value write(const DeviceInfo& value);
 void read(const Value& value, DeviceInfo& out);
 Value write(const BoxInfo& value);
 void read(const Value& value, BoxInfo& out);
-Value write(const TransferOutcome& value);
-void read(const Value& value, TransferOutcome& out);
 Value write(const RewriteRule& value);
 void read(const Value& value, RewriteRule& out);
 Value write(const RewriteEntry& value);
@@ -2135,18 +2203,6 @@ inline void read(const Value& value, BoxInfo& out) {
     read(value["port"], out.port);
     read(value["version"], out.version);
     read(value["device"], out.device);
-}
-
-inline Value write(const TransferOutcome& value) {
-    Object out;
-    out.push_back({"status", write(value.status)});
-    out.push_back({"data", write(value.data)});
-    return Value(std::move(out));
-}
-
-inline void read(const Value& value, TransferOutcome& out) {
-    read(value["status"], out.status);
-    read(value["data"], out.data);
 }
 
 inline Value write(const RewriteRule& value) {
@@ -2443,6 +2499,7 @@ inline Value write(const Stats& value) {
     out.push_back({"host_rx_drops", write(value.host_rx_drops)});
     out.push_back({"relay_drops", write(value.relay_drops)});
     out.push_back({"session", write(value.session)});
+    out.push_back({"host_restarts", write(value.host_restarts)});
     return Value(std::move(out));
 }
 
@@ -2459,6 +2516,7 @@ inline void read(const Value& value, Stats& out) {
     read(value["host_rx_drops"], out.host_rx_drops);
     read(value["relay_drops"], out.relay_drops);
     read(value["session"], out.session);
+    read(value["host_restarts"], out.host_restarts);
 }
 
 inline Value write(const LockEntry& value) {
@@ -3164,7 +3222,7 @@ inline std::optional<Value> call(Context& ctx, const std::string& cls, const std
         return Value();
     }
     if (cls == "MockBox" && method == "set_transfer_reply") {
-        ctx.mock().set_transfer_reply(arg<TransferStatus>(args, 0), arg<std::vector<std::uint8_t>>(args, 1));
+        ctx.mock().set_transfer_reply(arg<TransferStatus>(args, 0), arg<TransferStage>(args, 1), arg<std::vector<std::uint8_t>>(args, 2));
         return Value();
     }
     if (cls == "MockBox" && method == "set_render") {
@@ -3196,7 +3254,7 @@ inline std::optional<Value> call(Context& ctx, const std::string& cls, const std
         return Value();
     }
     if (cls == "MockBox" && method == "detach") {
-        ctx.mock().detach(arg<bool>(args, 0));
+        ctx.mock().detach();
         return Value();
     }
     if (cls == "MockBox" && method == "attach") {

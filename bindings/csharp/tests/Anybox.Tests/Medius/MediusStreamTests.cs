@@ -188,7 +188,7 @@ public sealed class MediusStreamTests
         Assert.Equal(TransferStatus.Stall, stalled.Transfer);
         Assert.False(stalled.RuleActed);
         Assert.True(stalled.Data.IsEmpty);
-        Assert.Equal(TransferStatus.Nak, new TrafficEvent(CatchClass.ClipTransfer, 0, Direction.In, 0xFE, 8, setup).Transfer);
+        Assert.Equal(TransferStatus.NoAnswer, new TrafficEvent(CatchClass.ClipTransfer, 0, Direction.In, 0xFE, 8, setup).Transfer);
         // a status nothing names stays its byte
         Assert.Equal((TransferStatus)0x42, new TrafficEvent(CatchClass.ClipTransfer, 0, Direction.In, 0x42, 8, setup).Transfer);
         Assert.Null(new TrafficEvent(CatchClass.Control, 0, Direction.In, 0, 8, setup).Transfer);

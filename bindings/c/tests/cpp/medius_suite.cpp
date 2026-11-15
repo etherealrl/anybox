@@ -120,6 +120,8 @@ Value write(const Usage& usage);
 void read(const Value& value, Usage& out);
 Value write(const LockTarget& target);
 void read(const Value& value, LockTarget& out);
+Value write(const TransferOutcome& outcome);
+void read(const Value& value, TransferOutcome& out);
 Value write(const CatchFilter& filter);
 void read(const Value& value, CatchFilter& out);
 Value write(const EmitPaceStatus& status);
@@ -214,6 +216,16 @@ void read(const Value& value, Usage& out) {
 
 Value write(const LockTarget& target) {
     return Value(Object{{"kind", write(target.kind())}, {"usage", write(target.input())}});
+}
+
+Value write(const TransferOutcome& outcome) {
+    return Value(Object{{"status", write(outcome.status)}, {"stage", write(outcome.stage)}, {"data", write(outcome.data)}});
+}
+
+void read(const Value& value, TransferOutcome& out) {
+    out.status = parse<TransferStatus>(value["status"]);
+    out.stage = parse<TransferStage>(value["stage"]);
+    read(value["data"], out.data);
 }
 
 void read(const Value& value, LockTarget& out) {

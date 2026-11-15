@@ -357,37 +357,6 @@ public sealed partial record BoxInfo(
     }
 }
 
-/// <summary>the real device's reply to a control transfer. a status that isn't ok is the protocol's answer and not a
-/// link error, and it carries no data</summary>
-public sealed partial record TransferOutcome(
-    TransferStatus Status,
-    ReadOnlyMemory<byte> Data = default)
-{
-    public bool Equals(TransferOutcome? other) => other is not null &&
-        Status == other.Status &&
-        MediusLibrary.Same(Data, other.Data);
-
-    public override int GetHashCode()
-    {
-        var hash = new HashCode();
-        hash.Add(Status);
-        hash.Add(MediusLibrary.Hash(Data));
-        return hash.ToHashCode();
-    }
-
-    internal static unsafe TransferOutcome From(MediusTransferOutcome raw) => new(
-        (TransferStatus)raw.status,
-        MediusLibrary.Bytes(raw.data, raw.len, Constants.MaxDevPayload));
-
-    internal unsafe MediusTransferOutcome ToNative()
-    {
-        var raw = new MediusTransferOutcome();
-        raw.status = (byte)Status;
-        raw.len = (ushort)MediusLibrary.Copy(Data.Span, raw.data, Constants.MaxDevPayload, nameof(Data));
-        return raw;
-    }
-}
-
 /// <summary>a rewrite rule, keyed by its class, id, direction, match and mask. the match and mask compare the masked
 /// head and are as long as each other, an empty match takes every packet on the address. <see cref="Payload"/> is for
 /// the actions that carry one, and <see cref="Offset"/> is where a patch writes</summary>
@@ -950,7 +919,8 @@ public sealed partial record Stats(
     uint LinkRxDrops = 0,
     uint HostRxDrops = 0,
     uint RelayDrops = 0,
-    ushort Session = 0)
+    ushort Session = 0,
+    ushort HostRestarts = 0)
 {
     internal static unsafe Stats From(MediusStats raw) => new(
         raw.inject_emits,
@@ -964,7 +934,8 @@ public sealed partial record Stats(
         raw.link_rx_drops,
         raw.host_rx_drops,
         raw.relay_drops,
-        raw.session);
+        raw.session,
+        raw.host_restarts);
 
     internal unsafe MediusStats ToNative()
     {
@@ -981,6 +952,7 @@ public sealed partial record Stats(
         raw.host_rx_drops = HostRxDrops;
         raw.relay_drops = RelayDrops;
         raw.session = Session;
+        raw.host_restarts = HostRestarts;
         return raw;
     }
 }

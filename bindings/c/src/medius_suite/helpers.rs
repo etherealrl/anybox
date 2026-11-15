@@ -609,6 +609,7 @@ pub(super) fn helper(name: &str, args: &[Value]) -> Outcome {
         "TransferOutcome::is_ok" | "TransferOutcome::ok_data" => {
             let outcome = m::TransferOutcome {
                 status: m::TransferStatus::from_u8(member("TransferStatus", &arg(0)["status"])),
+                stage: m::TransferStage::from_u8(member("TransferStage", &arg(0)["stage"])),
                 data: unhex(&arg(0)["data"], "data"),
             };
             if name.ends_with("is_ok") {
